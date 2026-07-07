@@ -132,7 +132,7 @@ _LOCAL_REPLY_MOTION_KW = [
 ]
 
 # ==================== 指令校验常量 ====================
-VALID_ACTIONS = {"move_joint", "move_cartesian"}
+VALID_ACTIONS = {"move_joint", "move_cartesian", "home", "get_status"}
 VALID_ARMS = {"left", "right"}
 VALID_JOINTS = {1, 2, 3, 4, 5, 6}
 MOVE_JOINT_REQUIRED = {"action", "arm", "joint", "value", "type"}
@@ -514,6 +514,14 @@ def validate_and_fix_command(cmd):
     arm = fixed.get("arm")
     if arm not in VALID_ARMS:
         return None, [f"未知arm: '{arm}'，应为 'left' 或 'right'"]
+
+    if action == "home":
+        # home 只要求 action + arm；不补任何运动字段
+        return fixed, errors
+
+    if action == "get_status":
+        # get_status 只要求 action + arm；不补任何运动字段，不默认手臂
+        return fixed, errors
 
     if action == "move_joint":
         missing = MOVE_JOINT_REQUIRED - set(fixed.keys())

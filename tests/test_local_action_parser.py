@@ -101,6 +101,18 @@ class LocalActionParserTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertIsNone(check_simple_action_command(text))
 
+    def test_misses_home_and_status_spoken_phrases(self):
+        """口语回零/状态查询不应被本地动作解析器转为控制 JSON。"""
+        cases = [
+            "右臂回零",
+            "左臂回到初始位置",
+            "查询右臂状态",
+            "右臂状态",
+        ]
+        for text in cases:
+            with self.subTest(text=text):
+                self.assertIsNone(check_simple_action_command(text))
+
     def test_tracker_records_local_action_parser_duration(self):
         tracker = LatencyTracker(source="test")
 
@@ -220,22 +232,88 @@ class ReplyValidationBaselineTests(unittest.TestCase):
         self.assertTrue(len(errors) > 0)
 
 
-class HomeAndGetStatusCurrentBaselineTests(unittest.TestCase):
-    """明确记录 home 和 get_status 在当前 Python 校验层的现状（current gap）。"""
+class HomeAndGetStatusValidationTests(unittest.TestCase):
+    """home 和 get_status 在 Python 校验层的新合约测试（Task 5）。"""
 
-    def test_home_action_currently_rejected_by_python_validation_current_baseline(self):
-        """{"action": "home", "arm": "left"} 当前应被拒绝（current baseline）。"""
+    # ── 通过场景 ──
+
+    def test_home_left_passes_validation(self):
+        """{"action": "home", "arm": "left"} 通过校验。"""
         cmd = {"action": "home", "arm": "left"}
         fixed, errors = validate_and_fix_command(cmd)
-        self.assertIsNone(fixed)
-        self.assertTrue(len(errors) > 0)
+        self.assertIsNotNone(fixed)
+        self.assertEqual(fixed["action"], "home")
+        self.assertEqual(fixed["arm"], "left")
+        self.assertEqual(errors, [])
 
-    def test_get_status_action_currently_rejected_by_python_validation_current_baseline(self):
-        """{"action": "get_status", "arm": "right"} 当前应被拒绝（current baseline）。"""
+    def test_home_right_passes_validation(self):
+        """{"action": "home", "arm": "right"} 通过校验。"""
+        cmd = {"action": "home", "arm": "right"}
+        fixed, errors = validate_and_fix_command(cmd)
+        self.assertIsNotNone(fixed)
+        self.assertEqual(errors, [])
+
+    def test_get_status_left_passes_validation(self):
+        """{"action": "get_status", "arm": "left"} 通过校验。"""
+        cmd = {"action": "get_status", "arm": "left"}
+        fixed, errors = validate_and_fix_command(cmd)
+        self.assertIsNotNone(fixed)
+        self.assertEqual(errors, [])
+
+    def test_get_status_right_passes_validation(self):
+        """{"action": "get_status", "arm": "right"} 通过校验。"""
         cmd = {"action": "get_status", "arm": "right"}
+        fixed, errors = validate_and_fix_command(cmd)
+        self.assertIsNotNone(fixed)
+        self.assertEqual(errors, [])
+
+    # ── 失败场景 ──
+
+    def test_home_without_arm_fails(self):
+        """{"action": "home"} 缺少 arm 校验失败。"""
+        cmd = {"action": "home"}
         fixed, errors = validate_and_fix_command(cmd)
         self.assertIsNone(fixed)
         self.assertTrue(len(errors) > 0)
+
+    def test_get_status_without_arm_fails(self):
+        """{"action": "get_status"} 缺少 arm 校验失败。"""
+        cmd = {"action": "get_status"}
+        fixed, errors = validate_and_fix_command(cmd)
+        self.assertIsNone(fixed)
+        self.assertTrue(len(errors) > 0)
+
+    def test_home_invalid_arm_fails(self):
+        """{"action": "home", "arm": "center"} 非法 arm 校验失败。"""
+        cmd = {"action": "home", "arm": "center"}
+        fixed, errors = validate_and_fix_command(cmd)
+        self.assertIsNone(fixed)
+        self.assertTrue(len(errors) > 0)
+
+    def test_get_status_invalid_arm_fails(self):
+        """{"action": "get_status", "arm": "center"} 非法 arm 校验失败。"""
+        cmd = {"action": "get_status", "arm": "center"}
+        fixed, errors = validate_and_fix_command(cmd)
+        self.assertIsNone(fixed)
+        self.assertTrue(len(errors) > 0)
+
+    # ── 不自动补字段 ──
+
+    def test_home_does_not_auto_fill_motion_fields(self):
+        """home 校验不自动补 joint/value/type/x/y/z/relative。"""
+        cmd = {"action": "home", "arm": "left"}
+        fixed, errors = validate_and_fix_command(cmd)
+        self.assertIsNotNone(fixed)
+        for key in ("joint", "value", "type", "x", "y", "z", "relative"):
+            self.assertNotIn(key, fixed)
+
+    def test_get_status_does_not_auto_fill_motion_fields(self):
+        """get_status 校验不自动补 joint/value/type/x/y/z/relative。"""
+        cmd = {"action": "get_status", "arm": "right"}
+        fixed, errors = validate_and_fix_command(cmd)
+        self.assertIsNotNone(fixed)
+        for key in ("joint", "value", "type", "x", "y", "z", "relative"):
+            self.assertNotIn(key, fixed)
 
 
 class AutoFillBaselineTests(unittest.TestCase):
