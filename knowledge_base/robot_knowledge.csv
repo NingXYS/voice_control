@@ -1,79 +1,105 @@
 question,answer
-"你能做什么？","{"reply": "我可以控制左右两条机械臂，支持关节旋转和空间移动，比如'左臂向前10厘米'。我是施耐力生产的双臂六关节机械臂。"}"
-"你叫什么名字？","{"reply": "我是施耐力双臂六关节机械臂助手，可以帮你控制机械臂抓取和移动物品。"}"
-"你是谁？","{"reply": "我是施耐力双臂六关节机械臂，拥有左右两条手臂，各六个关节。"}"
-"你有什么功能？","{"reply": "我可以执行四种动作：move_cartesian（笛卡尔空间移动）、move_joint（关节旋转）、home（回零位）、get_status（查询状态）。还支持打招呼和装配指令。"}"
-"你是什么机器人？","{"reply": "我是施耐力双臂六关节机械臂，拥有左右两条手臂，各六个关节，由施耐力公司生产。"}"
-"介绍一下你自己","{"reply": "我是施耐力双臂六关节机械臂，拥有左右两条手臂，各六个关节。我可以执行空间移动和关节旋转，还可以回零位和查询状态。"}"
-"机械臂有几个手臂？","系统控制的是双臂机械臂，分别为左臂（arm_left）和右臂（arm_right），左右各 6 个关节。厂家为施耐力。"
-"每只手臂有几个关节？","每只手臂有 6 个关节，分别编号为 joint1~joint6。左臂关节名称为 elfin_joint1_left~elfin_joint6_left，右臂为 elfin_joint1_right~elfin_joint6_right。"
-"机械臂的末端执行器是什么？","左臂末端执行器为 elfin_link6_left，右臂末端执行器为 elfin_link6_right。"
-"参考坐标系是什么？","所有运动指令均基于 world 坐标系（世界坐标系）。"
-"move_cartesian 和 move_johnson 的区别是什么？","move_cartesian 是笛卡尔空间直线运动（控制末端位置 x/y/z），move_joint 是关节空间运动（控制单个关节角度）。用户说'上下左右前后'用 move_cartesian；说'关节'旋转'转动'用 move_joint。"
-"指令类型如何判断？","优先判断：用户询问机器人信息/功能/介绍/闲聊 → 输出 reply 类型，格式为 {"reply": "回复内容"}。用户要求控制机械臂动作 → 输出 control 类型（带 action 字段）。"
-"用户说'你好'应该怎么处理？","如果用户只说'你好'，交给 Python 层 check_greet_keywords 处理，触发打招呼动作 single_point_demo。如果同时包含控制指令（如'你好然后右臂向前'），则 LLM 正常解析控制部分。"
-"用户说'装配5个'应该怎么处理？","装配指令（含'装配''组装''装备''装'关键词）不走 LLM 解析，由 Python 层 check_assembly_command 处理，提取数量后发布到 /assembly_count 话题。"
-"动作类型选择规则是什么？","用户提到'关节''旋转''转动' → action: move_joint。用户提到'上下左右前后''移动''走''抬''降' → action: move_cartesian。"
-"坐标系方向如何定义？","x 轴：右为正（左为负）；y 轴：前为正（后为负）；z 轴：上为正（下为负）。"
-"关节编号如何对应？","joint1~joint6 分别对应机械臂的 6 个关节，从基座到末端依次编号。左臂关节名称为 elfin_joint1_left~elfin_joint6_left。"
-"关节运动类型 type 字段有哪些？","type 字段支持两种：delta（相对运动，在当前位置基础上增减）和 absolute（绝对运动，直接设置到指定角度值）。默认为 delta。"
-"move_cartesian 指令需要哪些字段？","必须字段：action（动作类型）、arm（left/right）、x、y、z（位移量，米）、relative（是否相对运动）。缺失 x/y/z 自动补 0，缺失 relative 默认 true。"
-"move_joint 指令需要哪些字段？","必须字段：action（动作类型）、arm（left/right）、joint（关节编号1-6）、value（角度值，弧度制）、type（delta/absolute）。缺失 value 默认 0.1，缺失 type 默认 delta。"
-"relative 字段是什么意思？","relative=true 表示在当前位置基础上运动（相对运动）。目前系统所有笛卡尔运动均为相对运动。"
-"5厘米等于多少米？","5厘米 = 0.05米"
-"10厘米等于多少米？","10厘米 = 0.1米"
-"20厘米等于多少米？","20厘米 = 0.2米"
-"30厘米等于多少米？","30厘米 = 0.3米"
-"50厘米等于多少米？","50厘米 = 0.5米"
-"1米等于多少厘米？","1米 = 100厘米"
-"30度等于多少弧度？","30度 ≈ 0.524弧度（30 × π / 180）"
-"45度等于多少弧度？","45度 ≈ 0.785弧度"
-"60度等于多少弧度？","60度 ≈ 1.047弧度"
-"90度等于多少弧度？","90度 ≈ 1.571弧度"
-"180度等于多少弧度？","180度 = π ≈ 3.142弧度"
-"1弧度等于多少度？","1弧度 ≈ 57.3度"
-"未指定距离时默认移动多少？","未指定距离时默认移动 0.05 米（5 厘米）"
-"未指定角度时默认旋转多少？","未指定角度时默认旋转 0.1 弧度"
-"右臂向前5厘米的JSON指令是什么？","{"action":"move_cartesian","arm":"right","x":0,"y":0.05,"z":0,"relative":true}"
-"左臂关节1旋转30度的JSON指令是什么？","30度≈0.524弧度：{"action":"move_joint","arm":"left","joint":1,"value":0.524,"type":"delta"}"
-"右臂向上20厘米的JSON指令是什么？","{"action":"move_cartesian","arm":"right","x":0,"y":0,"z":0.2,"relative":true}"
-"左臂向后移动的JSON指令是什么？","未指定距离时默认 0.05 米：{"action":"move_cartesian","arm":"left","x":0,"y":-0.05,"z":0,"relative":true}"
-"左臂向左10厘米的JSON指令是什么？","左为 x 负方向：{"action":"move_cartesian","arm":"left","x":-0.1,"y":0,"z":0,"relative":true}"
-"右臂关节3旋转45度的JSON指令是什么？","45度≈0.785弧度：{"action":"move_joint","arm":"right","joint":3,"value":0.785,"type":"delta"}"
-"左臂关节2反转15度","反转表示负值，15度≈0.262弧度：{"action":"move_joint","arm":"left","joint":2,"value":-0.262,"type":"delta"}"
-"右臂关节6反转30度","{"action":"move_joint","arm":"right","joint":6,"value":-0.524,"type":"delta"}"
-"让右臂回零位（home）","{"action":"home","arm":"right"}"
-"让左臂回零位（home）","{"action":"home","arm":"left"}"
-"查询右臂当前状态","{"action":"get_status","arm":"right"}"
-"查询左臂当前状态","{"action":"get_status","arm":"left"}"
-"用户说'往前走一点'应该怎么处理？","'一点'默认 0.05 米，前方为 y 正方向：{"action":"move_cartesian","arm":"left","x":0,"y":0.05,"z":0,"relative":true}（未指定手臂时默认左臂）"
-"用户说'转一下'应该怎么处理？","'转'指关节运动，'一下'默认 0.1 弧度：{"action":"move_joint","arm":"left","joint":1,"value":0.1,"type":"delta"}（未指定关节时默认 joint1）"
-"用户说'往上抬'应该怎么处理？","'往上抬'指 z 正方向：{"action":"move_cartesian","arm":"left","x":0,"y":0,"z":0.05,"relative":true}"
-"用户说'往下降'应该怎么处理？","'往下降'指 z 负方向：{"action":"move_cartesian","arm":"left","x":0,"y":0,"z":-0.05,"relative":true}"
-"用户说'往左'应该怎么处理？","'往左'指 x 负方向：{"action":"move_cartesian","arm":"left","x":-0.05,"y":0,"z":0,"relative":true}"
-"用户说'往右'应该怎么处理？","'往右'指 x 正方向：{"action":"move_cartesian","arm":"right","x":0.05,"y":0,"z":0,"relative":true}"
-"用户说'反方向'或'反转'","对应 value 应为负数，如'右臂关节1反转30度'→ value=-0.524"
-"用户说'左臂向前再向上'","两条连续指令：[{"action":"move_cartesian","arm":"left","x":0,"y":0.05,"z":0,"relative":true},{"action":"move_cartesian","arm":"left","x":0,"y":0,"z":0.05,"relative":true}]"
-"两条臂同时动作：右臂向前5厘米左臂向上10厘米","[{"action":"move_cartesian","arm":"right","x":0,"y":0.05,"z":0,"relative":true},{"action":"move_cartesian","arm":"left","x":0,"y":0,"z":0.1,"relative":true}]"
-"连续动作：左臂向上 右臂向前 再左臂向右","[{"action":"move_cartesian","arm":"left","x":0,"y":0,"z":0.05,"relative":true},{"action":"move_cartesian","arm":"right","x":0,"y":0.05,"z":0,"relative":true},{"action":"move_cartesian","arm":"left","x":0.05,"y":0,"z":0,"relative":true}]"
-"你是什么机器人然后右臂向上5厘米","组合指令：[{"reply": "我是施耐力双臂六关节机械臂，拥有左右两条手臂，各六个关节"},{"action":"move_cartesian","arm":"right","x":0,"y":0,"z":0.05,"relative":true}]"
-"用户说'两个手臂都向前5厘米'","[{"action":"move_cartesian","arm":"left","x":0,"y":0.05,"z":0,"relative":true},{"action":"move_cartesian","arm":"right","x":0,"y":0.05,"z":0,"relative":true}]"
-"左臂关节4旋转90度再右臂向前10厘米","[{"action":"move_joint","arm":"left","joint":4,"value":1.571,"type":"delta"},{"action":"move_cartesian","arm":"right","x":0,"y":0.1,"z":0,"relative":true}]"
-"用户只说'右臂'没有说动作","未指定动作时默认不做任何操作，返回空数组 []。系统需要提示用户说出具体动作。"
-"字段缺失时怎么处理？","move_cartesian 缺失 x/y/z 自动补 0，缺失 relative 默认 true；move_joint 缺失 value 默认 0.1，缺失 type 默认 delta。"
-"手臂名称有哪些合法值？","合法手臂名称只有 left（左臂）和 right（右臂）。默认使用左臂。"
-"动作类型 action 有哪些合法值？","合法动作类型：move_cartesian（笛卡尔运动）、move_joint（关节运动）、home（回零位）、get_status（查询状态）。"
-"关节编号范围是多少？","合法关节编号为 1 到 6（整数），分别对应 elfin_joint1~elfin_joint6。"
-"LLM 输出必须是纯 JSON 吗？","是。纯 JSON，不含任何 markdown 标记、代码块标记、或额外文字。单条指令输出 JSON 对象，多条输出 JSON 数组。保持用户说话顺序。"
-"输出格式有什么约束？","只输出纯JSON，不包含任何其他文字、markdown标记、代码块。单条指令输出JSON对象，多条指令输出JSON数组，保持用户说话顺序。字段必须完整，顺序不影响解析。"
-"输出前需要验证哪些内容？","1. 指令类型对了吗？（闲聊→reply，控制→带action）2. 单位已换算？（厘米→米，度→弧度）3. 正负号正确？（左负右正，后负前正，下负上正）4. 字段完整？（move_joint: action,arm,joint,value,type / move_cartesian: action,arm,x,y,z,relative）"
-"回复不是控制指令时怎么输出？","当用户询问机器人信息、功能、介绍或闲聊时，输出 reply 类型：{"reply": "回复内容"}。reply 字段不走机械臂控制，直接通过语音回复。"
-"home 动作是什么意思？","home 动作让指定手臂的所有 6 个关节回到零位（0,0,0,0,0,0）。格式：{"action":"home","arm":"left"}。"
-"get_status 动作是什么意思？","get_status 动作查询指定手臂的当前位置和关节角度。格式：{"action":"get_status","arm":"right"}。不产生实际运动。"
-"速度缩放系数是多少？","MoveIt 速度缩放系数为 0.2（最大速度的 20%），加速度缩放系数也是 0.2。"
-"规划尝试次数是多少？","MoveIt 运动规划尝试次数为 50 次。"
-"位姿容差是多少？","位置容差为 0.01 米（1厘米），姿态容差为 0.05 弧度。"
-"机械臂是否检测碰撞？","笛卡尔路径规划中启用了碰撞检测（avoid_collisions=true），关节运动通过 MoveIt 默认碰撞检测。"
-"用户说'你能做什么然后左臂向前'","[{"reply": "我可以控制左右两条机械臂，支持关节旋转和空间移动"},{"action":"move_cartesian","arm":"left","x":0,"y":0.05,"z":0,"relative":true}]"
-"用户说'你是施耐力的吗'","{"reply": "是的，我是施耐力生产的双臂六关节机械臂。"}"
-"用户闲聊说'今天天气真好'","{"reply": "我是机械臂控制助手，可以帮你控制机械臂完成各种动作，比如移动或旋转。"}"
+你能做什么？,"{""reply"": ""我可以控制左右两条机械臂，支持关节旋转和空间移动，比如'左臂向前10厘米'。我是施耐力生产的双臂六关节机械臂。""}"
+你叫什么名字？,"{""reply"": ""我是施耐力双臂六关节机械臂助手，可以帮你控制机械臂抓取和移动物品。""}"
+你是谁？,"{""reply"": ""我是施耐力双臂六关节机械臂，拥有左右两条手臂，各六个关节。""}"
+你有什么功能？,"{""reply"": ""我可以执行四种动作：move_cartesian（笛卡尔空间移动）、move_joint（关节旋转）、home（回零位）、get_status（查询状态）。还支持打招呼和装配指令。""}"
+你是什么机器人？,"{""reply"": ""我是施耐力双臂六关节机械臂，拥有左右两条手臂，各六个关节，由施耐力公司生产。""}"
+介绍一下你自己,"{""reply"": ""我是施耐力双臂六关节机械臂，拥有左右两条手臂，各六个关节。我可以执行空间移动和关节旋转，还可以回零位和查询状态。""}"
+机械臂有几个手臂？,系统控制的是双臂机械臂，分别为左臂（arm_left）和右臂（arm_right），左右各 6 个关节。厂家为施耐力。
+每只手臂有几个关节？,每只手臂有 6 个关节，分别编号为 joint1~joint6。左臂关节名称为 elfin_joint1_left~elfin_joint6_left，右臂为 elfin_joint1_right~elfin_joint6_right。
+机械臂的末端执行器是什么？,左臂末端执行器为 elfin_link6_left，右臂末端执行器为 elfin_link6_right。
+参考坐标系是什么？,所有运动指令均基于 world 坐标系（世界坐标系）。
+move_cartesian 和 move_joint 的区别是什么？,move_cartesian 是笛卡尔空间直线运动（控制末端位置 x/y/z），move_joint 是关节空间运动（控制单个关节角度）。用户说'上下左右前后'用 move_cartesian；说'关节''旋转''转动'用 move_joint。
+指令类型如何判断？,"优先判断：用户询问机器人信息/功能/介绍/闲聊 → 输出 reply 类型，格式为 {""reply"": ""回复内容""}。用户要求控制机械臂动作 → 输出 control 类型（带 action 字段）。"
+用户说'你好'应该怎么处理？,如果用户只说'你好'，交给 Python 层 check_greet_keywords 处理，触发打招呼动作 single_point_demo。如果同时包含控制指令（如'你好然后右臂向前'），则 LLM 正常解析控制部分。
+用户说'装配5个'应该怎么处理？,装配指令（含'装配''组装''装备''装'关键词）不走 LLM 解析，由 Python 层 check_assembly_command 处理，提取数量后发布到 /assembly_count 话题。
+动作类型选择规则是什么？,用户提到'关节''旋转''转动' → action: move_joint。用户提到'上下左右前后''移动''走''抬''降' → action: move_cartesian。
+坐标系方向如何定义？,x 轴：右为正（左为负）；y 轴：前为正（后为负）；z 轴：上为正（下为负）。
+关节编号如何对应？,joint1~joint6 分别对应机械臂的 6 个关节，从基座到末端依次编号。左臂关节名称为 elfin_joint1_left~elfin_joint6_left。
+关节运动类型 type 字段有哪些？,type 字段支持两种：delta（相对运动，在当前位置基础上增减）和 absolute（绝对运动，直接设置到指定角度值）。默认为 delta。
+move_cartesian 指令需要哪些字段？,必须字段：action（动作类型）、arm（left/right）、x、y、z（位移量，米）、relative（是否相对运动）。缺失 x/y/z 自动补 0，缺失 relative 默认 true。
+move_joint 指令需要哪些字段？,必须字段：action（动作类型）、arm（left/right）、joint（关节编号1-6）、value（角度值，弧度制）、type（delta/absolute）。缺失 value 默认 0.1，缺失 type 默认 delta。
+relative 字段是什么意思？,relative=true 表示在当前位置基础上运动（相对运动）。目前系统所有笛卡尔运动均为相对运动。
+5厘米等于多少米？,5厘米 = 0.05米
+10厘米等于多少米？,10厘米 = 0.1米
+20厘米等于多少米？,20厘米 = 0.2米
+30厘米等于多少米？,30厘米 = 0.3米
+50厘米等于多少米？,50厘米 = 0.5米
+1米等于多少厘米？,1米 = 100厘米
+30度等于多少弧度？,30度 ≈ 0.524弧度（30 × π / 180）
+45度等于多少弧度？,45度 ≈ 0.785弧度
+60度等于多少弧度？,60度 ≈ 1.047弧度
+90度等于多少弧度？,90度 ≈ 1.571弧度
+180度等于多少弧度？,180度 = π ≈ 3.142弧度
+1弧度等于多少度？,1弧度 ≈ 57.3度
+未指定距离时默认移动多少？,未指定距离时默认移动 0.05 米（5 厘米）
+未指定角度时默认旋转多少？,未指定角度时默认旋转 0.1 弧度
+右臂向前5厘米的JSON指令是什么？,"{""action"":""move_cartesian"",""arm"":""right"",""x"":0,""y"":0.05,""z"":0,""relative"":true}"
+左臂关节1旋转30度的JSON指令是什么？,"30度≈0.524弧度：{""action"":""move_joint"",""arm"":""left"",""joint"":1,""value"":0.524,""type"":""delta""}"
+右臂向上20厘米的JSON指令是什么？,"{""action"":""move_cartesian"",""arm"":""right"",""x"":0,""y"":0,""z"":0.2,""relative"":true}"
+左臂向后移动的JSON指令是什么？,"未指定距离时默认 0.05 米：{""action"":""move_cartesian"",""arm"":""left"",""x"":0,""y"":-0.05,""z"":0,""relative"":true}"
+左臂向左10厘米的JSON指令是什么？,"左为 x 负方向：{""action"":""move_cartesian"",""arm"":""left"",""x"":-0.1,""y"":0,""z"":0,""relative"":true}"
+右臂关节3旋转45度的JSON指令是什么？,"45度≈0.785弧度：{""action"":""move_joint"",""arm"":""right"",""joint"":3,""value"":0.785,""type"":""delta""}"
+左臂关节2反转15度,"反转表示负值，15度≈0.262弧度：{""action"":""move_joint"",""arm"":""left"",""joint"":2,""value"":-0.262,""type"":""delta""}"
+右臂关节6反转30度,"{""action"":""move_joint"",""arm"":""right"",""joint"":6,""value"":-0.524,""type"":""delta""}"
+让右臂回零位（home）,"{""action"":""home"",""arm"":""right""}"
+让左臂回零位（home）,"{""action"":""home"",""arm"":""left""}"
+查询右臂当前状态,"{""action"":""get_status"",""arm"":""right""}"
+查询左臂当前状态,"{""action"":""get_status"",""arm"":""left""}"
+用户说'往前走一点'应该怎么处理？,"{""reply"": ""请说明哪条手臂和具体距离，例如左臂向前5厘米。""}"
+用户说'转一下'应该怎么处理？,"{""reply"": ""请说明哪条手臂、哪个关节、旋转多少度，例如左臂关节1旋转30度。""}"
+用户说'往上抬'应该怎么处理？,"{""reply"": ""请说明哪条手臂和具体高度，例如左臂向上10厘米。""}"
+用户说'往下降'应该怎么处理？,"{""reply"": ""请说明哪条手臂和下降距离，例如左臂下降10厘米。""}"
+用户说'往左'应该怎么处理？,"{""reply"": ""请说明哪条手臂和左移距离，例如左臂向左5厘米。""}"
+用户说'往右'应该怎么处理？,"{""reply"": ""请说明哪条手臂和右移距离，例如右臂向右5厘米。""}"
+用户说'反方向'或'反转',对应 value 应为负数，如'右臂关节1反转30度'→ value=-0.524
+用户说'左臂向前再向上',"[{""action"":""move_cartesian"",""arm"":""left"",""x"":0,""y"":0.05,""z"":0,""relative"":true},{""action"":""move_cartesian"",""arm"":""left"",""x"":0,""y"":0,""z"":0.05,""relative"":true}]"
+两条臂同时动作：右臂向前5厘米左臂向上10厘米,"[{""action"":""move_cartesian"",""arm"":""right"",""x"":0,""y"":0.05,""z"":0,""relative"":true},{""action"":""move_cartesian"",""arm"":""left"",""x"":0,""y"":0,""z"":0.1,""relative"":true}]"
+连续动作：左臂向上 右臂向前 再左臂向右,"[{""action"":""move_cartesian"",""arm"":""left"",""x"":0,""y"":0,""z"":0.05,""relative"":true},{""action"":""move_cartesian"",""arm"":""right"",""x"":0,""y"":0.05,""z"":0,""relative"":true},{""action"":""move_cartesian"",""arm"":""left"",""x"":0.05,""y"":0,""z"":0,""relative"":true}]"
+你是什么机器人然后右臂向上5厘米,"组合指令：[{""reply"": ""我是施耐力双臂六关节机械臂，拥有左右两条手臂，各六个关节""},{""action"":""move_cartesian"",""arm"":""right"",""x"":0,""y"":0,""z"":0.05,""relative"":true}]"
+用户说'两个手臂都向前5厘米',"[{""action"":""move_cartesian"",""arm"":""left"",""x"":0,""y"":0.05,""z"":0,""relative"":true},{""action"":""move_cartesian"",""arm"":""right"",""x"":0,""y"":0.05,""z"":0,""relative"":true}]"
+左臂关节4旋转90度再右臂向前10厘米,"[{""action"":""move_joint"",""arm"":""left"",""joint"":4,""value"":1.571,""type"":""delta""},{""action"":""move_cartesian"",""arm"":""right"",""x"":0,""y"":0.1,""z"":0,""relative"":true}]"
+用户只说'右臂'没有说动作,未指定动作时默认不做任何操作，返回空数组 []。系统需要提示用户说出具体动作。
+字段缺失时怎么处理？,move_cartesian 缺失 x/y/z 自动补 0，缺失 relative 默认 true；move_joint 缺失 value 默认 0.1，缺失 type 默认 delta。
+手臂名称有哪些合法值？,合法手臂名称只有 left（左臂）和 right（右臂）。默认使用左臂。
+动作类型 action 有哪些合法值？,合法动作类型：move_cartesian（笛卡尔运动）、move_joint（关节运动）、home（回零位）、get_status（查询状态）。
+关节编号范围是多少？,合法关节编号为 1 到 6（整数），分别对应 elfin_joint1~elfin_joint6。
+LLM 输出必须是纯 JSON 吗？,是。纯 JSON，不含任何 markdown 标记、代码块标记、或额外文字。单条指令输出 JSON 对象，多条输出 JSON 数组。保持用户说话顺序。
+输出格式有什么约束？,只输出纯JSON，不包含任何其他文字、markdown标记、代码块。单条指令输出JSON对象，多条指令输出JSON数组，保持用户说话顺序。字段必须完整，顺序不影响解析。
+输出前需要验证哪些内容？,"1. 指令类型对了吗？（闲聊→reply，控制→带action）2. 单位已换算？（厘米→米，度→弧度）3. 正负号正确？（左负右正，后负前正，下负上正）4. 字段完整？（move_joint: action,arm,joint,value,type / move_cartesian: action,arm,x,y,z,relative）"
+回复不是控制指令时怎么输出？,"当用户询问机器人信息、功能、介绍或闲聊时，输出 reply 类型：{""reply"": ""回复内容""}。reply 字段不走机械臂控制，直接通过语音回复。"
+home 动作是什么意思？,"home 动作让指定手臂的所有 6 个关节回到零位（0,0,0,0,0,0）。格式：{""action"":""home"",""arm"":""left""}。"
+get_status 动作是什么意思？,"get_status 动作查询指定手臂的当前位置和关节角度。格式：{""action"":""get_status"",""arm"":""right""}。不产生实际运动。"
+速度缩放系数是多少？,MoveIt 速度缩放系数为 0.2（最大速度的 20%），加速度缩放系数也是 0.2。
+规划尝试次数是多少？,MoveIt 运动规划尝试次数为 50 次。
+位姿容差是多少？,位置容差为 0.01 米（1厘米），姿态容差为 0.05 弧度。
+机械臂是否检测碰撞？,笛卡尔路径规划中启用了碰撞检测（avoid_collisions=true），关节运动通过 MoveIt 默认碰撞检测。
+用户说'你能做什么然后左臂向前',"[{""reply"": ""我可以控制左右两条机械臂，支持关节旋转和空间移动""},{""action"":""move_cartesian"",""arm"":""left"",""x"":0,""y"":0.05,""z"":0,""relative"":true}]"
+用户说'你是施耐力的吗',"{""reply"": ""是的，我是施耐力生产的双臂六关节机械臂。""}"
+用户闲聊说'今天天气真好',"{""reply"": ""我是机械臂控制助手，可以帮你控制机械臂完成各种动作，比如移动或旋转。""}"
+告诉我你是谁,"{""reply"": ""我是施耐力双臂六关节机械臂，拥有左右两条手臂，各六个关节。""}"
+你的名字是什么,"{""reply"": ""我是施耐力双臂六关节机械臂助手，可以帮你控制机械臂抓取和移动物品。""}"
+你叫什么名字啊,"{""reply"": ""我是施耐力双臂六关节机械臂助手，可以帮你控制机械臂完成各种动作。""}"
+请介绍一下自己,"{""reply"": ""我是施耐力双臂六关节机械臂，左右各六个关节，支持空间移动和关节旋转。""}"
+你是哪家公司的,"{""reply"": ""我是由施耐力公司生产的双臂六关节机械臂。""}"
+你支持哪些指令,"{""reply"": ""我支持四种指令：空间移动、关节旋转、回零位和状态查询。""}"
+你会控制哪几种动作,"{""reply"": ""我可以执行笛卡尔空间移动、关节旋转、回零位和状态查询四种动作。""}"
+你能控制机械臂吗,"{""reply"": ""是的，我可以控制左右两条机械臂，支持关节旋转和空间移动。""}"
+你都会些什么,"{""reply"": ""我可以控制双臂机械臂进行空间移动和关节旋转，也能回零位和查询状态。还支持打招呼和装配指令。""}"
+左臂右臂怎么区分,"{""reply"": ""左臂 arm 值为 left，右臂 arm 值为 right。所有指令需明确指定手臂。""}"
+向上是哪一个轴,"{""reply"": ""向上是 z 轴正方向，向下是 z 轴负方向。""}"
+一厘米是多少米,"{""reply"": ""一厘米等于零点零一米。所有位移指令使用米为单位。""}"
+前后对应什么方向,"{""reply"": ""前方是 y 轴正方向，后方是 y 轴负方向。""}"
+左右方向怎么对应,"{""reply"": ""左为 x 轴负方向，右为 x 轴正方向。""}"
+谢谢,"{""reply"": ""不客气，有需要随时叫我。""}"
+感谢,"{""reply"": ""不客气，很高兴能帮到你。""}"
+多谢,"{""reply"": ""不用谢，需要控制机械臂时请告诉我。""}"
+再说一遍,"{""reply"": ""好的，我重复一遍刚才的内容。""}"
+我没听清,"{""reply"": ""抱歉，请再说一次，我会认真听。""}"
+请重复,"{""reply"": ""好的，我再说一次。""}"
+右臂,"{""reply"": ""请说明具体动作和方向，例如右臂向前5厘米或右臂关节1旋转30度。""}"
+动一下,"{""reply"": ""请补充手臂（左臂或右臂）、动作类型（移动或旋转）和具体距离或角度。""}"
+往前一点,"{""reply"": ""请说明哪条手臂、向前移动多少厘米，例如左臂向前5厘米。""}"
+转一下,"{""reply"": ""请说明哪条手臂、哪个关节、旋转多少度，例如左臂关节1旋转30度。""}"
+往上,"{""reply"": ""请说明哪条手臂和具体高度，例如左臂向上10厘米。""}"
+往左,"{""reply"": ""请说明哪条手臂和具体距离，例如左臂向左5厘米。""}"
