@@ -40,6 +40,7 @@ from voice_llm_client import (
     check_assembly_command,
     check_greet_keywords,
     check_intro_keywords,
+    check_local_reply_command,  # Task 4: 本地 reply 意图层
     check_ollama_available,
     check_simple_action_command,  # Phase 3: 本地动作解析器
     OLLAMA_URL,
@@ -259,57 +260,43 @@ def stop_and_recognize():
                 tracker.mark("ros_init_end")
                 voice_pub.publish_voice(text)
 
-                # ── Phase 3: 尝试本地动作解析（命中则绕过 Dify/Ollama）──
-                local_cmds = check_simple_action_command(text, tracker=tracker)
-                if local_cmds is not None:
-                    print(f"\r⚡ 本地解析命中 ({len(local_cmds)} 条指令)")
-                    tracker.set_meta("local_action_parser_hit", True)
-                    tracker.set_meta("route", "local_action")
+                # ── Task 4: 尝试本地 reply 解析（命中则绕过本地动作和 LLM）──
+                local_reply_cmds = check_local_reply_command(text, tracker=tracker)
+                if local_reply_cmds is not None:
+                    print(f"\r💬 本地回复命中")
+                    tracker.set_meta("route", "local_reply")
                     tracker.mark("validate_start")
-                    valid_commands = []
-                    for cmd in local_cmds:
+                    valid_replies = []
+                    for cmd in local_reply_cmds:
                         fixed_cmd, errs = validate_and_fix_command(cmd)
                         if fixed_cmd:
-                            if errs:
-                                print(f"\r⚠️ 指令已修正: {'; '.join(errs)}")
-                            valid_commands.append(fixed_cmd)
+                            valid_replies.append(fixed_cmd)
                         else:
-                            print(f"\r⚠️ 跳过无效指令: {'; '.join(errs)}")
+                            print(f"\r⚠️ 跳过无效回复: {'; '.join(errs)}")
                     tracker.mark("validate_end")
-
-                    cmd_count = 0
-                    first_robot_published = False
-                    for i, cmd in enumerate(valid_commands):
-                        if "reply" not in cmd:
-                            tracker.mark("publish_robot_command_start")
-                            voice_pub.publish_command(cmd)
-                            tracker.mark("publish_robot_command_end")
-                            if not first_robot_published:
-                                tracker.mark("first_robot_publish")
-                                first_robot_published = True
-                            cmd_count += 1
-                            if i < len(valid_commands) - 1:
-                                time.sleep(0.5)
-                    if cmd_count:
-                        tracker.set_meta("final_result", "robot_publish")
-                        print(f"\r✅ 已发送 {cmd_count} 条控制指令（本地解析）")
+                    for cmd in valid_replies:
+                        if "reply" in cmd:
+                            tracker.mark("publish_reply_start")
+                            voice_pub.publish_reply(cmd["reply"])
+                            tracker.mark("publish_reply_end")
+                            tracker.mark("first_tts_publish")
+                            tracker.mark("tts_trigger")
+                    if valid_replies:
+                        tracker.set_meta("final_result", "reply_publish")
                     else:
                         tracker.set_meta("final_result", "validation_failed")
                     tracker.mark("end")
                     latency_logger.log(tracker.to_dict())
                 else:
-                    tracker.mark("health_check_start")
-                    ollama_available = check_ollama_available()
-                    tracker.mark("health_check_end")
-
-                    if ollama_available:
-                        print("\r🧠 分析中...", end="", flush=True)
-                        commands = llm_parse(text, tracker=tracker)
-                        if commands:
-                            # 校验并修正每条指令
+                        # ── Phase 3: 尝试本地动作解析（命中则绕过 Dify/Ollama）──
+                        local_cmds = check_simple_action_command(text, tracker=tracker)
+                        if local_cmds is not None:
+                            print(f"\r⚡ 本地解析命中 ({len(local_cmds)} 条指令)")
+                            tracker.set_meta("local_action_parser_hit", True)
+                            tracker.set_meta("route", "local_action")
                             tracker.mark("validate_start")
                             valid_commands = []
-                            for cmd in commands:
+                            for cmd in local_cmds:
                                 fixed_cmd, errs = validate_and_fix_command(cmd)
                                 if fixed_cmd:
                                     if errs:
@@ -319,22 +306,10 @@ def stop_and_recognize():
                                     print(f"\r⚠️ 跳过无效指令: {'; '.join(errs)}")
                             tracker.mark("validate_end")
 
-                            reply_count = 0
                             cmd_count = 0
                             first_robot_published = False
-                            first_tts_published = False
                             for i, cmd in enumerate(valid_commands):
-                                # 路由：reply → 语音回复，其余 → 机械臂控制
-                                if "reply" in cmd:
-                                    tracker.mark("publish_reply_start")
-                                    voice_pub.publish_reply(cmd["reply"])
-                                    tracker.mark("publish_reply_end")
-                                    if not first_tts_published:
-                                        tracker.mark("first_tts_publish")
-                                        tracker.mark("tts_trigger")
-                                        first_tts_published = True
-                                    reply_count += 1
-                                else:
+                                if "reply" not in cmd:
                                     tracker.mark("publish_robot_command_start")
                                     voice_pub.publish_command(cmd)
                                     tracker.mark("publish_robot_command_end")
@@ -343,31 +318,85 @@ def stop_and_recognize():
                                         first_robot_published = True
                                     cmd_count += 1
                                     if i < len(valid_commands) - 1:
-                                        time.sleep(0.5)  # 等待上一条执行
-
-                            # 设置路由和结果
-                            if reply_count > 0 and cmd_count > 0:
-                                tracker.set_meta("route", "mixed")
-                            elif reply_count > 0:
-                                tracker.set_meta("route", "llm_reply")
-                            else:
-                                tracker.set_meta("route", "llm_action")
+                                        time.sleep(0.5)
                             if cmd_count:
                                 tracker.set_meta("final_result", "robot_publish")
-                            elif reply_count:
-                                tracker.set_meta("final_result", "reply_publish")
-
-                            if cmd_count:
-                                print(f"\r✅ 已发送 {cmd_count} 条控制指令" + (f"，{reply_count} 条回复" if reply_count else ""))
-                            elif reply_count:
-                                print(f"\r💬 已回复 {reply_count} 条")
+                                print(f"\r✅ 已发送 {cmd_count} 条控制指令（本地解析）")
+                            else:
+                                tracker.set_meta("final_result", "validation_failed")
+                            tracker.mark("end")
+                            latency_logger.log(tracker.to_dict())
                         else:
-                            print("\r❌ 无法解析指令")
-                            tracker.set_meta("route", "llm_action")
-                            tracker.set_meta("final_result", "parse_failed")
-                    else:
-                        tracker.set_meta("route", "failed")
-                        tracker.set_meta("final_result", "ollama_unavailable")
+                            tracker.mark("health_check_start")
+                            ollama_available = check_ollama_available()
+                            tracker.mark("health_check_end")
+
+                            if ollama_available:
+                                print("\r🧠 分析中...", end="", flush=True)
+                                commands = llm_parse(text, tracker=tracker)
+                                if commands:
+                                    # 校验并修正每条指令
+                                    tracker.mark("validate_start")
+                                    valid_commands = []
+                                    for cmd in commands:
+                                        fixed_cmd, errs = validate_and_fix_command(cmd)
+                                        if fixed_cmd:
+                                            if errs:
+                                                print(f"\r⚠️ 指令已修正: {'; '.join(errs)}")
+                                            valid_commands.append(fixed_cmd)
+                                        else:
+                                            print(f"\r⚠️ 跳过无效指令: {'; '.join(errs)}")
+                                    tracker.mark("validate_end")
+
+                                    reply_count = 0
+                                    cmd_count = 0
+                                    first_robot_published = False
+                                    first_tts_published = False
+                                    for i, cmd in enumerate(valid_commands):
+                                        # 路由：reply → 语音回复，其余 → 机械臂控制
+                                        if "reply" in cmd:
+                                            tracker.mark("publish_reply_start")
+                                            voice_pub.publish_reply(cmd["reply"])
+                                            tracker.mark("publish_reply_end")
+                                            if not first_tts_published:
+                                                tracker.mark("first_tts_publish")
+                                                tracker.mark("tts_trigger")
+                                                first_tts_published = True
+                                            reply_count += 1
+                                        else:
+                                            tracker.mark("publish_robot_command_start")
+                                            voice_pub.publish_command(cmd)
+                                            tracker.mark("publish_robot_command_end")
+                                            if not first_robot_published:
+                                                tracker.mark("first_robot_publish")
+                                                first_robot_published = True
+                                            cmd_count += 1
+                                            if i < len(valid_commands) - 1:
+                                                time.sleep(0.5)  # 等待上一条执行
+
+                                    # 设置路由和结果
+                                    if reply_count > 0 and cmd_count > 0:
+                                        tracker.set_meta("route", "mixed")
+                                    elif reply_count > 0:
+                                        tracker.set_meta("route", "llm_reply")
+                                    else:
+                                        tracker.set_meta("route", "llm_action")
+                                    if cmd_count:
+                                        tracker.set_meta("final_result", "robot_publish")
+                                    elif reply_count:
+                                        tracker.set_meta("final_result", "reply_publish")
+
+                                    if cmd_count:
+                                        print(f"\r✅ 已发送 {cmd_count} 条控制指令" + (f"，{reply_count} 条回复" if reply_count else ""))
+                                    elif reply_count:
+                                        print(f"\r💬 已回复 {reply_count} 条")
+                                else:
+                                    print("\r❌ 无法解析指令")
+                                    tracker.set_meta("route", "llm_action")
+                                    tracker.set_meta("final_result", "parse_failed")
+                            else:
+                                tracker.set_meta("route", "failed")
+                                tracker.set_meta("final_result", "ollama_unavailable")
         else:
             print(f"\r🔇 (未识别)")
             tracker.set_meta("route", "failed")

@@ -23,6 +23,7 @@ from voice_llm_client import (
     validate_and_fix_command,
     check_assembly_command,
     check_greet_keywords,
+    check_local_reply_command,  # Task 4: 本地 reply 意图层
     check_ollama_available,
     check_simple_action_command,  # Phase 3: 本地动作解析器
 )
@@ -468,6 +469,14 @@ class VoiceDebugTool:
 
         tracker.mark("keyword_route_end")
 
+        # ── Task 4: 尝试本地 reply 解析（命中则绕过本地动作和 LLM）──
+        local_reply_cmds = check_local_reply_command(text, tracker=tracker)
+        if local_reply_cmds is not None:
+            self._log("本地回复解析命中")
+            tracker.set_meta("route", "local_reply")
+            self._validate_and_display(text, local_reply_cmds, tracker=tracker)
+            return
+
         # ── Phase 3: 尝试本地动作解析（命中则绕过 Dify/Ollama）──
         local_cmds = check_simple_action_command(text, tracker=tracker)
         if local_cmds is not None:
@@ -587,7 +596,7 @@ class VoiceDebugTool:
         if tracker:
             reply_count = sum(1 for c in valid_commands if "reply" in c)
             cmd_count = len(valid_commands) - reply_count
-            if not tracker.get_meta("local_action_parser_hit", False):
+            if not tracker.get_meta("local_action_parser_hit", False) and tracker.get_meta("route") != "local_reply":
                 if reply_count > 0 and cmd_count > 0:
                     tracker.set_meta("route", "mixed")
                 elif reply_count > 0:
