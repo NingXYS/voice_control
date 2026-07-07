@@ -1,33 +1,84 @@
-# Project Rules for Voice Robot Optimization
+# AGENTS.md
 
-## Main goal
+## Role Split
 
-Optimize response latency for the voice-controlled ROS2 robotic arm system.
+This repository uses a dual-agent workflow:
 
-## Important constraints
+- Codex / GPT is the Architect, Planner, and Reviewer.
+- Claude Code / DeepSeek is the Executor.
+- Codex should avoid large implementation work unless explicitly requested.
+- Claude Code should avoid architecture decisions unless explicitly requested.
 
-- This project is developed on a PC but will eventually run on the robotic arm hardware.
-- Do not optimize only for the development PC if the change would make deployment harder.
-- Preserve the current behavior of voice command parsing, ROS2 publishing, Dify fallback, Ollama fallback, and TTS replies unless the plan explicitly changes them.
-- Safety-related robot behavior must not be changed without an explicit plan and review.
+## Required Workflow
 
-## Reference code policy
+For non-trivial changes, follow this sequence:
 
-- `reference/` contains external case-study code.
-- Agents may read files under `reference/`.
-- Agents must not modify files under `reference/`.
-- Reference code is only for learning architecture, latency optimization, audio pipeline design, async design, ROS2 integration, and model invocation patterns.
-- Do not copy large blocks directly from reference code.
-- Adapt patterns to this project's existing architecture.
+1. Codex creates a plan in `.ai/plans/`.
+2. Codex converts the plan into an execution task in `.ai/tasks/`.
+3. Claude Code executes the task.
+4. Claude Code writes an execution report in `.ai/runs/`.
+5. Codex reviews the git diff and writes a review in `.ai/reviews/`.
+6. Claude Code applies fixes only from explicit fix tasks.
 
-## Optimization policy
+## Codex Responsibilities
 
-- Before optimizing, add timing instrumentation.
-- Every latency optimization must be measured before and after.
-- Prefer staged changes:
-  1. instrumentation
-  2. low-risk local shortcuts
-  3. async pipeline improvements
-  4. model/prompt/RAG optimization
-  5. architecture-level refactor
-- Do not modify mechanical-arm control semantics without GPT review.
+Codex should focus on:
+
+- Requirements analysis
+- Architecture decisions
+- Risk analysis
+- Task decomposition
+- Acceptance criteria
+- Review of git diff
+- Security, auth, data consistency, and behavior-change checks
+
+Codex should not normally:
+
+- Write large CRUD implementations
+- Perform broad mechanical refactors
+- Add tests mechanically
+- Fix lint issues mechanically
+- Expand scope beyond the task
+
+## Claude Code Responsibilities
+
+Claude Code should focus on:
+
+- Implementing tasks from `.ai/tasks/`
+- Following exact file lists and steps
+- Reusing existing project patterns
+- Running tests, typecheck, lint, or relevant checks
+- Writing execution reports
+
+Claude Code must not:
+
+- Change architecture
+- Expand scope
+- Modify unrelated files
+- Add new dependencies without explicit approval
+- Change public APIs unless the task requires it
+- Rewrite large areas opportunistically
+
+## Project Context Files
+
+Read these before planning or reviewing:
+
+- `.ai/context/project.md`
+- `.ai/context/architecture.md`
+- `.ai/context/commands.md`
+- `.ai/context/coding-style.md`
+
+## Standard Output Locations
+
+- Plans: `.ai/plans/<slug>.md`
+- Execution tasks: `.ai/tasks/<slug>.task.md`
+- Execution reports: `.ai/runs/<slug>.execution.md`
+- Reviews: `.ai/reviews/<slug>.review.md`
+
+## Safety Rules
+
+- Do not modify secrets, credentials, private keys, or environment files.
+- Do not run destructive commands unless explicitly approved.
+- Prefer minimal diffs.
+- Preserve existing behavior unless the plan explicitly requires behavior change.
+- If the task touches auth, permissions, billing, database migrations, concurrency, or data loss risk, Codex must plan and review before Claude Code executes.

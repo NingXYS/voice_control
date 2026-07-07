@@ -42,3 +42,16 @@ Thumbs.db
 
 # Reference code (external case studies)
 reference/
+
+# AI local/private notes
+CLAUDE.local.md
+.ai/scratch/
+.ai/runs/*.local.md
+
+# AI temporary files
+.ai/tmp/
+.ai/cache/
+
+# Optional local Codex/Claude logs
+.codex-log/
+.claude-local/
