@@ -105,6 +105,32 @@ INTRO_KEYWORDS = ["你是谁", "你叫什么", "自我介绍", "介绍一下自�
 
 INTRO_TEXT = "我是施耐力双臂六关节机械臂，拥有左右两条手臂，各六个关节。"
 
+# ==================== 本地 reply 意图常量 ====================
+_LOCAL_REPLY_IDENTITY_KW = [
+    "你是谁", "你叫什么", "你是什么机器人", "介绍一下自己",
+    "介绍你自己", "你是施耐力的吗", "你是施耐力机器人吗",
+]
+
+_LOCAL_REPLY_CAPABILITY_KW = [
+    "你能做什么", "你会做什么", "你有什么功能", "你支持哪些指令", "你能控制什么",
+]
+
+_LOCAL_REPLY_THANKS_KW = [
+    "谢谢", "感谢", "辛苦了",
+]
+
+_LOCAL_REPLY_CLARIFY_KW = [
+    "没听清", "没听懂", "听不懂", "再说一遍", "重复一下",
+]
+
+# 安全 miss：包含手臂引用或动作/运动词的文本不走本地 reply
+_LOCAL_REPLY_ARM_KW = ["左臂", "右臂"]
+_LOCAL_REPLY_MOTION_KW = [
+    "向上", "向下", "向前", "向后", "向左", "向右",
+    "移动", "旋转", "关节", "回零", "状态",
+    "抓取", "松开", "拿", "放",
+]
+
 # ==================== 指令校验常量 ====================
 VALID_ACTIONS = {"move_joint", "move_cartesian"}
 VALID_ARMS = {"left", "right"}
@@ -379,6 +405,89 @@ def check_assembly_command(text):
 def check_intro_keywords(text):
     """检测自我介绍关键词，返回 bool"""
     return any(kw in text for kw in INTRO_KEYWORDS)
+
+
+# ==================== 本地高置信 reply 意图层 ====================
+def check_local_reply_command(text, tracker=None):
+    """本地高置信 reply 意图匹配。
+
+    只处理高置信、低风险的纯文本意图（身份介绍、能力说明、感谢、澄清/重复）。
+    不处理包含手臂或动作词的文本，不处理需要安全判断的模糊动作。
+
+    返回: list[dict] 如果命中（例如 [{"reply": "..."}]）；None 表示 MISS。
+    """
+    if tracker:
+        tracker.mark("local_reply_parser_start")
+
+    # 输入校验：空或非字符串 → MISS
+    if not isinstance(text, str):
+        if tracker:
+            tracker.mark("local_reply_parser_end")
+        return None
+    text = text.strip()
+    if not text:
+        if tracker:
+            tracker.mark("local_reply_parser_end")
+        return None
+
+    # 安全 miss：包含手臂引用 → 必须走后续路径
+    for kw in _LOCAL_REPLY_ARM_KW:
+        if kw in text:
+            if tracker:
+                tracker.mark("local_reply_parser_end")
+            return None
+
+    # 安全 miss：包含动作/运动相关词 → 必须走后续路径
+    for kw in _LOCAL_REPLY_MOTION_KW:
+        if kw in text:
+            if tracker:
+                tracker.mark("local_reply_parser_end")
+            return None
+
+    reply_text = None
+
+    # 身份/介绍类
+    for kw in _LOCAL_REPLY_IDENTITY_KW:
+        if kw in text:
+            reply_text = INTRO_TEXT
+            break
+
+    # 能力说明类
+    if reply_text is None:
+        for kw in _LOCAL_REPLY_CAPABILITY_KW:
+            if kw in text:
+                reply_text = "我可以控制左右两条机械臂，支持关节旋转和空间移动。"
+                break
+
+    # 感谢类
+    if reply_text is None:
+        for kw in _LOCAL_REPLY_THANKS_KW:
+            if kw in text:
+                reply_text = "不客气。"
+                break
+
+    # 澄清/重复类
+    if reply_text is None:
+        for kw in _LOCAL_REPLY_CLARIFY_KW:
+            if kw in text:
+                reply_text = "请再说一次，说明具体的动作、方向和距离。"
+                break
+
+    if reply_text is None:
+        if tracker:
+            tracker.mark("local_reply_parser_end")
+        return None
+
+    cmd = {"reply": reply_text}
+    fixed, errors = validate_and_fix_command(cmd)
+    if errors:
+        if tracker:
+            tracker.mark("local_reply_parser_end")
+        return None
+
+    if tracker:
+        tracker.mark("local_reply_parser_end")
+    return [fixed]
 
 
 # ==================== 指令校验 ====================

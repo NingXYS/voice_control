@@ -5,6 +5,7 @@ import voice_llm_client as client
 from latency_metrics import LatencyTracker
 from voice_llm_client import (
     _parse_llm_response,
+    check_local_reply_command,
     check_simple_action_command,
     validate_and_fix_command,
 )
@@ -264,6 +265,136 @@ class AutoFillBaselineTests(unittest.TestCase):
         self.assertEqual(fixed["value"], 0.1)
         self.assertEqual(fixed["type"], "delta")
         self.assertTrue(len(errors) > 0)
+
+
+class LocalReplyCommandTests(unittest.TestCase):
+    """check_local_reply_command() 的命中、miss 和安全边界测试。"""
+
+    # ── 命中测试 ──
+
+    def test_identity_hit_returns_reply_list(self):
+        """身份/介绍类命中，返回 list，第一项只有 reply。"""
+        for text in ["你是谁", "你叫什么", "介绍一下自己", "介绍你自己",
+                     "你是施耐力的吗", "你是施耐力机器人吗"]:
+            with self.subTest(text=text):
+                result = check_local_reply_command(text)
+                self.assertIsInstance(result, list)
+                self.assertEqual(len(result), 1)
+                self.assertIn("reply", result[0])
+                self.assertNotIn("action", result[0])
+                fixed, errors = validate_and_fix_command(result[0])
+                self.assertEqual(errors, [])
+                self.assertEqual(fixed, result[0])
+
+    def test_capability_hit_returns_reply_list(self):
+        """能力说明类命中，且不声明未对齐的 home/get_status 能力。"""
+        for text in ["你能做什么", "你会做什么", "你有什么功能",
+                     "你支持哪些指令", "你能控制什么"]:
+            with self.subTest(text=text):
+                result = check_local_reply_command(text)
+                self.assertIsInstance(result, list)
+                self.assertEqual(len(result), 1)
+                self.assertIn("reply", result[0])
+                self.assertNotIn("action", result[0])
+                reply = result[0]["reply"]
+                # 必须声明的能力
+                self.assertIn("左右", reply)
+                self.assertIn("关节旋转", reply)
+                self.assertIn("空间移动", reply)
+                # 不得声明的未对齐能力
+                forbidden = ["回零", "零位", "状态", "查询状态", "home", "get_status"]
+                for word in forbidden:
+                    self.assertNotIn(word, reply)
+
+    def test_thanks_hit_returns_reply_list(self):
+        """感谢类命中。"""
+        for text in ["谢谢", "感谢", "辛苦了"]:
+            with self.subTest(text=text):
+                result = check_local_reply_command(text)
+                self.assertIsInstance(result, list)
+                self.assertEqual(len(result), 1)
+                self.assertIn("reply", result[0])
+                self.assertNotIn("action", result[0])
+
+    def test_clarify_hit_returns_reply_list(self):
+        """澄清/重复类命中。"""
+        for text in ["没听清", "没听懂", "听不懂", "再说一遍", "重复一下"]:
+            with self.subTest(text=text):
+                result = check_local_reply_command(text)
+                self.assertIsInstance(result, list)
+                self.assertEqual(len(result), 1)
+                self.assertIn("reply", result[0])
+                self.assertNotIn("action", result[0])
+
+    # ── MISS 测试 ──
+
+    def test_greet_hello_returns_none_preserving_existing_route(self):
+        """"你好" 返回 None，不抢打招呼路由。"""
+        for text in ["你好", "您好"]:
+            with self.subTest(text=text):
+                self.assertIsNone(check_local_reply_command(text))
+
+    def test_explicit_action_text_returns_none(self):
+        """明确动作文本返回 None。"""
+        cases = [
+            "左臂向上10厘米",
+            "右臂向前5厘米",
+            "左臂关节1旋转30度",
+        ]
+        for text in cases:
+            with self.subTest(text=text):
+                self.assertIsNone(check_local_reply_command(text))
+
+    def test_mixed_intent_returns_none(self):
+        """混合意图（身份+动作）必须返回 None。"""
+        cases = [
+            "你是谁然后右臂向上5厘米",
+            "先介绍一下自己再左臂向前5厘米",
+            "你能做什么然后查询左臂状态",
+            "你叫什么名字然后左臂向下10厘米",
+        ]
+        for text in cases:
+            with self.subTest(text=text):
+                self.assertIsNone(check_local_reply_command(text))
+
+    def test_arm_only_text_returns_none(self):
+        """纯手臂引用无动作也返回 None（交给后续处理）。"""
+        for text in ["右臂", "左臂"]:
+            with self.subTest(text=text):
+                self.assertIsNone(check_local_reply_command(text))
+
+    def test_motion_only_text_returns_none(self):
+        """模糊动作词（无手臂、无距离）返回 None。"""
+        for text in ["向前", "旋转", "移动", "向上", "向下"]:
+            with self.subTest(text=text):
+                self.assertIsNone(check_local_reply_command(text))
+
+    def test_empty_or_non_string_returns_none(self):
+        """空输入或非字符串返回 None。"""
+        self.assertIsNone(check_local_reply_command(""))
+        self.assertIsNone(check_local_reply_command("   "))
+        self.assertIsNone(check_local_reply_command(None))
+        self.assertIsNone(check_local_reply_command(123))
+
+    # ── tracker 测试 ──
+
+    def test_tracker_records_local_reply_parser_duration(self):
+        """命中时 tracker 记录了 local_reply_parser 耗时。"""
+        tracker = LatencyTracker(source="test")
+        result = check_local_reply_command("你是谁", tracker=tracker)
+        self.assertIsNotNone(result)
+        elapsed = tracker.elapsed_ms("local_reply_parser_start", "local_reply_parser_end")
+        self.assertIsNotNone(elapsed)
+        self.assertGreaterEqual(elapsed, 0)
+
+    def test_tracker_records_duration_on_miss(self):
+        """MISS 时 tracker 也记录耗时（start/end 已标记）。"""
+        tracker = LatencyTracker(source="test")
+        result = check_local_reply_command("左臂向上10厘米", tracker=tracker)
+        self.assertIsNone(result)
+        elapsed = tracker.elapsed_ms("local_reply_parser_start", "local_reply_parser_end")
+        self.assertIsNotNone(elapsed)
+        self.assertGreaterEqual(elapsed, 0)
 
 
 if __name__ == "__main__":
