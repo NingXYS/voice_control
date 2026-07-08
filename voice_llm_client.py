@@ -595,7 +595,9 @@ def validate_and_fix_command(cmd):
     fixed = cmd.copy()
 
     # reply 类型：语音回复，不走机械臂控制
-    if "reply" in fixed and "action" not in fixed:
+    if "reply" in fixed:
+        if "action" in fixed:
+            return None, ["reply 和 action 不能同时存在，混合对象不安全"]
         reply_text = fixed["reply"]
         if not isinstance(reply_text, str) or not reply_text.strip():
             return None, ["reply 字段为空"]
@@ -658,11 +660,13 @@ def _parse_llm_response(response, tracker=None):
     if tracker:
         tracker.mark("json_parse_start")
     response = response.strip()
-    # 清理 markdown 代码块
-    if response.startswith("```json"):
-        response = response[7:]
-    elif response.startswith("```"):
-        response = response[3:]
+    # 清理 markdown 代码块（语言标识大小写不敏感）
+    if response.startswith("```"):
+        after_fence = response[3:]
+        if after_fence.lower().startswith("json"):
+            response = after_fence[4:]
+        else:
+            response = after_fence
     if response.endswith("```"):
         response = response[:-3]
     response = response.strip()
@@ -685,6 +689,12 @@ def _parse_llm_response(response, tracker=None):
             tracker.mark("json_parse_end")
         return [parsed]
     elif isinstance(parsed, list):
+        # 拒绝包含非 dict 元素的混合 list，避免噪声项绕过校验
+        if not all(isinstance(item, dict) for item in parsed):
+            print(f"❌ 列表包含非 dict 元素，拒绝整个解析结果")
+            if tracker:
+                tracker.mark("json_parse_end")
+            return None
         if tracker:
             tracker.mark("json_parse_end")
         return parsed

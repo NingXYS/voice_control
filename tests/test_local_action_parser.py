@@ -210,6 +210,53 @@ class ParseLLMResponseBaselineTests(unittest.TestCase):
         self.assertIsNone(result)
 
 
+class ParseLLMResponseBoundaryTests(unittest.TestCase):
+    """_parse_llm_response() 边界测试：非 JSON 对象/数组输入的安全行为（Task 8）。"""
+
+    def test_parse_json_string_returns_none(self):
+        """JSON 字符串（非对象）应返回 None，不产生可执行命令。"""
+        result = _parse_llm_response('"hello"')
+        self.assertIsNone(result)
+
+    def test_parse_json_number_returns_none(self):
+        """JSON 数字（非对象）应返回 None，不产生可执行命令。"""
+        result = _parse_llm_response("123")
+        self.assertIsNone(result)
+
+    def test_parse_json_null_returns_none(self):
+        """JSON null（非对象）应返回 None，不产生可执行命令。"""
+        result = _parse_llm_response("null")
+        self.assertIsNone(result)
+
+    def test_parse_uppercase_json_fenced_code_block(self):
+        """语言标识为大写 JSON 的 fenced code block 应正常解析。"""
+        result = _parse_llm_response('```JSON\n{"reply": "你好"}\n```')
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["reply"], "你好")
+
+    def test_parse_list_with_non_dict_item_returns_none(self):
+        """list 中包含非 dict 项时整个解析结果返回 None，不允许静默过滤并保留部分 dict。
+
+        策略变更（Task 8 Fix）：任意非 dict 项都让整条 list 不可用，
+        避免 reply + noise 或 control + noise 被部分保留后绕过校验。
+        """
+        result = _parse_llm_response('[{"reply": "ok"}, "noise"]')
+        self.assertIsNone(result)
+
+    def test_parse_list_control_dict_plus_noise_returns_none(self):
+        """"控制 dict + 噪声" 混合 list 必须返回 None，确保不会变成可执行命令。"""
+        result = _parse_llm_response(
+            '[{"action":"move_cartesian","arm":"left","x":0,"y":0,"z":0.1,"relative":true}, "noise"]'
+        )
+        self.assertIsNone(result)
+
+    def test_parse_list_all_non_dict_returns_none(self):
+        """list 中全为非 dict 项时返回 None。"""
+        result = _parse_llm_response('["noise1", 123, null]')
+        self.assertIsNone(result)
+
+
 class ReplyValidationBaselineTests(unittest.TestCase):
     """当前 validate_and_fix_command() 对 reply 校验行为的回归基线测试。"""
 
@@ -346,6 +393,64 @@ class AutoFillBaselineTests(unittest.TestCase):
         self.assertEqual(fixed["value"], 0.1)
         self.assertEqual(fixed["type"], "delta")
         self.assertTrue(len(errors) > 0)
+
+
+class CommandValidationBoundaryTests(unittest.TestCase):
+    """validate_and_fix_command() 边界测试：畸形输入、非法字段、混合对象的安全拒绝（Task 8）。"""
+
+    def test_validate_non_dict_returns_none_with_errors(self):
+        """非 dict 输入应返回 (None, errors)。"""
+        fixed, errors = validate_and_fix_command("not a dict")
+        self.assertIsNone(fixed)
+        self.assertTrue(len(errors) > 0)
+
+    def test_validate_reply_none_fails(self):
+        """reply 值为 None 应校验失败。"""
+        fixed, errors = validate_and_fix_command({"reply": None})
+        self.assertIsNone(fixed)
+        self.assertTrue(len(errors) > 0)
+
+    def test_validate_reply_number_fails(self):
+        """reply 值为数字应校验失败。"""
+        fixed, errors = validate_and_fix_command({"reply": 123})
+        self.assertIsNone(fixed)
+        self.assertTrue(len(errors) > 0)
+
+    def test_validate_unknown_action_fails(self):
+        """未知 action 应校验失败，错误消息包含 action 名。"""
+        fixed, errors = validate_and_fix_command({"action": "dance", "arm": "left"})
+        self.assertIsNone(fixed)
+        self.assertTrue(len(errors) > 0)
+        self.assertIn("dance", errors[0])
+
+    def test_validate_unknown_arm_fails(self):
+        """未知 arm 应校验失败，错误消息包含 arm 名。"""
+        fixed, errors = validate_and_fix_command({
+            "action": "move_cartesian", "arm": "center",
+            "x": 0, "y": 0, "z": 0, "relative": True,
+        })
+        self.assertIsNone(fixed)
+        self.assertTrue(len(errors) > 0)
+        self.assertIn("center", errors[0])
+
+    def test_validate_joint_out_of_range_fails(self):
+        """关节编号超出 1-6 应校验失败。"""
+        fixed, errors = validate_and_fix_command({
+            "action": "move_joint", "arm": "left",
+            "joint": 7, "value": 0.1, "type": "delta",
+        })
+        self.assertIsNone(fixed)
+        self.assertTrue(len(errors) > 0)
+
+    def test_validate_mixed_reply_and_action_fails(self):
+        """reply 和 action 同时存在的混合对象应校验失败，避免绕过 action 校验。"""
+        fixed, errors = validate_and_fix_command({
+            "reply": "你好", "action": "move_cartesian",
+        })
+        self.assertIsNone(fixed)
+        self.assertTrue(len(errors) > 0)
+        self.assertIn("reply", errors[0].lower())
+        self.assertIn("action", errors[0].lower())
 
 
 class LocalReplyCommandTests(unittest.TestCase):
