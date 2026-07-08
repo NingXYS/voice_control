@@ -3,7 +3,6 @@
 语音模型全流程调试工具
 用于在未接入机械臂的环境下验证：语音识别 → LLM解析 → 指令输出的完整工作流
 """
-import sys
 import tkinter as tk
 from tkinter import ttk, scrolledtext, font
 import json
@@ -14,9 +13,6 @@ import threading
 import subprocess
 import warnings
 from datetime import datetime
-
-# 添加 scripts 目录到 Python path，以便导入 voice_tts
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts"))
 
 from voice_llm_client import (
     llm_parse,

@@ -18,11 +18,13 @@ colcon build --packages-select voice_control
 ros2 run voice_control robot_controller
 ```
 
+`CMakeLists.txt` 还声明安装 `scripts/voice_qwen_llm.py`，该源文件当前存在；对应 `ros2 run` 命令仍需在安装环境中确认。
+
 ## 测试
 
 待确认。
 
-当前仓库存在 `tests/test_local_action_parser.py`，但项目配置文件未声明测试命令、测试依赖或 test entrypoint，因此这里不写推断命令。
+当前仓库存在 `tests/test_local_action_parser.py`，但 `package.xml` 和 `CMakeLists.txt` 未声明测试入口、测试依赖或 `ament` 测试配置，因此这里不把 `python3 -m unittest ...` 写为项目配置确认命令。
 
 ## 安装依赖
 
@@ -38,5 +40,8 @@ ros2 run voice_control robot_controller
 
 ## 重要配置备注
 
+- `package.xml` 使用 `<build_type>ament_cmake</build_type>`。
+- `CMakeLists.txt` 对 GNU/Clang C++ 编译器启用 `-Wall -Wextra -Wpedantic`。
 - `CMakeLists.txt` 安装了 `robot_controller`。
-- `CMakeLists.txt` 还声明安装 `scripts/voice_qwen_llm.py`，但当前主要脚本位于根目录 `voice_qwen_llm.py`；该运行命令待确认。
+- `CMakeLists.txt` 声明安装 `scripts/voice_qwen_llm.py`，当前主要脚本已位于该路径；安装后的实际入口命令待确认。
+- 根目录未发现 `README.md`、`Makefile`、`requirements.txt`、`pyproject.toml`、`setup.py` 或 docker compose 配置。

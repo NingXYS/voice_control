@@ -27,7 +27,8 @@ import threading
 from pathlib import Path
 
 # ==================== 配置 ====================
-DEFAULT_LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_LOG_DIR = str(PROJECT_ROOT / "logs")
 HARDWARE_PROFILE = os.environ.get("VOICE_HARDWARE_PROFILE", "dev_pc")
 
 

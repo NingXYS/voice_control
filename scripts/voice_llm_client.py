@@ -22,7 +22,7 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2")
 
 # ==================== Dify 配置 ====================
 DIFY_BASE_URL = os.environ.get("DIFY_BASE_URL", "http://localhost:80")
-DIFY_API_KEY = os.environ.get("DIFY_API_KEY", "")
+DIFY_API_KEY = os.environ.get("DIFY_API_KEY", "app-NlZjO0OpXx5TeHaE1sqIPcvX")
 
 # ==================== System Prompt（仅兜底直连时使用）====================
 SYSTEM_PROMPT = """你是双臂机械臂控制助手，负责将用户的自然语言指令转换为JSON。

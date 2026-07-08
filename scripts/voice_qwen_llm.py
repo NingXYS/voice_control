@@ -6,7 +6,6 @@ import sys
 import os
 sys.path.insert(0, '/opt/ros/humble/lib/python3.10/site-packages')
 sys.path.insert(0, '/opt/ros/humble/local/lib/python3.10/dist-packages')
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts"))
 
 import warnings
 import subprocess

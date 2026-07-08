@@ -1,5 +1,9 @@
+import sys
 import time
 import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 import voice_llm_client as client
 from latency_metrics import LatencyTracker
