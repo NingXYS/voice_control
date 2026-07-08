@@ -744,5 +744,123 @@ class LocalReplyCommandTests(unittest.TestCase):
                 self.assertIsNone(check_local_reply_command(text))
 
 
+
+class LocalKnowledgeRulesTests(unittest.TestCase):
+    def setUp(self):
+        import voice_local_knowledge as local_knowledge
+        local_knowledge._reset_local_knowledge_cache_for_test()
+
+    def test_is_safe_reply_payload(self):
+        import voice_local_knowledge as local_knowledge
+        # 接受 {"reply": "..."}
+        self.assertTrue(local_knowledge.is_safe_reply_payload({"reply": "我是施耐力双臂六关节机械臂"}))
+        self.assertTrue(local_knowledge.is_safe_reply_payload({"reply": "hello"}))
+
+        # 拒绝 {"action": ...}
+        self.assertFalse(local_knowledge.is_safe_reply_payload({"action": "home"}))
+        # 拒绝 [{"reply": "..."}]
+        self.assertFalse(local_knowledge.is_safe_reply_payload([{"reply": "hello"}]))
+        # 拒绝普通说明文本
+        self.assertFalse(local_knowledge.is_safe_reply_payload("hello"))
+        # 拒绝 {"reply": "", "action": "home"}
+        self.assertFalse(local_knowledge.is_safe_reply_payload({"reply": "", "action": "home"}))
+        # 拒绝 {"reply": "x", "extra": "y"}
+        self.assertFalse(local_knowledge.is_safe_reply_payload({"reply": "x", "extra": "y"}))
+        # 拒绝空 reply 或者非字符串
+        self.assertFalse(local_knowledge.is_safe_reply_payload({"reply": ""}))
+        self.assertFalse(local_knowledge.is_safe_reply_payload({"reply": 123}))
+        self.assertFalse(local_knowledge.is_safe_reply_payload({"reply": None}))
+
+    def test_load_csv_reply_rules_real_csv(self):
+        import voice_local_knowledge as local_knowledge
+        rules = local_knowledge.load_csv_reply_rules()
+        self.assertIsInstance(rules, list)
+        self.assertGreater(len(rules), 0)
+
+        # 检查是否能加载到 "你是谁" 或 "你叫什么名字"
+        found = False
+        for rule in rules:
+            self.assertIn("question", rule)
+            self.assertIn("reply", rule)
+            self.assertNotIn("action", rule)
+            self.assertIsInstance(rule["reply"], str)
+            self.assertTrue(len(rule["reply"]) > 0)
+            if "你是谁" in rule["question"] or "你叫什么名字" in rule["question"]:
+                found = True
+        self.assertTrue(found, "Should load at least one safe reply containing '你是谁' or '你叫什么名字'")
+
+    def test_load_csv_reply_rules_filtering(self):
+        import voice_local_knowledge as local_knowledge
+        import tempfile
+        from pathlib import Path
+
+        # 用临时文件测试动作 JSON, JSON list, 普通说明文本会被排除
+        csv_content = '''question,answer
+q1,"{""reply"": ""我是机器人""}"
+q2,"{""action"": ""move_cartesian""}"
+q3,"[{""reply"": ""我是机器人""}]"
+q4,普通说明文本
+q5,"{""reply"": """", ""action"": ""home""}"
+q6,"{""reply"": ""ok"", ""extra"": ""value""}"
+'''
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_csv = Path(tmpdir) / "test_rules.csv"
+            with open(temp_csv, "w", encoding="utf-8") as f:
+                f.write(csv_content)
+
+            rules = local_knowledge.load_csv_reply_rules(temp_csv)
+            # q1 is valid, others (q2, q3, q4, q5, q6) should be filtered out
+            self.assertEqual(len(rules), 1)
+            self.assertEqual(rules[0]["question"], "q1")
+            self.assertEqual(rules[0]["reply"], "我是机器人")
+
+    def test_load_csv_reply_rules_file_not_exist(self):
+        import voice_local_knowledge as local_knowledge
+        fake_path = Path("/nonexistent/file.csv")
+        rules = local_knowledge.load_csv_reply_rules(fake_path)
+        self.assertEqual(rules, [])
+
+    def test_get_csv_reply_rules_cache(self):
+        import voice_local_knowledge as local_knowledge
+
+        # 第一次调用
+        rules1 = local_knowledge.get_csv_reply_rules()
+        self.assertIsInstance(rules1, list)
+        self.assertGreater(len(rules1), 0)
+
+        # 修改第一次返回的 list
+        original_len = len(rules1)
+        rules1.append({"question": "test", "reply": "test"})
+
+        # 第二次调用
+        rules2 = local_knowledge.get_csv_reply_rules()
+        self.assertEqual(len(rules2), original_len)
+        self.assertNotEqual(len(rules1), len(rules2))
+
+    def test_match_local_reply(self):
+        import voice_local_knowledge as local_knowledge
+
+        rules = [
+            {"keywords": ["你是谁"], "reply": "我是六关节机械臂"},
+            {"questions": ["能力", "功能"], "reply": "我可以控制手臂"},
+        ]
+
+        # 测试匹配成功
+        res1 = local_knowledge.match_local_reply("你是谁", rules=rules)
+        self.assertEqual(res1, {"reply": "我是六关节机械臂"})
+
+        res2 = local_knowledge.match_local_reply("你有什么能力", rules=rules)
+        self.assertEqual(res2, {"reply": "我可以控制手臂"})
+
+        # 测试匹配失败
+        res3 = local_knowledge.match_local_reply("左臂向上10厘米", rules=rules)
+        self.assertIsNone(res3)
+
+        # 测试不传 rules 时命中默认规则/CSV规则
+        res_default = local_knowledge.match_local_reply("你是谁")
+        self.assertIsNotNone(res_default)
+        self.assertIn("reply", res_default)
+
+
 if __name__ == "__main__":
     unittest.main()
