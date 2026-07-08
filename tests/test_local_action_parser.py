@@ -664,6 +664,85 @@ class LocalReplyCommandTests(unittest.TestCase):
         self.assertIsNotNone(elapsed)
         self.assertGreaterEqual(elapsed, 0)
 
+    # ── 辅助方法 ──
+
+    def _assert_reply_only(self, text):
+        """断言 text 命中本地 reply，返回单一 reply-only 命令并通过校验。"""
+        result = check_local_reply_command(text)
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 1)
+        self.assertIn("reply", result[0])
+        self.assertNotIn("action", result[0])
+        fixed, errors = validate_and_fix_command(result[0])
+        self.assertEqual(errors, [])
+        self.assertEqual(fixed, result[0])
+
+    # ── Task 1 新增测试 ──
+
+    def test_fixed_reply_high_frequency_questions_return_reply_only(self):
+        """高频固定问答命中本地 reply，返回 reply-only 命令。"""
+        texts = [
+            "你是谁",
+            "介绍一下你",
+            "你能干什么",
+            "你支持哪些动作",
+            "左臂可以怎么动",
+            "右臂可以怎么动",
+            "你的左手可以怎么活动",
+            "有什么限制",
+            "怎么下指令",
+            "能不能联网",
+            "谢谢",
+            "早上好",
+        ]
+        for text in texts:
+            with self.subTest(text=text):
+                self._assert_reply_only(text)
+
+    def test_explicit_action_commands_miss_local_reply_and_parse_as_actions(self):
+        """明确动作指令不被本地 reply 吞掉，仍由动作解析器命中。"""
+        cases = [
+            "左臂向上10厘米",
+            "右臂向前5厘米",
+            "左臂关节1旋转30度",
+        ]
+        for text in cases:
+            with self.subTest(text=text):
+                self.assertIsNone(check_local_reply_command(text))
+                commands = check_simple_action_command(text)
+                self.assertIsNotNone(commands)
+                self.assertIsInstance(commands, list)
+                self.assertTrue(len(commands) > 0)
+                for cmd in commands:
+                    self.assertIn("action", cmd)
+                    self.assertNotIn("reply", cmd)
+                    fixed, errors = validate_and_fix_command(cmd)
+                    self.assertEqual(errors, [])
+                    self.assertEqual(fixed, cmd)
+
+    def test_under_specified_hand_raise_requests_return_clarification_reply(self):
+        """缺距离/角度的抬手请求返回澄清 reply，不生成动作 JSON。"""
+        texts = [
+            "抬起你的左手",
+            "抬起左臂",
+            "左手抬起来",
+        ]
+        for text in texts:
+            with self.subTest(text=text):
+                self._assert_reply_only(text)
+                self.assertIsNone(check_simple_action_command(text))
+
+    def test_mixed_identity_or_capability_plus_action_misses_local_reply(self):
+        """mixed 意图（身份/能力+动作）不被固定回复吞掉。"""
+        cases = [
+            "你是谁然后左臂向上10厘米",
+            "你能干什么然后右臂向前5厘米",
+            "介绍一下你再左臂关节1旋转30度",
+        ]
+        for text in cases:
+            with self.subTest(text=text):
+                self.assertIsNone(check_local_reply_command(text))
+
 
 if __name__ == "__main__":
     unittest.main()
