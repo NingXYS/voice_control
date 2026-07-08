@@ -55,3 +55,5 @@ CLAUDE.local.md
 # Optional local Codex/Claude logs
 .codex-log/
 .claude-local/
+scripts/vits-piper-zh_CN-huayan-medium/
+.gitignore

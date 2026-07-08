@@ -131,6 +131,9 @@ _LOCAL_REPLY_MOTION_KW = [
     "抓取", "松开", "拿", "放",
 ]
 
+# 模糊控制输入的澄清回复常量
+LOCAL_CONTROL_CLARIFICATION_REPLY = "请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。"
+
 # ==================== 指令校验常量 ====================
 VALID_ACTIONS = {"move_joint", "move_cartesian", "home", "get_status"}
 VALID_ARMS = {"left", "right"}
@@ -408,6 +411,84 @@ def check_intro_keywords(text):
 
 
 # ==================== 本地高置信 reply 意图层 ====================
+def _match_ambiguous_control_reply(text):
+    """检查是否为模糊控制输入，返回澄清回复或 None。
+
+    只处理高频模糊控制输入，不生成 action dict，不调用外部服务。
+    返回 LOCAL_CONTROL_CLARIFICATION_REPLY 或 None。
+    """
+    if not isinstance(text, str):
+        return None
+    text = text.strip()
+    if not text:
+        return None
+
+    # --- Step 4.1: 混合身份/能力/感谢/重复 + 手臂/动作词 → miss ---
+    identity_kw = (
+        _LOCAL_REPLY_IDENTITY_KW + _LOCAL_REPLY_CAPABILITY_KW
+        + _LOCAL_REPLY_THANKS_KW + _LOCAL_REPLY_CLARIFY_KW
+    )
+    has_identity = any(kw in text for kw in identity_kw)
+
+    arm_motion_kw = [
+        "左臂", "右臂",
+        "向上", "向下", "向前", "向后", "向左", "向右",
+        "移动", "旋转", "关节", "动", "转",
+    ]
+    has_arm_or_motion = any(kw in text for kw in arm_motion_kw)
+
+    if has_identity and has_arm_or_motion:
+        return None
+
+    # --- Step 4.2: 未支持的能力词 → miss ---
+    unsupported = ["回零", "状态", "抓取", "松开", "拿", "放"]
+    if any(kw in text for kw in unsupported):
+        return None
+
+    # --- Step 4.3: 明确可执行动作模板 → miss ---
+    if _RE_CARTESIAN.search(text) or _RE_JOINT.search(text):
+        segments = _split_arm_segments(text)
+        if segments and "".join(segments) == text:
+            if all(_parse_one_segment(seg) is not None for seg in segments):
+                return None
+
+    # --- Step 5: 高频模糊控制输入 → 返回澄清回复 ---
+
+    # 5a: 仅有手臂引用
+    if text in ("左臂", "右臂"):
+        return LOCAL_CONTROL_CLARIFICATION_REPLY
+
+    # 5b: 无手臂的模糊移动或旋转
+    no_arm_vague = [
+        "动一下", "移动一下",
+        "向前", "向后", "向上", "向下",
+        "往前一点", "向前一点",
+        "转一下", "旋转", "旋转一下",
+    ]
+    if text in no_arm_vague:
+        return LOCAL_CONTROL_CLARIFICATION_REPLY
+
+    # 5c: 有手臂但缺少距离或角度的模糊动作
+    if "左臂" in text or "右臂" in text:
+        # 手臂 + 方向（缺少距离）："左臂向上"
+        if re.match(r'^(左臂|右臂)向?[上下前后左右]$', text):
+            return LOCAL_CONTROL_CLARIFICATION_REPLY
+        # 手臂 + 方向 + 一点（缺少距离）："右臂向前一点"
+        if re.match(r'^(左臂|右臂)向?[上下前后左右]一点$', text):
+            return LOCAL_CONTROL_CLARIFICATION_REPLY
+        # 手臂 + 移动一下："右臂移动一下"
+        if re.match(r'^(左臂|右臂)移动一下$', text):
+            return LOCAL_CONTROL_CLARIFICATION_REPLY
+        # 手臂 + 关节N + 旋转（缺少角度）："左臂关节1旋转"
+        if re.match(r'^(左臂|右臂)关节\d旋转$', text):
+            return LOCAL_CONTROL_CLARIFICATION_REPLY
+        # 手臂 + 转一下："右臂转一下"
+        if re.match(r'^(左臂|右臂)转一下$', text):
+            return LOCAL_CONTROL_CLARIFICATION_REPLY
+
+    return None
+
+
 def check_local_reply_command(text, tracker=None):
     """本地高置信 reply 意图匹配。
 
@@ -429,6 +510,19 @@ def check_local_reply_command(text, tracker=None):
         if tracker:
             tracker.mark("local_reply_parser_end")
         return None
+
+    # 模糊控制输入澄清：在高频模糊输入上返回澄清 reply
+    clarification = _match_ambiguous_control_reply(text)
+    if clarification is not None:
+        cmd = {"reply": clarification}
+        fixed, errors = validate_and_fix_command(cmd)
+        if errors:
+            if tracker:
+                tracker.mark("local_reply_parser_end")
+            return None
+        if tracker:
+            tracker.mark("local_reply_parser_end")
+        return [fixed]
 
     # 安全 miss：包含手臂引用 → 必须走后续路径
     for kw in _LOCAL_REPLY_ARM_KW:

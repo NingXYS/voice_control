@@ -3,10 +3,11 @@
 语音识别 + Qwen2 LLM 分析 + 机械臂控制（Ollama 版本）
 """
 import sys
+import os
 sys.path.insert(0, '/opt/ros/humble/lib/python3.10/site-packages')
 sys.path.insert(0, '/opt/ros/humble/local/lib/python3.10/dist-packages')
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts"))
 
-import os
 import warnings
 import subprocess
 import threading
@@ -25,6 +26,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String, Int32
 import re
+import voice_tts
 
 warnings.filterwarnings("ignore")
 
@@ -138,6 +140,9 @@ def load_models():
     else:
         print(f"❌ Ollama 服务连接失败")
 
+    # 初始化 TTS
+    voice_tts.tts_init()
+
 def init_ros():
     """延迟初始化 ROS，避免和 demo.launch.py 同时启动冲突"""
     global voice_pub, ros_initialized
@@ -234,6 +239,7 @@ def stop_and_recognize():
                 tracker.mark("ros_init_end")
                 tracker.mark("publish_reply_start")
                 voice_pub.publish_reply(INTRO_TEXT)
+                voice_tts.tts_speak(INTRO_TEXT)
                 tracker.mark("publish_reply_end")
                 tracker.set_meta("final_result", "reply_publish")
                 tracker.mark("first_tts_publish")
@@ -278,6 +284,7 @@ def stop_and_recognize():
                         if "reply" in cmd:
                             tracker.mark("publish_reply_start")
                             voice_pub.publish_reply(cmd["reply"])
+                            voice_tts.tts_speak(cmd["reply"])
                             tracker.mark("publish_reply_end")
                             tracker.mark("first_tts_publish")
                             tracker.mark("tts_trigger")
@@ -357,6 +364,7 @@ def stop_and_recognize():
                                         if "reply" in cmd:
                                             tracker.mark("publish_reply_start")
                                             voice_pub.publish_reply(cmd["reply"])
+                                            voice_tts.tts_speak(cmd["reply"])
                                             tracker.mark("publish_reply_end")
                                             if not first_tts_published:
                                                 tracker.mark("first_tts_publish")

@@ -90,6 +90,9 @@ class LocalActionParserTests(unittest.TestCase):
             "左臂向上10",
             "向上10厘米",
             "左臂向上",
+            "动一下",
+            "往前一点",
+            "转一下",
             "动动你的手掌",
             "和我握手",
             "左臂旋转一圈",
@@ -435,17 +438,95 @@ class LocalReplyCommandTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertIsNone(check_local_reply_command(text))
 
-    def test_arm_only_text_returns_none(self):
-        """纯手臂引用无动作也返回 None（交给后续处理）。"""
+    def test_arm_only_text_returns_clarification_reply(self):
+        """纯手臂引用返回澄清 reply。"""
         for text in ["右臂", "左臂"]:
+            with self.subTest(text=text):
+                result = check_local_reply_command(text)
+                self.assertIsInstance(result, list)
+                self.assertEqual(len(result), 1)
+                self.assertIn("reply", result[0])
+                self.assertNotIn("action", result[0])
+                fixed, errors = validate_and_fix_command(result[0])
+                self.assertEqual(errors, [])
+                self.assertEqual(fixed, result[0])
+
+    def test_motion_only_text_returns_clarification_reply(self):
+        """模糊动作词（无手臂、无距离）返回澄清 reply。"""
+        for text in ["向前", "旋转", "向上", "向下", "向后",
+                     "转一下", "旋转一下", "动一下", "移动一下",
+                     "往前一点", "向前一点"]:
+            with self.subTest(text=text):
+                result = check_local_reply_command(text)
+                self.assertIsInstance(result, list)
+                self.assertEqual(len(result), 1)
+                self.assertIn("reply", result[0])
+                self.assertNotIn("action", result[0])
+                fixed, errors = validate_and_fix_command(result[0])
+                self.assertEqual(errors, [])
+                self.assertEqual(fixed, result[0])
+
+    # ── 澄清命中测试（模糊控制输入）──
+
+    def test_ambiguous_control_inputs_return_clarification_reply(self):
+        """高频模糊控制输入返回澄清 reply（Step 9）。"""
+        cases = [
+            "左臂",
+            "右臂",
+            "动一下",
+            "往前一点",
+            "转一下",
+            "左臂向上",
+            "右臂移动一下",
+            "左臂关节1旋转",
+        ]
+        for text in cases:
+            with self.subTest(text=text):
+                result = check_local_reply_command(text)
+                self.assertIsInstance(result, list)
+                self.assertEqual(len(result), 1)
+                self.assertIn("reply", result[0])
+                self.assertNotIn("action", result[0])
+                fixed, errors = validate_and_fix_command(result[0])
+                self.assertEqual(errors, [])
+                self.assertEqual(fixed, result[0])
+
+    # ── MISS 边界测试（Step 10）──
+
+    def test_explicit_commands_still_miss_local_reply(self):
+        """明确动作仍在本地 reply 层 miss。"""
+        cases = [
+            "左臂向上10厘米",
+            "右臂向前5厘米",
+            "左臂关节1旋转30度",
+        ]
+        for text in cases:
             with self.subTest(text=text):
                 self.assertIsNone(check_local_reply_command(text))
 
-    def test_motion_only_text_returns_none(self):
-        """模糊动作词（无手臂、无距离）返回 None。"""
-        for text in ["向前", "旋转", "移动", "向上", "向下"]:
+    def test_mixed_intent_still_miss_local_reply(self):
+        """mixed 意图（身份+动作）仍 miss 本地 reply。"""
+        cases = [
+            "你是谁然后右臂向上5厘米",
+            "先介绍一下自己再左臂向前5厘米",
+            "你能做什么然后查询左臂状态",
+        ]
+        for text in cases:
             with self.subTest(text=text):
                 self.assertIsNone(check_local_reply_command(text))
+
+    def test_unsupported_capability_still_miss_local_reply(self):
+        """未支持能力（回零/状态/抓取）仍 miss 本地 reply。"""
+        cases = [
+            "右臂回零",
+            "查询右臂状态",
+            "右臂抓取",
+        ]
+        for text in cases:
+            with self.subTest(text=text):
+                self.assertIsNone(check_local_reply_command(text))
+
+    # ── 其他 MISS ──
 
     def test_empty_or_non_string_returns_none(self):
         """空输入或非字符串返回 None。"""
