@@ -12,6 +12,7 @@ import warnings
 import requests
 
 from latency_metrics import LatencyTracker  # Phase 0: 耗时追踪
+from voice_local_knowledge import match_fixed_reply
 
 warnings.filterwarnings("ignore")
 
@@ -22,7 +23,7 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2")
 
 # ==================== Dify 配置 ====================
 DIFY_BASE_URL = os.environ.get("DIFY_BASE_URL", "http://localhost:80")
-DIFY_API_KEY = os.environ.get("DIFY_API_KEY", "app-NlZjO0OpXx5TeHaE1sqIPcvX")
+DIFY_API_KEY = os.environ.get("DIFY_API_KEY", "")
 
 # ==================== System Prompt（仅兜底直连时使用）====================
 SYSTEM_PROMPT = """你是双臂机械臂控制助手，负责将用户的自然语言指令转换为JSON。
@@ -486,15 +487,18 @@ def _match_ambiguous_control_reply(text):
         if re.match(r'^(左臂|右臂)转一下$', text):
             return LOCAL_CONTROL_CLARIFICATION_REPLY
 
+    # 5d: 模糊抬手请求（缺距离/角度等参数）
+    if (re.search(r'抬起?(?:你的)?(?:左|右)(?:臂|手)', text) or
+        re.search(r'(?:左|右)(?:臂|手)抬(?:起来)?', text)):
+        return LOCAL_CONTROL_CLARIFICATION_REPLY
+
     return None
 
 
 def check_local_reply_command(text, tracker=None):
     """本地高置信 reply 意图匹配。
 
-    只处理高置信、低风险的纯文本意图（身份介绍、能力说明、感谢、澄清/重复）。
-    不处理包含手臂或动作词的文本，不处理需要安全判断的模糊动作。
-
+    只处理高置信、低风险的纯文本意图。
     返回: list[dict] 如果命中（例如 [{"reply": "..."}]）；None 表示 MISS。
     """
     if tracker:
@@ -511,7 +515,7 @@ def check_local_reply_command(text, tracker=None):
             tracker.mark("local_reply_parser_end")
         return None
 
-    # 模糊控制输入澄清：在高频模糊输入上返回澄清 reply
+    # 1. 模糊控制输入澄清：在高频模糊输入上返回澄清 reply
     clarification = _match_ambiguous_control_reply(text)
     if clarification is not None:
         cmd = {"reply": clarification}
@@ -524,64 +528,50 @@ def check_local_reply_command(text, tracker=None):
             tracker.mark("local_reply_parser_end")
         return [fixed]
 
-    # 安全 miss：包含手臂引用 → 必须走后续路径
-    for kw in _LOCAL_REPLY_ARM_KW:
-        if kw in text:
-            if tracker:
-                tracker.mark("local_reply_parser_end")
-            return None
-
-    # 安全 miss：包含动作/运动相关词 → 必须走后续路径
-    for kw in _LOCAL_REPLY_MOTION_KW:
-        if kw in text:
-            if tracker:
-                tracker.mark("local_reply_parser_end")
-            return None
-
-    reply_text = None
-
-    # 身份/介绍类
-    for kw in _LOCAL_REPLY_IDENTITY_KW:
-        if kw in text:
-            reply_text = INTRO_TEXT
-            break
-
-    # 能力说明类
-    if reply_text is None:
-        for kw in _LOCAL_REPLY_CAPABILITY_KW:
-            if kw in text:
-                reply_text = "我可以控制左右两条机械臂，支持关节旋转和空间移动。"
-                break
-
-    # 感谢类
-    if reply_text is None:
-        for kw in _LOCAL_REPLY_THANKS_KW:
-            if kw in text:
-                reply_text = "不客气。"
-                break
-
-    # 澄清/重复类
-    if reply_text is None:
-        for kw in _LOCAL_REPLY_CLARIFY_KW:
-            if kw in text:
-                reply_text = "请再说一次，说明具体的动作、方向和距离。"
-                break
-
-    if reply_text is None:
+    # 2. 明确动作安全 miss
+    if check_simple_action_command(text) is not None:
         if tracker:
             tracker.mark("local_reply_parser_end")
         return None
 
-    cmd = {"reply": reply_text}
-    fixed, errors = validate_and_fix_command(cmd)
-    if errors:
+    # 3. mixed 意图安全 miss
+    # 3a. 动作正则模式过滤
+    if _RE_CARTESIAN.search(text) or _RE_JOINT.search(text):
         if tracker:
             tracker.mark("local_reply_parser_end")
         return None
+
+    # 3b. 含有未支持控制动作词（回零/状态/抓取/松开/拿/放）时，直接安全 miss
+    unsupported_control_kws = ["回零", "状态", "抓取", "松开", "拿", "放"]
+    if any(kw in text for kw in unsupported_control_kws):
+        if tracker:
+            tracker.mark("local_reply_parser_end")
+        return None
+
+    # 3c. 混合意图过滤：含有手臂/运动词，并且含有任意回复/问答类的特征词时，作为混合意图安全 miss
+    arm_motion_words = ["左臂", "右臂", "左手", "右手", "关节", "向上", "向下", "向前", "向后", "向左", "向右"]
+    if any(word in text for word in arm_motion_words):
+        reply_characteristic_words = [
+            "你是谁", "你叫什么", "介绍", "功能", "支持", "指令", "限制", "联网", "谢谢",
+            "感谢", "早上好", "做什么", "能做什么", "干什么", "能干什么"
+        ]
+        if any(word in text for word in reply_characteristic_words):
+            if tracker:
+                tracker.mark("local_reply_parser_end")
+            return None
+
+    # 4. 调用 voice_local_knowledge.match_fixed_reply 获取本地固定/CSV 匹配
+    res = match_fixed_reply(text)
+    if res is not None:
+        fixed, errors = validate_and_fix_command(res)
+        if not errors and fixed:
+            if tracker:
+                tracker.mark("local_reply_parser_end")
+            return [fixed]
 
     if tracker:
         tracker.mark("local_reply_parser_end")
-    return [fixed]
+    return None
 
 
 # ==================== 指令校验 ====================
@@ -809,7 +799,7 @@ def llm_parse(text, tracker=None):
         tracker.mark("llm_start")
 
     # Dify 优先
-    if DIFY_API_KEY:
+    if DIFY_API_KEY and not _is_service_failing("dify"):
         result = _llm_parse_via_dify(text, tracker=tracker)
         if result is not None:
             if tracker:

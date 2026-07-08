@@ -14,16 +14,40 @@ from pathlib import Path
 # 不可变或只读使用的固定 reply 规则表
 LOCAL_REPLY_RULES = [
     {
-        "keywords": ["你是谁", "你叫什么名字", "名字"],
-        "reply": "我是施耐力双臂六关节机械臂助手，可以帮你控制机械臂抓取和移动物品。"
+        "keywords": ["你是谁", "你叫什么", "你是什么", "介绍一下自己", "介绍自己", "介绍一下你", "你是施耐力吗", "你是施耐力机器人吗", "自我介绍", "介绍你"],
+        "reply": "我是施耐力双臂六关节机械臂，拥有左右两条手臂，各六个关节。"
     },
     {
-        "keywords": ["你能做什么", "你有什么功能", "功能"],
+        "keywords": ["你能做什么", "你会做什么", "你有什么功能", "你支持哪些指令", "你能控制什么", "你能干什么", "你支持哪些动作", "功能"],
         "reply": "我可以控制左右两条机械臂，支持关节旋转和空间移动。"
     },
     {
-        "keywords": ["谢谢", "感谢"],
+        "keywords": ["左臂可以怎么动", "右臂可以怎么动", "你的左手可以怎么活动", "左臂怎么动", "右臂怎么动", "左手怎么活动"],
+        "reply": "我可以控制左臂或右臂进行空间移动和关节旋转。"
+    },
+    {
+        "keywords": ["有什么限制", "限制"],
+        "reply": "下达指令时请提供明确的手臂名称、方向和距离。模糊指令将被要求补充信息，不会默认执行。"
+    },
+    {
+        "keywords": ["怎么下指令", "下指令", "指令格式", "指令要求"],
+        "reply": "你可以说，左臂向上10厘米，或者左臂关节1旋转30度。"
+    },
+    {
+        "keywords": ["能不能联网", "联网", "在线"],
+        "reply": "本地语音控制不主动联网。是否可用取决于本地配置，不支持在线检索。"
+    },
+    {
+        "keywords": ["谢谢", "感谢", "辛苦了"],
         "reply": "不客气，很高兴能帮到你。"
+    },
+    {
+        "keywords": ["早上好", "下午好", "晚上好"],
+        "reply": "你好！我是机械臂控制助手，请问有什么可以帮您？"
+    },
+    {
+        "keywords": ["没听清", "没听懂", "听不懂", "再说一遍", "重复一下", "请重复"],
+        "reply": "请再说一次，说明具体的动作、方向和距离。"
     }
 ]
 
@@ -198,5 +222,15 @@ def match_local_reply(text: str, rules: list[dict[str, object]] | None = None) -
         for phrase in phrases:
             if (phrase in norm_text) or (norm_text in phrase):
                 return {"reply": reply}
-                
+    return None
+
+
+def match_fixed_reply(text: str) -> dict[str, str] | None:
+    """
+    包装 match_local_reply()，仅在结果通过 is_safe_reply_payload 校验时返回。
+    """
+    res = match_local_reply(text)
+    if res and isinstance(res, dict) and "reply" in res:
+        if is_safe_reply_payload(res):
+            return res
     return None

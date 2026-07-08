@@ -2,6 +2,7 @@ import sys
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
@@ -862,5 +863,84 @@ q6,"{""reply"": ""ok"", ""extra"": ""value""}"
         self.assertIn("reply", res_default)
 
 
+class LLMServiceRoutingTests(unittest.TestCase):
+    def setUp(self):
+        # 保存原有的 DIFY_API_KEY，避免污染
+        self.original_dify_key = client.DIFY_API_KEY
+        client._reset_service_caches_for_test()
+
+    def tearDown(self):
+        # 恢复原有的 DIFY_API_KEY
+        client.DIFY_API_KEY = self.original_dify_key
+
+    @patch("voice_llm_client._llm_parse_via_dify")
+    @patch("voice_llm_client._llm_parse_via_ollama")
+    def test_routing_no_dify_api_key_skips_dify(self, mock_ollama, mock_dify):
+        client.DIFY_API_KEY = ""
+        mock_ollama.return_value = [{"reply": "ollama"}]
+
+        result = client.llm_parse("复杂问题")
+
+        self.assertEqual(result, [{"reply": "ollama"}])
+        mock_dify.assert_not_called()
+        mock_ollama.assert_called_once_with("复杂问题", tracker=None)
+
+    @patch("voice_llm_client._llm_parse_via_dify")
+    @patch("voice_llm_client._llm_parse_via_ollama")
+    def test_routing_with_dify_api_key_prioritizes_dify(self, mock_ollama, mock_dify):
+        client.DIFY_API_KEY = "test-dify-key"
+        mock_dify.return_value = [{"reply": "dify"}]
+        mock_ollama.return_value = [{"reply": "ollama"}]
+
+        result = client.llm_parse("复杂问题")
+
+        self.assertEqual(result, [{"reply": "dify"}])
+        mock_dify.assert_called_once_with("复杂问题", tracker=None)
+        mock_ollama.assert_not_called()
+
+    @patch("voice_llm_client._llm_parse_via_dify")
+    @patch("voice_llm_client._llm_parse_via_ollama")
+    def test_routing_dify_miss_falls_back_to_ollama(self, mock_ollama, mock_dify):
+        client.DIFY_API_KEY = "test-dify-key"
+
+        calls = []
+        def side_effect_dify(*args, **kwargs):
+            calls.append("dify")
+            return None
+        def side_effect_ollama(*args, **kwargs):
+            calls.append("ollama")
+            return [{"reply": "ollama"}]
+
+        mock_dify.side_effect = side_effect_dify
+        mock_ollama.side_effect = side_effect_ollama
+
+        result = client.llm_parse("复杂问题")
+
+        self.assertEqual(result, [{"reply": "ollama"}])
+        self.assertEqual(calls, ["dify", "ollama"])
+
+    @patch("voice_llm_client._get_session")
+    @patch("voice_llm_client._llm_parse_via_ollama")
+    def test_routing_dify_failure_cache_skips_http_and_falls_back_to_ollama(self, mock_ollama, mock_get_session):
+        client.DIFY_API_KEY = "test-dify-key"
+        client._mark_service_failing("dify")
+
+        mock_ollama.return_value = [{"reply": "ollama"}]
+
+        result = client.llm_parse("复杂问题")
+
+        self.assertEqual(result, [{"reply": "ollama"}])
+        # _get_session shouldn't be called for dify because cache blocks it
+        mock_get_session.assert_not_called()
+
+    @patch("voice_llm_client._get_session")
+    def test_llm_parse_via_dify_internally_respects_cache(self, mock_get_session):
+        client.DIFY_API_KEY = "test-dify-key"
+        client._mark_service_failing("dify")
+
+        result = client._llm_parse_via_dify("复杂问题")
+
+        self.assertIsNone(result)
+        mock_get_session.assert_not_called()
 if __name__ == "__main__":
     unittest.main()
