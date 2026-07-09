@@ -942,5 +942,64 @@ class LLMServiceRoutingTests(unittest.TestCase):
 
         self.assertIsNone(result)
         mock_get_session.assert_not_called()
+
+
+class OllamaSystemPromptTests(unittest.TestCase):
+    def test_prompt_contains_schema_keywords(self):
+        prompt = client.SYSTEM_PROMPT
+        for kw in ["move_cartesian", "move_joint", "home", "get_status", "reply"]:
+            self.assertIn(kw, prompt)
+
+    def test_prompt_mutually_exclusive_reply_action(self):
+        prompt = client.SYSTEM_PROMPT
+        self.assertTrue(
+            "reply 和 action" in prompt and ("不能同时存在" in prompt or "不得同时存在" in prompt or "绝对不得同时存在" in prompt),
+            "Prompt should specify that reply and action cannot exist at the same time"
+        )
+
+    def test_prompt_home_get_status_arm_explicit(self):
+        prompt = client.SYSTEM_PROMPT
+        self.assertTrue(
+            "home" in prompt and "get_status" in prompt and "arm" in prompt and ("必须显式" in prompt or "显式指定" in prompt),
+            "Prompt should specify that home and get_status must explicitly specify arm"
+        )
+
+    def test_prompt_contains_clarification_rules_on_missing_info(self):
+        prompt = client.SYSTEM_PROMPT
+        for word in ["缺少", "手臂", "方向", "距离", "关节", "角度", "澄清", "reply"]:
+            self.assertIn(word, prompt)
+
+    def test_prompt_contains_key_phrases(self):
+        prompt = client.SYSTEM_PROMPT
+        for phrase in ["抬起你的左手", "左臂向上", "查询状态", "回零"]:
+            self.assertIn(phrase, prompt)
+
+    def test_prompt_contains_ollama_and_dify_priority(self):
+        prompt = client.SYSTEM_PROMPT
+        for kw in ["Ollama", "Dify", "健康", "优先", "兜底"]:
+            self.assertIn(kw, prompt)
+
+    def test_prevent_regression_to_unsafe_defaults(self):
+        prompt = client.SYSTEM_PROMPT
+        self.assertNotIn("未指定距离：默认移动 0.05米", prompt)
+        self.assertNotIn("未指定角度：默认旋转 0.1弧度", prompt)
+        if "左臂向上右臂向前再左臂向右" in prompt:
+            idx = prompt.find("左臂向上右臂向前再左臂向右")
+            sub = prompt[idx:idx+300]
+            self.assertNotIn("move_cartesian", sub)
+            self.assertIn("reply", sub)
+
+    def test_prompt_example_does_not_promise_unimplemented_capabilities(self):
+        prompt = client.SYSTEM_PROMPT
+        self.assertNotIn("抓取和移动物品", prompt)
+        self.assertNotIn("控制机械臂抓取", prompt)
+        idx = prompt.find("用户：你叫什么名字")
+        self.assertNotEqual(idx, -1, "Prompt should contain the name question example")
+        context = prompt[idx:idx + 300]
+        forbidden_words = ["抓取", "松开", "拿", "放", "联网检索", "云服务", "物体识别"]
+        for word in forbidden_words:
+            self.assertNotIn(word, context, f"Unimplemented capability '{word}' should not be promised in name question example context")
+
+
 if __name__ == "__main__":
     unittest.main()
