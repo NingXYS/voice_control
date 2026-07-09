@@ -8,7 +8,7 @@ app:
   icon: 🤖
   icon_background: '#FFEAD5'
 workflow:
-  id: 8ddec281-cce5-434c-8870-36890731dd23
+  id: 0f0d7ecc-2cd9-4e31-b970-7e5a705c3eed
   title: 语音指令解析工作流(知识库)
   features:
     file_upload:
@@ -294,6 +294,7 @@ workflow:
       data:
         type: variable-aggregator
         title: 合并分支输出
+        output_type: string
         variables:
         - - llm_fixed_reply
           - text

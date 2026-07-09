@@ -424,6 +424,7 @@ dsl = {
                     "data": {
                         "type": "variable-aggregator",
                         "title": "合并分支输出",
+                        "output_type": "string",
                         "variables": [
                             ["llm_fixed_reply", "text"],
                             ["llm_control_action", "text"],
