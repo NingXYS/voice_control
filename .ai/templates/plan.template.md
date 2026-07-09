@@ -58,7 +58,7 @@ Draft | Approved | Superseded
 
 ## Execution Recommendation / 执行建议
 
-Recommended executor / 推荐执行者：Claude Code / DeepSeek
+Recommended executor / 推荐执行者：Antigravity / Gemini 3.5 Flash
 
 Reason / 原因：
 

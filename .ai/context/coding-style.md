@@ -101,7 +101,7 @@
 
 ## AI 修改规则
 
-- Claude Code / DeepSeek 修改代码时必须严格遵守 `.ai/tasks/*.task.md`。
+- Antigravity / Gemini 修改代码时必须严格遵守 `.ai/tasks/*.task.md`。
 - Codex review 时必须检查是否存在过度抽象、范围扩大、topic 合约破坏、行为/API 风险、安全风险和 AI 生成痕迹。
 - 如果执行任务需要修改未授权文件，执行者必须停止并说明。
 - `.gitignore`、AGENTS/CLAUDE 规则和 `.ai/context/` 属于流程/上下文文件，修改前应确认任务是否允许。

@@ -34,7 +34,7 @@ Use `.ai/templates/plan.template.md`.
 - Separate required work from optional improvements.
 - Define acceptance criteria clearly.
 - If the request is too broad, split it into smaller tasks.
-- If the task should be executed by Claude Code, say so explicitly.
+- If the task should be executed by Antigravity / Gemini 3.5 Flash, say so explicitly.
 
 ## Plan Quality Checklist
 

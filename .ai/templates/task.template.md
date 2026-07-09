@@ -58,7 +58,7 @@ Ready | In Progress | Done | Blocked
 
 ## Stop Conditions / 停止条件
 
-如果出现以下情况，Claude Code 必须停止，并交回 Codex / GPT 判断：
+如果出现以下情况，Antigravity 必须停止，并交回 Codex / GPT 判断：
 
 - Architecture decision required. / 需要做架构决策。
 - Need to modify unauthorized files. / 需要修改未授权文件。

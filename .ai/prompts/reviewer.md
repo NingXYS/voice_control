@@ -52,4 +52,4 @@ Create or recommend a follow-up task in:
 
 `.ai/tasks/<slug>.fix.task.md`
 
-The fix task must be narrow and executable by Claude Code.
+The fix task must be narrow and executable by Antigravity / Gemini 3.5 Flash.

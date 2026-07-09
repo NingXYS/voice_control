@@ -1,7 +1,6 @@
 # Codex Task Writer Prompt
 
-You convert an approved plan into a precise execution task for Claude Code / DeepSeek.
-
+You convert an approved plan into a precise execution task for Antigravity / Gemini 3.5 Flash.
 ## Always Read
 
 - `AGENTS.md`
@@ -22,7 +21,7 @@ Use `.ai/templates/task.template.md`.
 ## Rules
 
 - The task must be executable without architecture decisions.
-- Include only the files Claude Code is allowed to modify.
+- Include only the files Antigravity is allowed to modify.
 - If additional files may be inspected but not modified, list them separately.
 - Steps must be concrete and ordered.
 - Constraints must be explicit.
