@@ -1,92 +1,159 @@
 #!/usr/bin/env python3
-"""生成 Dify Workflow DSL v0.6.0 YAML 文件（含知识库检索节点）"""
+"""生成 Dify Workflow DSL v0.6.0 YAML 文件（含条件分支后置的知识库检索）"""
 import uuid
 import yaml
 
 WF_ID = str(uuid.uuid4())
-NODE_START = "start_voice_text"
-NODE_KNOWLEDGE = "knowledge_retrieve"
-NODE_LLM = "llm_extract"
-NODE_CODE = "code_convert"
-NODE_END = "end_result"
 
-# System Prompt：知识库参考部分放在最前面，LLM 会优先遵循
-SYSTEM_PROMPT = """你是双臂机械臂控制助手，负责将用户的自然语言指令转换为JSON。
+# 意图分类 Prompt
+INTENT_CLASSIFY_PROMPT = """你是一个专门用于双臂机械臂控制系统的轻量意图分类器。
+请根据用户输入的自然语言，将意图准确分类为以下五类之一，并且【只输出】分类对应的英文标识，不要包含任何标点符号、解释或 Markdown 格式。
 
-【知识库参考 - 优先遵循】
-以下是从知识库检索到的相关指令修正信息，请优先参考：
-{{#knowledge_retrieve.result#}}
+【可选的分类标识】
+- fixed_reply
+- control_action
+- ambiguous_control
+- robot_knowledge
+- complex_fallback
 
-【指令类型判断 - 优先判断】
-- 用户询问机器人信息/功能/介绍/闲聊 → 输出 reply 类型：{"reply": "回复内容"}
-- 用户要求控制机械臂动作 → 输出 control 类型（带 action 字段）
+【分类规则 - 严格遵守】
+1. fixed_reply：自我介绍、能力询问、寒暄、感谢、打招呼等基本人机交互。
+   - 例如："你是谁"、"你能做什么"、"谢谢你"、"你好"、"介绍下你自己"
+2. control_action：明确的控制指令，包含手臂（左臂/右臂）、动作方向（向上/向下/向前/向后/向左/向右）或关节（关节1-6）、以及具体的运动距离（如厘米、米）或旋转角度（如度、弧度）等。
+   - 例如："左臂向上10厘米"、"右臂向前5厘米"、"左臂关节1旋转30度"、"右臂回零位"、"查询左臂状态"
+3. ambiguous_control：属于控制动作意图，但缺少必要参数。例如只说了手臂没说动作，或者只说了动作没说手臂，或者缺少具体方向、关节、距离/角度等。
+   - 例如："抬起你的左手"、"动一下"、"往前一点"、"左臂向上"、"查询状态"、"回零"、"左手抬起来"、"左手"、"右臂"、"转一下"
+4. robot_knowledge：询问机器人的限制、参数、规范、设计说明、坐标系、动作支持范围等需要查阅说明书或知识库上下文的问题。
+   - 例如："机器人有什么限制"、"支持哪些关节"、"右臂可以移动多远"、"坐标系是怎么定义的"、"怎么下达指令"、"机械臂可以拿东西吗"、"能不能联网"
+5. complex_fallback：无法被上述四类清晰且可靠归类的复杂或异常输入。
 
-【动作类型选择规则 - 严格遵循】
+【输出格式】
+只输出五类标识之一（即 fixed_reply, control_action, ambiguous_control, robot_knowledge, complex_fallback），绝对不要输出其他字符！"""
+
+# 固定回复 Prompt
+FIXED_REPLY_PROMPT = """你是施耐力双臂六关节机械臂控制助手。
+请对用户的寒暄、问候、感谢或自我介绍等简单交互进行礼貌简短的回复。
+
+【输出格式约束】
+必须只输出一个 JSON 对象，且仅包含 reply 字段，例如：
+{"reply": "你好！我是施耐力双臂机械臂控制助手。请说明你需要我控制左臂还是右臂进行动作。"}
+绝对不要包含任何 markdown 标记、代码块、或者额外的解释。
+
+【已知的能力】
+本系统目前支持控制左右臂在三维空间内直线移动（空间移动）、六个关节的旋转（关节旋转）、回到零位（回零）以及查询当前位置与关节状态。
+控制指令需要明确手臂、方向或关节、距离或角度。
+本系统不支持抓取、松开、拿放物品、联网检索、云服务、物体识别或其它真实物理外设操控，请不要承诺这些能力。"""
+
+# 动作解析 Prompt
+CONTROL_ACTION_PROMPT = """你是双臂机械臂控制助手，负责将用户的自然语言指令转换为JSON。
+
+【输出 Schema 定义 - 严格遵循】
+只支持以下五种输出类型，字段与类型必须完全匹配，不得混用或缺少：
+1. reply：只用于澄清和说明，不能包含 action 字段。
+   {"reply": "回复内容"}
+2. move_cartesian：笛卡尔空间直线运动。
+   {"action": "move_cartesian", "arm": "left|right", "x": 0.0, "y": 0.0, "z": 0.0, "relative": true}
+3. move_joint：关节空间相对或绝对旋转。
+   {"action": "move_joint", "arm": "left|right", "joint": 1, "value": 0.0, "type": "delta|absolute"}
+4. home：回零位。
+   {"action": "home", "arm": "left|right"}
+5. get_status：查询状态。
+   {"action": "get_status", "arm": "left|right"}
+
+【Python 校验合约】
+- reply 和 action 字段绝对不得同时存在。
+- arm 只能是 "left" 或 "right"。
+- home 和 get_status 必须显式指定合法的 arm 字段，不得默认左臂或右臂。
+- home 和 get_status 严禁且不需要补 joint, value, type, x, y, z, relative 等任何运动相关字段。
+
+【指令类型判断规则】
+- 用户要求控制机械臂动作（位移、旋转、回零、查询状态等）且参数齐全 → 输出动作/控制类型（带 action 字段）。
+- 用户指令缺少手臂、动作、方向、距离、关节编号或角度等关键信息 → 输出澄清型 reply。
+
+【动作类型选择规则】
 - 用户提到"关节""旋转""转动" → action: "move_joint"
 - 用户提到"上下左右前后""移动""走""抬""降" → action: "move_cartesian"
+- 用户提到"回零""回零位""归零" → action: "home"
+- 用户提到"查询""状态""位置" → action: "get_status"
 
-【坐标系定义 - 严格遵循】
-- 向右/右 → x: 正数
-- 向左/左 → x: 负数
-- 向前/前 → y: 正数
-- 向后/后 → y: 负数
-- 向上/上/升 → z: 正数
-- 向下/下/降 → z: 负数
+【坐标系与单位换算】
+- 距离：厘米必须换算为米（例如：10厘米=0.1米，5厘米=0.05米）。
+- 角度：度必须换算为弧度（例如：30度≈0.524弧度，45度≈0.785弧度）。
+- 坐标方向：向右为 x 正，向左为 x 负；向前为 y 正，向后为 y 负；向上为 z 正，向下为 z 负。
+- relative 对于 move_cartesian 始终为 true。
+- 未说"反转"或"反向"时，move_joint 的 value 为正数；当且仅当手臂、关节和角度明确时，type 使用 "delta"。
 
-【关节编号】
-- 第1-6关节对应 joint: 1-6
+【安全澄清与防默认规则】
+- 必须防止高风险默认行为：严禁出现“未指定距离默认移动 0.05米”或“未指定角度默认旋转 0.1弧度”等无条件默认执行动作规则！
+- 对于任何缺少手臂（如未指明是左臂还是右臂）、未指明运动方向、距离、关节编号或旋转角度等模糊输入，绝对不允许猜测并默认执行任何动作，必须输出统一的澄清型回复。
+- 澄清回复统一文案为："请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。"
+- 缺关键字段的输入如“左臂向上”、“右臂向前”、“左臂关节1旋转”、“回零”、“查询状态”等，必须输出澄清回复，禁止生成动作 JSON 默认执行。
 
-【单位换算 - 必须执行】
-- 距离：厘米→米，如 10厘米=0.1米，5厘米=0.05米
-- 角度：度→弧度，如 30度≈0.524弧度，45度≈0.785弧度
+【能力边界约束】
+- 本系统仅支持左右臂在三维空间移动和关节旋转。
+- 不得对用户承诺任何未实现的能力，例如：抓取、松开、拿、放、联网检索、云服务、物体识别或其它真实物理外设操控。
 
-【默认值】
-- 未指定距离：默认移动 0.05米（5厘米）
-- 未指定角度：默认旋转 0.1弧度
-- relative 始终为 true
-- 未说"反转"/"反向"时，value 为正数
+【示例 - 安全澄清】
+用户：抬起你的左手
+输出：{"reply": "请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。"}
 
-【输出约束 - 必须遵守】
-- 只输出纯JSON，不包含任何其他文字、markdown标记、代码块
-- 单条指令输出JSON对象，多条指令输出JSON数组，保持用户说话顺序
-- 字段必须完整，顺序不影响解析
+用户：左臂向上
+输出：{"reply": "请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。"}
 
-【验证清单 - 输出前逐项自检】
-1. ✅ 指令类型对了吗？（闲聊→reply，控制→带action）
-2. ✅ 单位已换算？（厘米→米，度→弧度）
-3. ✅ 正负号正确？（左负右正，后负前正，下负上正）
-4. ✅ 字段完整？（move_joint: action,arm,joint,value,type / move_cartesian: action,arm,x,y,z,relative）
+用户：查询状态
+输出：{"reply": "请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。"}
 
-【示例】
-用户：你叫什么名字
-输出：{"reply": "我是双臂机械臂助手，可以帮你控制机械臂抓取和移动物品"}
+用户：回零
+输出：{"reply": "请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。"}
 
-用户：你能做什么
-输出：{"reply": "我可以控制左右两条机械臂，支持关节旋转和空间移动，比如'左臂向前10厘米'"}
+【示例 - 明确动作】
+用户：左臂向上10厘米
+输出：{"action": "move_cartesian", "arm": "left", "x": 0.0, "y": 0.0, "z": 0.1, "relative": true}
 
 用户：右臂向前5厘米
-输出：{"action":"move_cartesian","arm":"right","x":0,"y":0.05,"z":0,"relative":true}
+输出：{"action": "move_cartesian", "arm": "right", "x": 0.0, "y": 0.05, "z": 0.0, "relative": true}
 
 用户：左臂关节1旋转30度
-输出：{"action":"move_joint","arm":"left","joint":1,"value":0.524,"type":"delta"}
+输出：{"action": "move_joint", "arm": "left", "joint": 1, "value": 0.524, "type": "delta"}
 
 用户：右臂回零位
-输出：{"action":"home","arm":"right"}
+输出：{"action": "home", "arm": "right"}
 
 用户：查询左臂状态
-输出：{"action":"get_status","arm":"left"}
+输出：{"action": "get_status", "arm": "left"}
 
-用户：你是什么机器人然后右臂向上5厘米
-输出：[{"reply": "我是施耐力双臂六关节机械臂，拥有左右两条手臂，各六个关节"},{"action":"move_cartesian","arm":"right","x":0,"y":0,"z":0.05,"relative":true}]
+【示例 - 混合/组合指令】
+用户：你是什么机器人然后右臂向上5厘米 （注：由于问答部分由前置意图分类处理，此处仅处理动作）
+输出：{"action": "move_cartesian", "arm": "right", "x": 0.0, "y": 0.0, "z": 0.05, "relative": true}
 
 用户：右臂向前5厘米左臂向上10厘米
-输出：[{"action":"move_cartesian","arm":"right","x":0,"y":0.05,"z":0,"relative":true},{"action":"move_cartesian","arm":"left","x":0,"y":0,"z":0.1,"relative":true}]
+输出：[{"action": "move_cartesian", "arm": "right", "x": 0.0, "y": 0.05, "z": 0.0, "relative": true}, {"action": "move_cartesian", "arm": "left", "x": 0.0, "y": 0.0, "z": 0.1, "relative": true}]
 
 用户：左臂关节3反转30度
-输出：{"action":"move_joint","arm":"left","joint":3,"value":-0.524,"type":"delta"}
+输出：{"action": "move_joint", "arm": "left", "joint": 3, "value": -0.524, "type": "delta"}
 
-用户：左臂向上右臂向前再左臂向右
-输出：[{"action":"move_cartesian","arm":"left","x":0,"y":0,"z":0.05,"relative":true},{"action":"move_cartesian","arm":"right","x":0,"y":0.05,"z":0,"relative":true},{"action":"move_cartesian","arm":"left","x":0.05,"y":0,"z":0,"relative":true}]"""
+用户：左臂向上右臂向前再左臂向右 （注：由于没有距离，且属于混合动作，输出澄清）
+输出：{"reply": "请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。"}
+
+【输出约束】
+- 只输出纯 JSON 字符串，绝不包含任何 markdown 代码块标识（如 ```json 等）或多余的自然语言解释。
+- 单个指令返回 JSON 对象，多条或复合意图返回 JSON 数组，保持用户说话顺序。"""
+
+# 知识问答 Prompt
+ROBOT_KNOWLEDGE_PROMPT = """你是施耐力双臂六关节机械臂控制助手。请根据知识库检索到的相关指令修正与问答信息，结合用户的输入进行准确、简短、礼貌的回答。
+
+【知识库参考 - 优先遵循】
+以下是从知识库检索到的相关参考信息：
+{{#knowledge_retrieve.result#}}
+
+【限制与约束】
+- 你的回答必须是合法的 JSON 对象，且仅包含 reply 字段，例如：
+  {"reply": "回答内容"}
+- 你的回复应当简短、直截了当、适合语音合成 (TTS)。
+- 绝对不要输出任何 markdown 格式（如 ```json 等）、额外文字或标点符号。
+- 本系统目前仅支持控制左右臂在三维空间内直线移动（空间移动）、六个关节的相对或绝对旋转（关节旋转）、回到零位（回零）以及查询当前位置与关节状态。
+- 严禁承诺任何未实现的能力，例如：抓取物品、松开物品、拿东西、放东西、物体识别、联网检索、云服务等。
+- 如果用户询问了非本系统支持的问题，或知识库没有相关信息，请礼貌地予以澄清并告知支持的指令范围。"""
 
 CODE_NODE_CODE = """import json
 import re
@@ -119,7 +186,7 @@ dsl = {
     "kind": "app",
     "app": {
         "name": "语音指令→ROS2命令",
-        "description": "将语音识别的自然语言指令解析为ROS2机械臂控制JSON命令（含知识库修正）",
+        "description": "将语音识别的自然语言指令解析为ROS2机械臂控制JSON命令（条件分支后置知识库）",
         "mode": "workflow",
         "icon_type": "emoji",
         "icon": "🤖",
@@ -139,7 +206,7 @@ dsl = {
         "graph": {
             "nodes": [
                 {
-                    "id": NODE_START,
+                    "id": "start_voice_text",
                     "data": {
                         "type": "start",
                         "title": "开始",
@@ -157,25 +224,95 @@ dsl = {
                     "position": {"x": 50, "y": 200},
                 },
                 {
-                    "id": NODE_KNOWLEDGE,
-                    "data": {
-                        "type": "knowledge-retrieval",
-                        "title": "① 知识库检索",
-                        "description": "从知识库中检索与指令相关的修正信息",
-                        "query_variable_selector": [NODE_START, "text"],
-                        "dataset_ids": [],
-                        "retrieval_mode": "multiple",
-                        "top_k": 3,
-                        "score_threshold": 0.5,
-                    },
-                    "position": {"x": 300, "y": 200},
-                },
-                {
-                    "id": NODE_LLM,
+                    "id": "intent_classify",
                     "data": {
                         "type": "llm",
-                        "title": "② 指令解析(结合知识库)",
-                        "description": "结合知识库修正信息，将自然语言指令转换为JSON命令",
+                        "title": "意图分类",
+                        "description": "轻量意图分类",
+                        "context": {"enabled": False},
+                        "model": {
+                            "mode": "chat",
+                            "provider": "",
+                            "name": "",
+                            "completion_params": {
+                                "temperature": 0.1,
+                                "max_tokens": 64,
+                                "top_p": 0.95,
+                                "stop": []
+                            }
+                        },
+                        "prompt_template": [
+                            {"role": "system", "text": INTENT_CLASSIFY_PROMPT},
+                            {"role": "user", "text": "{{#start_voice_text.text#}}"}
+                        ],
+                        "variables": []
+                    },
+                    "position": {"x": 250, "y": 200},
+                },
+                {
+                    "id": "route_by_intent",
+                    "data": {
+                        "type": "if-else",
+                        "title": "意图路由",
+                        "cases": [
+                            {
+                                "case_id": "case_fixed",
+                                "logical_operator": "and",
+                                "conditions": [
+                                    {
+                                        "id": "cond_fixed",
+                                        "variable_selector": ["intent_classify", "text"],
+                                        "comparison_operator": "is",
+                                        "value": "fixed_reply"
+                                    }
+                                ]
+                            },
+                            {
+                                "case_id": "case_control",
+                                "logical_operator": "and",
+                                "conditions": [
+                                    {
+                                        "id": "cond_control",
+                                        "variable_selector": ["intent_classify", "text"],
+                                        "comparison_operator": "is",
+                                        "value": "control_action"
+                                    }
+                                ]
+                            },
+                            {
+                                "case_id": "case_ambiguous",
+                                "logical_operator": "and",
+                                "conditions": [
+                                    {
+                                        "id": "cond_ambiguous",
+                                        "variable_selector": ["intent_classify", "text"],
+                                        "comparison_operator": "is",
+                                        "value": "ambiguous_control"
+                                    }
+                                ]
+                            },
+                            {
+                                "case_id": "case_knowledge",
+                                "logical_operator": "and",
+                                "conditions": [
+                                    {
+                                        "id": "cond_knowledge",
+                                        "variable_selector": ["intent_classify", "text"],
+                                        "comparison_operator": "is",
+                                        "value": "robot_knowledge"
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    "position": {"x": 450, "y": 200},
+                },
+                {
+                    "id": "llm_fixed_reply",
+                    "data": {
+                        "type": "llm",
+                        "title": "固定问答回复",
+                        "description": "处理寒暄与基本信息回复",
                         "context": {"enabled": False},
                         "model": {
                             "mode": "chat",
@@ -189,45 +326,161 @@ dsl = {
                             }
                         },
                         "prompt_template": [
-                            {"role": "system", "text": SYSTEM_PROMPT},
+                            {"role": "system", "text": FIXED_REPLY_PROMPT},
                             {"role": "user", "text": "{{#start_voice_text.text#}}"}
                         ],
                         "variables": []
                     },
-                    "position": {"x": 580, "y": 200},
+                    "position": {"x": 700, "y": 0},
                 },
                 {
-                    "id": NODE_CODE,
+                    "id": "llm_control_action",
+                    "data": {
+                        "type": "llm",
+                        "title": "动作指令解析",
+                        "description": "解析明确的机械臂动作控制指令",
+                        "context": {"enabled": False},
+                        "model": {
+                            "mode": "chat",
+                            "provider": "",
+                            "name": "",
+                            "completion_params": {
+                                "temperature": 0.1,
+                                "max_tokens": 512,
+                                "top_p": 0.95,
+                                "stop": []
+                            }
+                        },
+                        "prompt_template": [
+                            {"role": "system", "text": CONTROL_ACTION_PROMPT},
+                            {"role": "user", "text": "{{#start_voice_text.text#}}"}
+                        ],
+                        "variables": []
+                    },
+                    "position": {"x": 700, "y": 150},
+                },
+                {
+                    "id": "tmpl_ambiguous_control",
+                    "data": {
+                        "type": "template-transform",
+                        "title": "模糊指令澄清",
+                        "template": '{"reply": "请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。"}',
+                        "variables": []
+                    },
+                    "position": {"x": 700, "y": 300},
+                },
+                {
+                    "id": "knowledge_retrieve",
+                    "data": {
+                        "type": "knowledge-retrieval",
+                        "title": "知识库检索",
+                        "description": "从知识库中检索与机器人相关的说明信息",
+                        "query_variable_selector": ["start_voice_text", "text"],
+                        "dataset_ids": [],
+                        "retrieval_mode": "multiple",
+                        "top_k": 3,
+                        "score_threshold": 0.5
+                    },
+                    "position": {"x": 700, "y": 450},
+                },
+                {
+                    "id": "llm_robot_knowledge",
+                    "data": {
+                        "type": "llm",
+                        "title": "知识问答回复",
+                        "description": "结合知识库检索结果进行回复",
+                        "context": {"enabled": False},
+                        "model": {
+                            "mode": "chat",
+                            "provider": "",
+                            "name": "",
+                            "completion_params": {
+                                "temperature": 0.1,
+                                "max_tokens": 512,
+                                "top_p": 0.95,
+                                "stop": []
+                            }
+                        },
+                        "prompt_template": [
+                            {"role": "system", "text": ROBOT_KNOWLEDGE_PROMPT},
+                            {"role": "user", "text": "{{#start_voice_text.text#}}"}
+                        ],
+                        "variables": []
+                    },
+                    "position": {"x": 920, "y": 450},
+                },
+                {
+                    "id": "tmpl_complex_fallback",
+                    "data": {
+                        "type": "template-transform",
+                        "title": "复杂兜底澄清",
+                        "template": '{"reply": "请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。"}',
+                        "variables": []
+                    },
+                    "position": {"x": 700, "y": 600},
+                },
+                {
+                    "id": "merge_outputs",
+                    "data": {
+                        "type": "variable-aggregator",
+                        "title": "合并分支输出",
+                        "variables": [
+                            ["llm_fixed_reply", "text"],
+                            ["llm_control_action", "text"],
+                            ["tmpl_ambiguous_control", "output"],
+                            ["llm_robot_knowledge", "text"],
+                            ["tmpl_complex_fallback", "output"]
+                        ]
+                    },
+                    "position": {"x": 1150, "y": 250},
+                },
+                {
+                    "id": "code_convert",
                     "data": {
                         "type": "code",
-                        "title": "③ JSON验证与清理",
+                        "title": "JSON验证与清理",
                         "description": "验证LLM输出的JSON并确保格式正确",
                         "code_language": "python3",
                         "code": CODE_NODE_CODE,
                         "variables": [
-                            {"variable": "raw_json", "value_selector": [NODE_LLM, "text"]}
+                            {"variable": "raw_json", "value_selector": ["merge_outputs", "output"]}
                         ],
                         "outputs": {"result": {"type": "string"}}
                     },
-                    "position": {"x": 860, "y": 200},
+                    "position": {"x": 1350, "y": 250},
                 },
                 {
-                    "id": NODE_END,
+                    "id": "end_result",
                     "data": {
                         "type": "end",
                         "title": "输出",
                         "outputs": [
-                            {"variable": "result", "value_selector": [NODE_CODE, "result"]}
+                            {"variable": "result", "value_selector": ["code_convert", "result"]}
                         ]
                     },
-                    "position": {"x": 1100, "y": 200},
+                    "position": {"x": 1550, "y": 250},
                 },
             ],
             "edges": [
-                {"source": NODE_START, "target": NODE_KNOWLEDGE},
-                {"source": NODE_KNOWLEDGE, "target": NODE_LLM},
-                {"source": NODE_LLM, "target": NODE_CODE},
-                {"source": NODE_CODE, "target": NODE_END},
+                {"source": "start_voice_text", "target": "intent_classify"},
+                {"source": "intent_classify", "target": "route_by_intent"},
+                # route_by_intent branches
+                {"source": "route_by_intent", "sourceHandle": "case_fixed", "target": "llm_fixed_reply"},
+                {"source": "route_by_intent", "sourceHandle": "case_control", "target": "llm_control_action"},
+                {"source": "route_by_intent", "sourceHandle": "case_ambiguous", "target": "tmpl_ambiguous_control"},
+                {"source": "route_by_intent", "sourceHandle": "case_knowledge", "target": "knowledge_retrieve"},
+                {"source": "route_by_intent", "sourceHandle": "false", "target": "tmpl_complex_fallback"},
+                # downstream of knowledge retrieval
+                {"source": "knowledge_retrieve", "target": "llm_robot_knowledge"},
+                # converge to aggregator
+                {"source": "llm_fixed_reply", "target": "merge_outputs"},
+                {"source": "llm_control_action", "target": "merge_outputs"},
+                {"source": "tmpl_ambiguous_control", "target": "merge_outputs"},
+                {"source": "llm_robot_knowledge", "target": "merge_outputs"},
+                {"source": "tmpl_complex_fallback", "target": "merge_outputs"},
+                # final nodes
+                {"source": "merge_outputs", "target": "code_convert"},
+                {"source": "code_convert", "target": "end_result"},
             ],
             "viewport": {"x": 0, "y": 0, "zoom": 1}
         }
@@ -240,10 +493,10 @@ with open(output_path, "w") as f:
 
 print(f"✅ DSL v0.6.0 文件已生成: {output_path}")
 print(f"   Workflow ID: {WF_ID}")
-print(f"   流程: 开始 → ①知识库检索 → ②指令解析(结合知识库) → ③JSON验证 → 输出")
+print(f"   流程: 开始 → 意图分类 → 意图路由 → 各自条件分支 → 合并输出 → JSON验证 → 输出")
 print("\n📋 使用步骤:")
 print("   1. Dify → 知识库 → 创建知识库，上传机械臂指令修正文档")
 print("   2. Dify → 工作室 → 导入此 DSL 文件")
-print("   3. 打开工作流 → ①知识库检索节点 → 选择刚创建的知识库")
-print("   4. ②指令解析节点 → 选择 Ollama → qwen2")
+print("   3. 打开工作流 → 知识库检索节点 → 选择刚创建的知识库")
+print("   4. 各LLM节点 → 选择 Ollama → qwen2")
 print("   5. 发布工作流")

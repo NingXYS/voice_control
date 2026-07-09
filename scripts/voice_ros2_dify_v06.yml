@@ -2,13 +2,13 @@ version: 0.6.0
 kind: app
 app:
   name: 语音指令→ROS2命令
-  description: 将语音识别的自然语言指令解析为ROS2机械臂控制JSON命令（含知识库修正）
+  description: 将语音识别的自然语言指令解析为ROS2机械臂控制JSON命令（条件分支后置知识库）
   mode: workflow
   icon_type: emoji
   icon: 🤖
   icon_background: '#FFEAD5'
 workflow:
-  id: bae0253c-28b5-4a2f-bb85-ad117f71d3be
+  id: 8ddec281-cce5-434c-8870-36890731dd23
   title: 语音指令解析工作流(知识库)
   features:
     file_upload:
@@ -33,26 +33,91 @@ workflow:
       position:
         x: 50
         y: 200
-    - id: knowledge_retrieve
-      data:
-        type: knowledge-retrieval
-        title: ① 知识库检索
-        description: 从知识库中检索与指令相关的修正信息
-        query_variable_selector:
-        - start_voice_text
-        - text
-        dataset_ids: []
-        retrieval_mode: multiple
-        top_k: 3
-        score_threshold: 0.5
-      position:
-        x: 300
-        y: 200
-    - id: llm_extract
+    - id: intent_classify
       data:
         type: llm
-        title: ② 指令解析(结合知识库)
-        description: 结合知识库修正信息，将自然语言指令转换为JSON命令
+        title: 意图分类
+        description: 轻量意图分类
+        context:
+          enabled: false
+        model:
+          mode: chat
+          provider: ''
+          name: ''
+          completion_params:
+            temperature: 0.1
+            max_tokens: 64
+            top_p: 0.95
+            stop: []
+        prompt_template:
+        - role: system
+          text: "你是一个专门用于双臂机械臂控制系统的轻量意图分类器。\n请根据用户输入的自然语言，将意图准确分类为以下五类之一，并且【只输出】分类对应的英文标识，不要包含任何标点符号、解释或\
+            \ Markdown 格式。\n\n【可选的分类标识】\n- fixed_reply\n- control_action\n- ambiguous_control\n\
+            - robot_knowledge\n- complex_fallback\n\n【分类规则 - 严格遵守】\n1. fixed_reply：自我介绍、能力询问、寒暄、感谢、打招呼等基本人机交互。\n\
+            \   - 例如：\"你是谁\"、\"你能做什么\"、\"谢谢你\"、\"你好\"、\"介绍下你自己\"\n2. control_action：明确的控制指令，包含手臂（左臂/右臂）、动作方向（向上/向下/向前/向后/向左/向右）或关节（关节1-6）、以及具体的运动距离（如厘米、米）或旋转角度（如度、弧度）等。\n\
+            \   - 例如：\"左臂向上10厘米\"、\"右臂向前5厘米\"、\"左臂关节1旋转30度\"、\"右臂回零位\"、\"查询左臂状态\"\n\
+            3. ambiguous_control：属于控制动作意图，但缺少必要参数。例如只说了手臂没说动作，或者只说了动作没说手臂，或者缺少具体方向、关节、距离/角度等。\n\
+            \   - 例如：\"抬起你的左手\"、\"动一下\"、\"往前一点\"、\"左臂向上\"、\"查询状态\"、\"回零\"、\"左手抬起来\"\
+            、\"左手\"、\"右臂\"、\"转一下\"\n4. robot_knowledge：询问机器人的限制、参数、规范、设计说明、坐标系、动作支持范围等需要查阅说明书或知识库上下文的问题。\n\
+            \   - 例如：\"机器人有什么限制\"、\"支持哪些关节\"、\"右臂可以移动多远\"、\"坐标系是怎么定义的\"、\"怎么下达指令\"\
+            、\"机械臂可以拿东西吗\"、\"能不能联网\"\n5. complex_fallback：无法被上述四类清晰且可靠归类的复杂或异常输入。\n\
+            \n【输出格式】\n只输出五类标识之一（即 fixed_reply, control_action, ambiguous_control,\
+            \ robot_knowledge, complex_fallback），绝对不要输出其他字符！"
+        - role: user
+          text: '{{#start_voice_text.text#}}'
+        variables: []
+      position:
+        x: 250
+        y: 200
+    - id: route_by_intent
+      data:
+        type: if-else
+        title: 意图路由
+        cases:
+        - case_id: case_fixed
+          logical_operator: and
+          conditions:
+          - id: cond_fixed
+            variable_selector:
+            - intent_classify
+            - text
+            comparison_operator: is
+            value: fixed_reply
+        - case_id: case_control
+          logical_operator: and
+          conditions:
+          - id: cond_control
+            variable_selector:
+            - intent_classify
+            - text
+            comparison_operator: is
+            value: control_action
+        - case_id: case_ambiguous
+          logical_operator: and
+          conditions:
+          - id: cond_ambiguous
+            variable_selector:
+            - intent_classify
+            - text
+            comparison_operator: is
+            value: ambiguous_control
+        - case_id: case_knowledge
+          logical_operator: and
+          conditions:
+          - id: cond_knowledge
+            variable_selector:
+            - intent_classify
+            - text
+            comparison_operator: is
+            value: robot_knowledge
+      position:
+        x: 450
+        y: 200
+    - id: llm_fixed_reply
+      data:
+        type: llm
+        title: 固定问答回复
+        description: 处理寒暄与基本信息回复
         context:
           enabled: false
         model:
@@ -66,186 +131,187 @@ workflow:
             stop: []
         prompt_template:
         - role: system
-          text: '你是双臂机械臂控制助手，负责将用户的自然语言指令转换为JSON。
+          text: '你是施耐力双臂六关节机械臂控制助手。
 
+            请对用户的寒暄、问候、感谢或自我介绍等简单交互进行礼貌简短的回复。
 
-            【知识库参考】
 
-            以下是从知识库检索到的相关指令修正信息，可作为参考：
+            【输出格式约束】
 
-            {{#knowledge_retrieve.result#}}
+            必须只输出一个 JSON 对象，且仅包含 reply 字段，例如：
 
-            注意：知识库检索结果只能作为参考；当知识库内容与本 prompt 中的安全澄清规则、输出 schema 或 Python 校验合约冲突时，以本 prompt 中的安全规则和 schema 为准。
-            部署说明：DSL 模板不写死知识库 ID（dataset_ids 字段保持空列表），实际知识库绑定由部署者在 Dify UI 配置。
+            {"reply": "你好！我是施耐力双臂机械臂控制助手。请说明你需要我控制左臂还是右臂进行动作。"}
 
+            绝对不要包含任何 markdown 标记、代码块、或者额外的解释。
 
-            【输出 Schema 定义 - 严格遵循】
 
-            只支持以下五种输出类型，每种的字段和类型必须完全匹配：
+            【已知的能力】
 
-            1. reply：仅用于问答、闲聊、感谢、重复、澄清，不包含 action。
-               {"reply": "回复内容"}
+            本系统目前支持控制左右臂在三维空间内直线移动（空间移动）、六个关节的旋转（关节旋转）、回到零位（回零）以及查询当前位置与关节状态。
 
-            2. move_cartesian：笛卡尔空间直线运动。
-               {"action": "move_cartesian", "arm": "left|right", "x": 0.0, "y": 0.0, "z": 0.0, "relative": true}
-               - arm 必须为 "left" 或 "right"
-               - x/y/z 为位移量（米），缺失自动补 0
-               - relative 始终为 true
+            控制指令需要明确手臂、方向或关节、距离或角度。
 
-            3. move_joint：关节空间旋转运动。
-               {"action": "move_joint", "arm": "left|right", "joint": 1, "value": 0.0, "type": "delta|absolute"}
-               - arm 必须为 "left" 或 "right"
-               - joint 为关节编号 1-6
-               - value 为角度值（弧度制）
-               - type 为 "delta"（相对）或 "absolute"（绝对），默认 "delta"
-
-            4. home：回零位。
-               {"action": "home", "arm": "left|right"}
-
-            5. get_status：查询状态。
-               {"action": "get_status", "arm": "left|right"}
-
-
-            【指令类型判断 - 优先判断】
-
-            - 用户询问机器人信息/功能/介绍/闲聊 → 输出 reply 类型
-            - 用户要求控制机械臂动作 → 输出 control 类型（带 action 字段）
-            - 用户指令缺少手臂、动作、方向、距离、关节编号或角度等关键信息 → 输出澄清型 reply
-
-
-            【动作类型选择规则 - 严格遵循】
-
-            - 用户提到"关节""旋转""转动" → action: "move_joint"
-            - 用户提到"上下左右前后""移动""走""抬""降" → action: "move_cartesian"
-            - 用户提到"回零""回零位""归零" → action: "home"
-            - 用户提到"查询""状态""在哪""位置" → action: "get_status"
-
-
-            【坐标系定义 - 严格遵循】
-
-            - 向右/右 → x: 正数
-            - 向左/左 → x: 负数
-            - 向前/前 → y: 正数
-            - 向后/后 → y: 负数
-            - 向上/上/升 → z: 正数
-            - 向下/下/降 → z: 负数
-
-
-            【关节编号】
-
-            - 第1-6关节对应 joint: 1-6
-
-
-            【单位换算 - 必须执行】
-
-            - 距离：厘米→米，如 10厘米=0.1米，5厘米=0.05米
-            - 角度：度→弧度，如 30度≈0.524弧度，45度≈0.785弧度
-
-
-            【默认值 - 仅在手臂和动作方向/关节明确时适用】
-
-            以下默认值仅在用户已明确手臂和动作方向/关节时使用；缺少手臂或动作方向的模糊输入必须输出澄清 reply：
-
-            - 已明确手臂和方向但未给距离时，move_cartesian 可默认 0.05 米（5厘米）
-            - 已明确手臂和关节但未给角度时，move_joint 可默认 0.1 弧度
-            - relative 始终为 true
-            - 未说"反转"/"反向"时，value 为正数
-
-            仅"右臂""动一下""往前一点""转一下""回零""查询状态"等缺少必要信息的输入必须输出澄清 reply，不得默认左臂、右臂或任何真实运动。
-
-
-            【安全澄清规则 - 必须遵守】
-
-            - 用户没有明确手臂时，不得默认左臂或右臂执行真实运动
-            - 用户没有明确动作、方向、距离、关节编号或角度时，不得猜测执行
-            - 以上情况应输出澄清型 reply，统一回复文案为：
-              请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。
-
-
-            【输出约束 - 必须遵守】
-
-            - 只输出纯JSON，不包含任何其他文字、markdown标记、代码块
-            - 单条指令输出JSON对象，多条指令输出JSON数组，保持用户说话顺序
-            - 字段必须完整，顺序不影响解析
-
-
-            【验证清单 - 输出前逐项自检】
-
-            1. ✅ 指令类型对了吗？（闲聊/澄清→reply，控制→带action）
-            2. ✅ 输出 schema 匹配？（字段名、类型、结构必须与 Schema 定义一致）
-            3. ✅ 单位已换算？（厘米→米，度→弧度）
-            4. ✅ 正负号正确？（左负右正，后负前正，下负上正）
-            5. ✅ 安全澄清？（缺少手臂/动作/方向/距离/关节/角度时输出 reply，不默认执行）
-
-
-            【示例 - 安全澄清】
-
-            用户：右臂
-            输出：{"reply": "请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。"}
-
-            用户：往前一点
-            输出：{"reply": "请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。"}
-
-            用户：转一下
-            输出：{"reply": "请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。"}
-
-            用户：查询状态
-            输出：{"reply": "请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。"}
-
-            用户：回零
-            输出：{"reply": "请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。"}
-
-            用户：动一下
-            输出：{"reply": "请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。"}
-
-
-            【示例 - 闲聊/问答】
-
-            用户：你叫什么名字
-            输出：{"reply": "我是双臂机械臂助手，可以帮你控制机械臂抓取和移动物品"}
-
-            用户：你能做什么
-            输出：{"reply": "我可以控制左右两条机械臂，支持关节旋转和空间移动，比如''左臂向前10厘米''"}
-
-
-            【示例 - 明确控制指令】
-
-            用户：右臂向前5厘米
-            输出：{"action":"move_cartesian","arm":"right","x":0,"y":0.05,"z":0,"relative":true}
-
-            用户：左臂关节1旋转30度
-            输出：{"action":"move_joint","arm":"left","joint":1,"value":0.524,"type":"delta"}
-
-            用户：右臂回零位
-            输出：{"action":"home","arm":"right"}
-
-            用户：查询左臂状态
-            输出：{"action":"get_status","arm":"left"}
-
-
-            【示例 - 组合指令】
-
-            用户：你是什么机器人然后右臂向上5厘米
-            输出：[{"reply": "我是施耐力双臂六关节机械臂，拥有左右两条手臂，各六个关节"},{"action":"move_cartesian","arm":"right","x":0,"y":0,"z":0.05,"relative":true}]
-
-            用户：右臂向前5厘米左臂向上10厘米
-            输出：[{"action":"move_cartesian","arm":"right","x":0,"y":0.05,"z":0,"relative":true},{"action":"move_cartesian","arm":"left","x":0,"y":0,"z":0.1,"relative":true}]
-
-            用户：左臂关节3反转30度
-            输出：{"action":"move_joint","arm":"left","joint":3,"value":-0.524,"type":"delta"}
-
-            用户：左臂向上右臂向前再左臂向右
-            输出：[{"action":"move_cartesian","arm":"left","x":0,"y":0,"z":0.05,"relative":true},{"action":"move_cartesian","arm":"right","x":0,"y":0.05,"z":0,"relative":true},{"action":"move_cartesian","arm":"left","x":0.05,"y":0,"z":0,"relative":true}]'
+            本系统不支持抓取、松开、拿放物品、联网检索、云服务、物体识别或其它真实物理外设操控，请不要承诺这些能力。'
         - role: user
           text: '{{#start_voice_text.text#}}'
         variables: []
       position:
-        x: 580
-        y: 200
+        x: 700
+        y: 0
+    - id: llm_control_action
+      data:
+        type: llm
+        title: 动作指令解析
+        description: 解析明确的机械臂动作控制指令
+        context:
+          enabled: false
+        model:
+          mode: chat
+          provider: ''
+          name: ''
+          completion_params:
+            temperature: 0.1
+            max_tokens: 512
+            top_p: 0.95
+            stop: []
+        prompt_template:
+        - role: system
+          text: "你是双臂机械臂控制助手，负责将用户的自然语言指令转换为JSON。\n\n【输出 Schema 定义 - 严格遵循】\n只支持以下五种输出类型，字段与类型必须完全匹配，不得混用或缺少：\n\
+            1. reply：只用于澄清和说明，不能包含 action 字段。\n   {\"reply\": \"回复内容\"}\n2. move_cartesian：笛卡尔空间直线运动。\n\
+            \   {\"action\": \"move_cartesian\", \"arm\": \"left|right\", \"x\": 0.0,\
+            \ \"y\": 0.0, \"z\": 0.0, \"relative\": true}\n3. move_joint：关节空间相对或绝对旋转。\n\
+            \   {\"action\": \"move_joint\", \"arm\": \"left|right\", \"joint\": 1,\
+            \ \"value\": 0.0, \"type\": \"delta|absolute\"}\n4. home：回零位。\n   {\"\
+            action\": \"home\", \"arm\": \"left|right\"}\n5. get_status：查询状态。\n  \
+            \ {\"action\": \"get_status\", \"arm\": \"left|right\"}\n\n【Python 校验合约】\n\
+            - reply 和 action 字段绝对不得同时存在。\n- arm 只能是 \"left\" 或 \"right\"。\n- home\
+            \ 和 get_status 必须显式指定合法的 arm 字段，不得默认左臂或右臂。\n- home 和 get_status 严禁且不需要补\
+            \ joint, value, type, x, y, z, relative 等任何运动相关字段。\n\n【指令类型判断规则】\n- 用户要求控制机械臂动作（位移、旋转、回零、查询状态等）且参数齐全\
+            \ → 输出动作/控制类型（带 action 字段）。\n- 用户指令缺少手臂、动作、方向、距离、关节编号或角度等关键信息 → 输出澄清型\
+            \ reply。\n\n【动作类型选择规则】\n- 用户提到\"关节\"\"旋转\"\"转动\" → action: \"move_joint\"\
+            \n- 用户提到\"上下左右前后\"\"移动\"\"走\"\"抬\"\"降\" → action: \"move_cartesian\"\n\
+            - 用户提到\"回零\"\"回零位\"\"归零\" → action: \"home\"\n- 用户提到\"查询\"\"状态\"\"位置\"\
+            \ → action: \"get_status\"\n\n【坐标系与单位换算】\n- 距离：厘米必须换算为米（例如：10厘米=0.1米，5厘米=0.05米）。\n\
+            - 角度：度必须换算为弧度（例如：30度≈0.524弧度，45度≈0.785弧度）。\n- 坐标方向：向右为 x 正，向左为 x 负；向前为\
+            \ y 正，向后为 y 负；向上为 z 正，向下为 z 负。\n- relative 对于 move_cartesian 始终为 true。\n\
+            - 未说\"反转\"或\"反向\"时，move_joint 的 value 为正数；当且仅当手臂、关节和角度明确时，type 使用 \"delta\"\
+            。\n\n【安全澄清与防默认规则】\n- 必须防止高风险默认行为：严禁出现“未指定距离默认移动 0.05米”或“未指定角度默认旋转 0.1弧度”等无条件默认执行动作规则！\n\
+            - 对于任何缺少手臂（如未指明是左臂还是右臂）、未指明运动方向、距离、关节编号或旋转角度等模糊输入，绝对不允许猜测并默认执行任何动作，必须输出统一的澄清型回复。\n\
+            - 澄清回复统一文案为：\"请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。\"\n- 缺关键字段的输入如“左臂向上”、“右臂向前”、“左臂关节1旋转”、“回零”、“查询状态”等，必须输出澄清回复，禁止生成动作\
+            \ JSON 默认执行。\n\n【能力边界约束】\n- 本系统仅支持左右臂在三维空间移动和关节旋转。\n- 不得对用户承诺任何未实现的能力，例如：抓取、松开、拿、放、联网检索、云服务、物体识别或其它真实物理外设操控。\n\
+            \n【示例 - 安全澄清】\n用户：抬起你的左手\n输出：{\"reply\": \"请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。\"\
+            }\n\n用户：左臂向上\n输出：{\"reply\": \"请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。\"}\n\n用户：查询状态\n\
+            输出：{\"reply\": \"请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。\"}\n\n用户：回零\n输出：{\"reply\"\
+            : \"请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。\"}\n\n【示例 - 明确动作】\n用户：左臂向上10厘米\n输出：{\"\
+            action\": \"move_cartesian\", \"arm\": \"left\", \"x\": 0.0, \"y\": 0.0,\
+            \ \"z\": 0.1, \"relative\": true}\n\n用户：右臂向前5厘米\n输出：{\"action\": \"move_cartesian\"\
+            , \"arm\": \"right\", \"x\": 0.0, \"y\": 0.05, \"z\": 0.0, \"relative\"\
+            : true}\n\n用户：左臂关节1旋转30度\n输出：{\"action\": \"move_joint\", \"arm\": \"\
+            left\", \"joint\": 1, \"value\": 0.524, \"type\": \"delta\"}\n\n用户：右臂回零位\n\
+            输出：{\"action\": \"home\", \"arm\": \"right\"}\n\n用户：查询左臂状态\n输出：{\"action\"\
+            : \"get_status\", \"arm\": \"left\"}\n\n【示例 - 混合/组合指令】\n用户：你是什么机器人然后右臂向上5厘米\
+            \ （注：由于问答部分由前置意图分类处理，此处仅处理动作）\n输出：{\"action\": \"move_cartesian\", \"\
+            arm\": \"right\", \"x\": 0.0, \"y\": 0.0, \"z\": 0.05, \"relative\": true}\n\
+            \n用户：右臂向前5厘米左臂向上10厘米\n输出：[{\"action\": \"move_cartesian\", \"arm\": \"\
+            right\", \"x\": 0.0, \"y\": 0.05, \"z\": 0.0, \"relative\": true}, {\"\
+            action\": \"move_cartesian\", \"arm\": \"left\", \"x\": 0.0, \"y\": 0.0,\
+            \ \"z\": 0.1, \"relative\": true}]\n\n用户：左臂关节3反转30度\n输出：{\"action\": \"\
+            move_joint\", \"arm\": \"left\", \"joint\": 3, \"value\": -0.524, \"type\"\
+            : \"delta\"}\n\n用户：左臂向上右臂向前再左臂向右 （注：由于没有距离，且属于混合动作，输出澄清）\n输出：{\"reply\"\
+            : \"请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。\"}\n\n【输出约束】\n- 只输出纯 JSON 字符串，绝不包含任何\
+            \ markdown 代码块标识（如 ```json 等）或多余的自然语言解释。\n- 单个指令返回 JSON 对象，多条或复合意图返回 JSON\
+            \ 数组，保持用户说话顺序。"
+        - role: user
+          text: '{{#start_voice_text.text#}}'
+        variables: []
+      position:
+        x: 700
+        y: 150
+    - id: tmpl_ambiguous_control
+      data:
+        type: template-transform
+        title: 模糊指令澄清
+        template: '{"reply": "请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。"}'
+        variables: []
+      position:
+        x: 700
+        y: 300
+    - id: knowledge_retrieve
+      data:
+        type: knowledge-retrieval
+        title: 知识库检索
+        description: 从知识库中检索与机器人相关的说明信息
+        query_variable_selector:
+        - start_voice_text
+        - text
+        dataset_ids: []
+        retrieval_mode: multiple
+        top_k: 3
+        score_threshold: 0.5
+      position:
+        x: 700
+        y: 450
+    - id: llm_robot_knowledge
+      data:
+        type: llm
+        title: 知识问答回复
+        description: 结合知识库检索结果进行回复
+        context:
+          enabled: false
+        model:
+          mode: chat
+          provider: ''
+          name: ''
+          completion_params:
+            temperature: 0.1
+            max_tokens: 512
+            top_p: 0.95
+            stop: []
+        prompt_template:
+        - role: system
+          text: "你是施耐力双臂六关节机械臂控制助手。请根据知识库检索到的相关指令修正与问答信息，结合用户的输入进行准确、简短、礼貌的回答。\n\n\
+            【知识库参考 - 优先遵循】\n以下是从知识库检索到的相关参考信息：\n{{#knowledge_retrieve.result#}}\n\n\
+            【限制与约束】\n- 你的回答必须是合法的 JSON 对象，且仅包含 reply 字段，例如：\n  {\"reply\": \"回答内容\"\
+            }\n- 你的回复应当简短、直截了当、适合语音合成 (TTS)。\n- 绝对不要输出任何 markdown 格式（如 ```json 等）、额外文字或标点符号。\n\
+            - 本系统目前仅支持控制左右臂在三维空间内直线移动（空间移动）、六个关节的相对或绝对旋转（关节旋转）、回到零位（回零）以及查询当前位置与关节状态。\n\
+            - 严禁承诺任何未实现的能力，例如：抓取物品、松开物品、拿东西、放东西、物体识别、联网检索、云服务等。\n- 如果用户询问了非本系统支持的问题，或知识库没有相关信息，请礼貌地予以澄清并告知支持的指令范围。"
+        - role: user
+          text: '{{#start_voice_text.text#}}'
+        variables: []
+      position:
+        x: 920
+        y: 450
+    - id: tmpl_complex_fallback
+      data:
+        type: template-transform
+        title: 复杂兜底澄清
+        template: '{"reply": "请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。"}'
+        variables: []
+      position:
+        x: 700
+        y: 600
+    - id: merge_outputs
+      data:
+        type: variable-aggregator
+        title: 合并分支输出
+        variables:
+        - - llm_fixed_reply
+          - text
+        - - llm_control_action
+          - text
+        - - tmpl_ambiguous_control
+          - output
+        - - llm_robot_knowledge
+          - text
+        - - tmpl_complex_fallback
+          - output
+      position:
+        x: 1150
+        y: 250
     - id: code_convert
       data:
         type: code
-        title: ③ JSON验证与清理
+        title: JSON验证与清理
         description: 验证LLM输出的JSON并确保格式正确
         code_language: python3
         code: "import json\nimport re\n\ndef main(raw_json: str) -> dict:\n    result\
@@ -262,14 +328,14 @@ workflow:
         variables:
         - variable: raw_json
           value_selector:
-          - llm_extract
-          - text
+          - merge_outputs
+          - output
         outputs:
           result:
             type: string
       position:
-        x: 860
-        y: 200
+        x: 1350
+        y: 250
     - id: end_result
       data:
         type: end
@@ -280,14 +346,41 @@ workflow:
           - code_convert
           - result
       position:
-        x: 1100
-        y: 200
+        x: 1550
+        y: 250
     edges:
     - source: start_voice_text
+      target: intent_classify
+    - source: intent_classify
+      target: route_by_intent
+    - source: route_by_intent
+      sourceHandle: case_fixed
+      target: llm_fixed_reply
+    - source: route_by_intent
+      sourceHandle: case_control
+      target: llm_control_action
+    - source: route_by_intent
+      sourceHandle: case_ambiguous
+      target: tmpl_ambiguous_control
+    - source: route_by_intent
+      sourceHandle: case_knowledge
       target: knowledge_retrieve
+    - source: route_by_intent
+      sourceHandle: 'false'
+      target: tmpl_complex_fallback
     - source: knowledge_retrieve
-      target: llm_extract
-    - source: llm_extract
+      target: llm_robot_knowledge
+    - source: llm_fixed_reply
+      target: merge_outputs
+    - source: llm_control_action
+      target: merge_outputs
+    - source: tmpl_ambiguous_control
+      target: merge_outputs
+    - source: llm_robot_knowledge
+      target: merge_outputs
+    - source: tmpl_complex_fallback
+      target: merge_outputs
+    - source: merge_outputs
       target: code_convert
     - source: code_convert
       target: end_result
