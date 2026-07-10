@@ -16,22 +16,24 @@
 现有 Python 代码风格特征：
 
 - 使用 Python 脚本文件作为主要入口，文件头常见 `#!/usr/bin/env python3`。
-- 模块顶部使用中文 docstring 说明职责，例如语音入口、共享 LLM 模块和 TTS 模块。
+- 模块顶部使用中文 docstring 说明职责，例如语音入口、共享 LLM 模块、本地知识模块、TTS 模块和调试工具。
 - 常量使用 `UPPER_SNAKE_CASE`，例如 `SAMPLE_RATE`、`AUDIO_FILE`、`OLLAMA_MODEL`、`VALID_ACTIONS`。
-- 私有常量和 helper 使用前导下划线，例如 `_LOCAL_REPLY_IDENTITY_KW`、`_parse_llm_response()`、`_failure_cache`。
+- 私有常量、缓存和 helper 使用前导下划线，例如 `_LOCAL_REPLY_IDENTITY_KW`、`_parse_llm_response()`、`_failure_cache`。
 - 函数和变量使用 `snake_case`。
 - 类名使用 `PascalCase`，例如 `VoicePublisher`、`VoiceDebugTool`、`LatencyTracker`、`LatencyLogger`。
 - 代码分区常用中文横幅注释，例如 `# ==================== 配置 ====================`。
-- 业务流程注释多为中文短句，常带阶段名，例如 `Phase 0`、`Phase 3`、`Task 4`；新增注释应避免继续扩大任务编号痕迹，优先写稳定业务含义。
+- 业务流程注释多为中文短句，现有代码中也有 `Phase N`、`Task N` 注释；新增长期代码时优先写稳定业务含义，避免继续扩大临时任务编号痕迹。
 - 日志和命令行输出以中文为主，现有代码中大量使用 emoji 标识状态；新增日志应与所在文件现有风格保持一致。
 - JSON 输出涉及中文时使用 `ensure_ascii=False`。
 - 外部服务调用使用 `requests.Session()` 和短 TTL 失败缓存；修改时保持 Dify / Ollama 缓存隔离。
 - 音频和系统命令相关代码偏过程式，使用 `subprocess`、临时文件和显式异常处理。
 - GUI 使用 Tkinter / ttk，样式集中在 `_setup_theme()`，UI 构建集中在 `_build_ui()`。
+- 测试使用 `unittest`、`subTest()` 和 `unittest.mock`，并在测试文件中把 `scripts/` 加入 `sys.path`。
 
 ## Python 解析与校验规则风格
 
 - 共享语义逻辑优先放在 `scripts/voice_llm_client.py`，入口脚本只做编排。
+- 固定 reply 和 CSV 知识加载放在 `scripts/voice_local_knowledge.py`，不放入入口脚本。
 - 本地高置信 reply、本地模糊澄清、本地动作解析和 LLM 解析应保持清晰的先后关系。
 - 本地动作解析器保持保守：明确模板才返回命令；任一片段解析失败应整体 miss。
 - `validate_and_fix_command()` 是 action/reply 合约边界，新增 action 或字段必须同步测试。
@@ -57,6 +59,7 @@
 - ROS 节点名、topic 名和 action 字段是跨模块合约，修改前必须先规划。
 - Python 共享逻辑优先放在现有共享模块中：
   - LLM / prompt / 校验 / 本地解析：`scripts/voice_llm_client.py`
+  - 固定 reply / CSV 知识：`scripts/voice_local_knowledge.py`
   - 延迟观测：`scripts/latency_metrics.py`
   - TTS：`scripts/voice_tts.py`
   - GUI 调试编排：`scripts/voice_debug_tool.py`
@@ -104,4 +107,4 @@
 - Antigravity / Gemini 修改代码时必须严格遵守 `.ai/tasks/*.task.md`。
 - Codex review 时必须检查是否存在过度抽象、范围扩大、topic 合约破坏、行为/API 风险、安全风险和 AI 生成痕迹。
 - 如果执行任务需要修改未授权文件，执行者必须停止并说明。
-- `.gitignore`、AGENTS/CLAUDE 规则和 `.ai/context/` 属于流程/上下文文件，修改前应确认任务是否允许。
+- `.gitignore`、`AGENTS.md`、`.agents/` 规则和 `.ai/context/` 属于流程/上下文文件，修改前应确认任务是否允许。

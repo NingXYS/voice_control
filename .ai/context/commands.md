@@ -4,7 +4,7 @@
 
 ## 构建
 
-`package.xml` 声明本包是 ROS 2 `ament_cmake` 包，`CMakeLists.txt` 定义项目名为 `voice_control`，因此可确认的包构建命令是：
+`package.xml` 声明本包是 ROS 2 `ament_cmake` 包，`CMakeLists.txt` 定义项目名为 `voice_control`：
 
 ```bash
 colcon build --packages-select voice_control
@@ -18,7 +18,11 @@ colcon build --packages-select voice_control
 ros2 run voice_control robot_controller
 ```
 
-`CMakeLists.txt` 还声明安装 `scripts/voice_qwen_llm.py`，该源文件当前存在；对应 `ros2 run` 命令仍需在安装环境中确认。
+`CMakeLists.txt` 还安装了 `scripts/voice_qwen_llm.py` 到 `lib/${PROJECT_NAME}`：
+
+```bash
+ros2 run voice_control voice_qwen_llm.py
+```
 
 ## 测试
 
@@ -43,5 +47,5 @@ ros2 run voice_control robot_controller
 - `package.xml` 使用 `<build_type>ament_cmake</build_type>`。
 - `CMakeLists.txt` 对 GNU/Clang C++ 编译器启用 `-Wall -Wextra -Wpedantic`。
 - `CMakeLists.txt` 安装了 `robot_controller`。
-- `CMakeLists.txt` 声明安装 `scripts/voice_qwen_llm.py`，当前主要脚本已位于该路径；安装后的实际入口命令待确认。
+- `CMakeLists.txt` 安装了 `scripts/voice_qwen_llm.py`。
 - 根目录未发现 `README.md`、`Makefile`、`requirements.txt`、`pyproject.toml`、`setup.py` 或 docker compose 配置。

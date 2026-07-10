@@ -2,17 +2,17 @@
 
 ## 当前架构
 
-项目是 ROS 2 中文语音控制系统，当前运行链路可以概括为：
+项目是 ROS 2 中文语音控制系统，当前源码显示的主链路如下：
 
 1. 语音入口录音并使用 Paraformer 做 ASR。
 2. 文本先经过关键词快速路由：打招呼、自我介绍、装配数量。
 3. 未被关键词路由处理的文本进入本地高置信 reply / 澄清层。
 4. 本地 reply 未命中时进入本地保守动作解析器。
-5. 本地动作解析未命中时，调用 Dify Workflow API；Dify 未配置或不可用时，回退 Ollama `/api/chat`。
+5. 本地动作解析未命中时进入 LLM 解析流程，代码中包含 Dify Workflow API 和 Ollama `/api/chat`。
 6. LLM/Dify/Ollama 输出统一由 JSON 解析和命令校验层处理。
 7. Python 入口通过 ROS topic 发布识别文本、机器人控制命令、语音回复或装配数量。
 8. C++ `robot_controller` 订阅机器人命令并通过 MoveIt 执行。
-9. TTS 节点或入口脚本把 reply 文本交给本地 VITS 模型合成并播放。
+9. TTS 模块把 reply 文本交给本地 VITS 模型合成并播放。
 10. 延迟追踪模块在关键阶段记录耗时并写入 JSONL。
 
 ## 运行时边界
@@ -34,7 +34,7 @@
 - 对 reply 触发 TTS 播放。
 - 记录延迟 tracker 元数据和阶段耗时。
 
-当前入口路由顺序：
+当前主入口路由顺序：
 
 1. 打招呼 / 自我介绍 / 装配数量。
 2. `check_local_reply_command()`。
@@ -47,13 +47,14 @@
 
 - 入口层可以编排流程，但不应复制 LLM 解析、reply 匹配和命令校验逻辑。
 - 入口层不应直接实现 MoveIt 控制细节。
-- 入口层涉及真实 ROS 发布和外部系统命令，改动时需要明确验证方式。
+- 入口层涉及真实 ROS 发布、录音进程和外部系统命令，改动时需要明确验证方式。
 
 ### LLM / 指令解析层
 
 主要文件：
 
 - `scripts/voice_llm_client.py`
+- `scripts/voice_local_knowledge.py`
 - `scripts/voice_ros2_dify.yml`
 - `scripts/voice_ros2_dify_v06.yml`
 - `knowledge_base/robot_knowledge.csv`
@@ -62,10 +63,10 @@
 
 - 定义 Ollama 兜底 `SYSTEM_PROMPT`、动作 schema、坐标系映射和单位换算规则。
 - 提供关键词检测：打招呼、自我介绍、装配数量。
-- 提供本地高置信 reply 意图层：身份、能力、感谢、澄清/重复。
+- 提供本地高置信 reply 意图层：身份、能力、感谢、澄清/重复和固定知识问答。
 - 提供本地模糊控制澄清：例如只说“右臂”“动一下”“往前一点”等返回澄清 reply。
 - 提供保守本地动作解析器，命中明确模板时绕过 Dify/Ollama。
-- 先尝试 Dify Workflow API，再使用 Ollama 兜底。
+- 调用 Dify Workflow API 或 Ollama 兜底。
 - 清理和解析 LLM JSON 输出。
 - 校验 `reply`、`move_joint`、`move_cartesian`、`home`、`get_status`。
 - 维护 Dify 和 Ollama 各自独立的短 TTL 失败缓存。
@@ -73,6 +74,7 @@
 边界规则：
 
 - `scripts/voice_llm_client.py` 是指令语义、JSON 合约和服务调用的集中位置。
+- `scripts/voice_local_knowledge.py` 只负责本地固定 reply/知识规则和 CSV 加载，不负责动作 JSON、外部服务调用或 ROS 发布。
 - 修改 action、字段、坐标系、单位换算、默认值、澄清策略或 reply 命中策略属于高风险行为，必须先规划并补充测试。
 - 本地 reply 层不得吞掉 mixed 控制意图。
 - 模糊控制输入应澄清，不默认触发真实机械臂动作。
@@ -145,8 +147,9 @@
 
 边界规则：
 
-- TTS 失败当前设计为静默跳过或不阻塞主流程。
+- TTS 初始化失败当前返回 `False`，播放失败当前静默跳过，不阻塞主流程。
 - 修改播放方式、线程互斥、采样率转换或失败处理可能影响交互体验，需显式说明。
+- `scripts/voice_tts_node.py` 当前未在 `CMakeLists.txt` 中安装，运行方式待确认。
 
 ### 调试工具层
 
@@ -165,6 +168,7 @@
 
 - 调试工具不应复制解析规则。
 - GUI 验证和真实 ROS/机械臂验证不是一回事，执行报告中需要区分。
+- `scripts/voice_debug_tool.py` 当前未在 `CMakeLists.txt` 中安装，运行方式待确认。
 
 ### 延迟观测层
 
@@ -186,12 +190,12 @@
 
 - ROS 2 Humble：`scripts/voice_qwen_llm.py` 中注入了 Humble Python 路径，实际环境待确认。
 - MoveIt：执行机械臂规划和控制。
-- Dify Workflow API：默认地址 `http://localhost:80`，通过 `DIFY_API_KEY` 启用。
+- Dify Workflow API：默认地址 `http://localhost:80`，通过 `DIFY_API_KEY` 配置。
 - Ollama：默认地址 `http://localhost:11434`，模型默认 `qwen2`，可通过 `OLLAMA_MODEL` 覆盖。
-- sherpa_onnx：用于 ASR 和 TTS。
-- arecord / aplay：用于录音和播放。
-- soundfile / numpy：代码中用于读写音频和重采样，依赖安装方式待确认。
-- pynput：主语音入口用于监听键盘。
+- `sherpa_onnx`：用于 ASR 和 TTS。
+- `arecord` / `aplay`：用于录音和播放。
+- `soundfile` / `numpy`：代码中用于读写音频和重采样，依赖安装方式待确认。
+- `pynput`：主语音入口用于监听键盘。
 - Tkinter：调试工具 GUI。
 - 外部打招呼 demo：`/mnt/ssd/lyz/install/tianlian_hardware/lib/tianlian_hardware/single_point_demo`，部署路径待确认。
 - FastDDS 配置：`/mnt/ssd/lyz/fastdds_wifi.xml`，部署路径待确认。
@@ -207,13 +211,14 @@
 - 系统命令和文件操作：`scripts/voice_qwen_llm.py` 中 `arecord`、外部 demo；`scripts/voice_tts.py` 中临时 WAV 和 `aplay`；`scripts/latency_metrics.py` 中日志写入。
 - 本机绝对路径：模型路径、ROS Python 路径、外部 demo、FastDDS 配置。
 - 并发：ROS spin 线程、录音进程、TTS 互斥锁、GUI 线程、服务健康缓存锁。
+- `.ai/tasks`、`.ai/runs`、`.ai/reviews`：双代理流程产物，也应避免泄露 token 或现场敏感信息。
 
 ## 待确认
 
 - 项目最终部署启动方式。
-- `scripts/voice_qwen_llm.py` 已与 `CMakeLists.txt` 安装路径一致；实际 `ros2 run` 部署结果待确认。
-- Dify DSL v2 与 v0.6 两个文件的实际使用版本。
+- `scripts/voice_qwen_llm.py` 的安装后 `ros2 run` 结果。
+- Dify DSL 两个文件的实际使用版本。
 - `knowledge_base/robot_knowledge.csv` 的实际导入和更新流程。
-- Dify `dataset_ids: []` 的实际知识库绑定 ID。
+- Dify 知识库绑定 ID 和生产 workflow 配置。
 - 实际机械臂型号、坐标系标定、安全边界和现场急停流程。
 - GUI、ROS、Dify UI、Ollama/Dify 服务和真实机械臂的当前联调状态。
