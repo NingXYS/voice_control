@@ -1,23 +1,64 @@
 #!/usr/bin/env python3
 """Offline wake-word entry that reuses the existing voice_qwen_llm route."""
+import importlib
 import os
 import signal
+import sys
 import tempfile
+import types
+
 import numpy as np
 import soundfile as sf
 
-import voice_qwen_llm as legacy
 from voice_audio_session import PersistentAudioSession
 from voice_command_vad import CommandVadDetector
 from voice_prompt_tone import play_prompt_tone
 from voice_runtime_config import (
-    AUDIO_CHUNK_MS, AUDIO_DEVICE, COMMAND_MAX_DURATION_SEC,
-    COMMAND_START_TIMEOUT_SEC, KWS_NUM_THREADS, PROMPT_GUARD_DURATION_SEC,
-    VAD_MIN_SPEECH_DURATION_SEC, VAD_MODEL_PATH, VAD_SILENCE_DURATION_SEC,
-    WAKE_COOLDOWN_SEC, WAKE_MODEL_DIR, WAKE_WORD, validate_runtime_config,
+    AUDIO_CHUNK_MS,
+    AUDIO_DEVICE,
+    COMMAND_MAX_DURATION_SEC,
+    COMMAND_START_TIMEOUT_SEC,
+    KWS_NUM_THREADS,
+    PARAFORMER_MODEL_DIR,
+    PROMPT_GUARD_DURATION_SEC,
+    VAD_MIN_SPEECH_DURATION_SEC,
+    VAD_MODEL_PATH,
+    VAD_SILENCE_DURATION_SEC,
+    WAKE_COOLDOWN_SEC,
+    WAKE_MODEL_DIR,
+    WAKE_WORD,
+    validate_runtime_config,
 )
 from voice_wake_runtime import WakeWordRuntime
 from voice_wake_word import WakeWordDetector
+
+legacy = None
+
+
+def _load_legacy():
+    """Import the legacy route without initializing pynput's desktop backend.
+
+    The wake-word entry never uses the legacy keyboard callbacks. A temporary
+    module shim prevents pynput from attempting to connect to X during import,
+    while the standalone keyboard entry continues to import the real package.
+    """
+    inserted_pynput_shim = "pynput" not in sys.modules
+    if inserted_pynput_shim:
+        pynput_shim = types.ModuleType("pynput")
+        pynput_shim.keyboard = types.SimpleNamespace()
+        sys.modules["pynput"] = pynput_shim
+
+    try:
+        module = importlib.import_module("voice_qwen_llm")
+    finally:
+        if inserted_pynput_shim:
+            sys.modules.pop("pynput", None)
+
+    # voice_qwen_llm predates the shared configuration module. Keep its model
+    # and keyboard-debug audio paths aligned with the wake-word entry.
+    module.PARAFORMER_MODEL_DIR = PARAFORMER_MODEL_DIR
+    module.AUDIO_DEVICE = AUDIO_DEVICE
+    return module
 
 
 def recognize_audio(samples, sample_rate):
@@ -71,7 +112,10 @@ def process_text(text, reply_speaker):
 
 
 def main():
+    global legacy
+
     validate_runtime_config()
+    legacy = _load_legacy()
     legacy.load_models()
     if legacy.asr_model is None:
         raise SystemExit("Paraformer ASR model failed to load")
