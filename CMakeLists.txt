@@ -34,6 +34,18 @@ install(TARGETS
 
 install(PROGRAMS
   scripts/voice_qwen_llm.py
+  scripts/voice_wake_entry.py
+  scripts/build_wake_keyword.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(FILES
+  scripts/voice_runtime_config.py
+  scripts/voice_wake_word.py
+  scripts/voice_command_vad.py
+  scripts/voice_audio_session.py
+  scripts/voice_prompt_tone.py
+  scripts/voice_wake_runtime.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
