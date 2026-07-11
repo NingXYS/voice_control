@@ -463,25 +463,90 @@ dsl = {
                 },
             ],
             "edges": [
-                {"source": "start_voice_text", "target": "intent_classify"},
-                {"source": "intent_classify", "target": "route_by_intent"},
+                {
+                    "id": "start_voice_text-source-intent_classify-target",
+                    "source": "start_voice_text",
+                    "target": "intent_classify",
+                },
+                {
+                    "id": "intent_classify-source-route_by_intent-target",
+                    "source": "intent_classify",
+                    "target": "route_by_intent",
+                },
                 # route_by_intent branches
-                {"source": "route_by_intent", "sourceHandle": "case_fixed", "target": "llm_fixed_reply"},
-                {"source": "route_by_intent", "sourceHandle": "case_control", "target": "llm_control_action"},
-                {"source": "route_by_intent", "sourceHandle": "case_ambiguous", "target": "tmpl_ambiguous_control"},
-                {"source": "route_by_intent", "sourceHandle": "case_knowledge", "target": "knowledge_retrieve"},
-                {"source": "route_by_intent", "sourceHandle": "false", "target": "tmpl_complex_fallback"},
+                {
+                    "id": "route_by_intent-case_fixed-llm_fixed_reply-target",
+                    "source": "route_by_intent",
+                    "sourceHandle": "case_fixed",
+                    "target": "llm_fixed_reply",
+                },
+                {
+                    "id": "route_by_intent-case_control-llm_control_action-target",
+                    "source": "route_by_intent",
+                    "sourceHandle": "case_control",
+                    "target": "llm_control_action",
+                },
+                {
+                    "id": "route_by_intent-case_ambiguous-tmpl_ambiguous_control-target",
+                    "source": "route_by_intent",
+                    "sourceHandle": "case_ambiguous",
+                    "target": "tmpl_ambiguous_control",
+                },
+                {
+                    "id": "route_by_intent-case_knowledge-knowledge_retrieve-target",
+                    "source": "route_by_intent",
+                    "sourceHandle": "case_knowledge",
+                    "target": "knowledge_retrieve",
+                },
+                {
+                    "id": "route_by_intent-false-tmpl_complex_fallback-target",
+                    "source": "route_by_intent",
+                    "sourceHandle": "false",
+                    "target": "tmpl_complex_fallback",
+                },
                 # downstream of knowledge retrieval
-                {"source": "knowledge_retrieve", "target": "llm_robot_knowledge"},
+                {
+                    "id": "knowledge_retrieve-source-llm_robot_knowledge-target",
+                    "source": "knowledge_retrieve",
+                    "target": "llm_robot_knowledge",
+                },
                 # converge to aggregator
-                {"source": "llm_fixed_reply", "target": "merge_outputs"},
-                {"source": "llm_control_action", "target": "merge_outputs"},
-                {"source": "tmpl_ambiguous_control", "target": "merge_outputs"},
-                {"source": "llm_robot_knowledge", "target": "merge_outputs"},
-                {"source": "tmpl_complex_fallback", "target": "merge_outputs"},
+                {
+                    "id": "llm_fixed_reply-source-merge_outputs-target",
+                    "source": "llm_fixed_reply",
+                    "target": "merge_outputs",
+                },
+                {
+                    "id": "llm_control_action-source-merge_outputs-target",
+                    "source": "llm_control_action",
+                    "target": "merge_outputs",
+                },
+                {
+                    "id": "tmpl_ambiguous_control-source-merge_outputs-target",
+                    "source": "tmpl_ambiguous_control",
+                    "target": "merge_outputs",
+                },
+                {
+                    "id": "llm_robot_knowledge-source-merge_outputs-target",
+                    "source": "llm_robot_knowledge",
+                    "target": "merge_outputs",
+                },
+                {
+                    "id": "tmpl_complex_fallback-source-merge_outputs-target",
+                    "source": "tmpl_complex_fallback",
+                    "target": "merge_outputs",
+                },
                 # final nodes
-                {"source": "merge_outputs", "target": "code_convert"},
-                {"source": "code_convert", "target": "end_result"},
+                {
+                    "id": "merge_outputs-source-code_convert-target",
+                    "source": "merge_outputs",
+                    "target": "code_convert",
+                },
+                {
+                    "id": "code_convert-source-end_result-target",
+                    "source": "code_convert",
+                    "target": "end_result",
+                },
             ],
             "viewport": {"x": 0, "y": 0, "zoom": 1}
         }

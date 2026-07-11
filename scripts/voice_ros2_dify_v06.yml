@@ -8,7 +8,7 @@ app:
   icon: 🤖
   icon_background: '#FFEAD5'
 workflow:
-  id: 0f0d7ecc-2cd9-4e31-b970-7e5a705c3eed
+  id: ffa36444-d319-400e-b38a-bf88c3752803
   title: 语音指令解析工作流(知识库)
   features:
     file_upload:
@@ -350,40 +350,55 @@ workflow:
         x: 1550
         y: 250
     edges:
-    - source: start_voice_text
+    - id: start_voice_text-source-intent_classify-target
+      source: start_voice_text
       target: intent_classify
-    - source: intent_classify
+    - id: intent_classify-source-route_by_intent-target
+      source: intent_classify
       target: route_by_intent
-    - source: route_by_intent
+    - id: route_by_intent-case_fixed-llm_fixed_reply-target
+      source: route_by_intent
       sourceHandle: case_fixed
       target: llm_fixed_reply
-    - source: route_by_intent
+    - id: route_by_intent-case_control-llm_control_action-target
+      source: route_by_intent
       sourceHandle: case_control
       target: llm_control_action
-    - source: route_by_intent
+    - id: route_by_intent-case_ambiguous-tmpl_ambiguous_control-target
+      source: route_by_intent
       sourceHandle: case_ambiguous
       target: tmpl_ambiguous_control
-    - source: route_by_intent
+    - id: route_by_intent-case_knowledge-knowledge_retrieve-target
+      source: route_by_intent
       sourceHandle: case_knowledge
       target: knowledge_retrieve
-    - source: route_by_intent
+    - id: route_by_intent-false-tmpl_complex_fallback-target
+      source: route_by_intent
       sourceHandle: 'false'
       target: tmpl_complex_fallback
-    - source: knowledge_retrieve
+    - id: knowledge_retrieve-source-llm_robot_knowledge-target
+      source: knowledge_retrieve
       target: llm_robot_knowledge
-    - source: llm_fixed_reply
+    - id: llm_fixed_reply-source-merge_outputs-target
+      source: llm_fixed_reply
       target: merge_outputs
-    - source: llm_control_action
+    - id: llm_control_action-source-merge_outputs-target
+      source: llm_control_action
       target: merge_outputs
-    - source: tmpl_ambiguous_control
+    - id: tmpl_ambiguous_control-source-merge_outputs-target
+      source: tmpl_ambiguous_control
       target: merge_outputs
-    - source: llm_robot_knowledge
+    - id: llm_robot_knowledge-source-merge_outputs-target
+      source: llm_robot_knowledge
       target: merge_outputs
-    - source: tmpl_complex_fallback
+    - id: tmpl_complex_fallback-source-merge_outputs-target
+      source: tmpl_complex_fallback
       target: merge_outputs
-    - source: merge_outputs
+    - id: merge_outputs-source-code_convert-target
+      source: merge_outputs
       target: code_convert
-    - source: code_convert
+    - id: code_convert-source-end_result-target
+      source: code_convert
       target: end_result
     viewport:
       x: 0
