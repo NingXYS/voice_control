@@ -9,8 +9,18 @@ def main():
     parser.add_argument("tokens")
     parser.add_argument("--phrase", default="小西小西")
     args = parser.parse_args()
+
+    tokens_path = Path(args.tokens)
+    if not tokens_path.is_file():
+        raise SystemExit(f"tokens file not found: {tokens_path}")
+
+    try:
+        lines = tokens_path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise SystemExit(f"unable to read tokens file: {tokens_path}: {exc}") from exc
+
     tokens = set()
-    for line in Path(args.tokens).read_text(encoding="utf-8").splitlines():
+    for line in lines:
         if line.strip():
             tokens.add(line.split()[0])
     units = list(args.phrase.replace(" ", ""))
