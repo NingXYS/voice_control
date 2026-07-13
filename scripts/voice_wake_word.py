@@ -22,27 +22,22 @@ class WakeWordDetector:
         if missing:
             raise RuntimeError("missing wake model assets: " + ", ".join(missing))
 
-        config = sherpa_onnx.KeywordSpotterConfig(
-            feat_config=sherpa_onnx.FeatureConfig(sample_rate=16000, feature_dim=80),
-            model_config=sherpa_onnx.OnlineModelConfig(
-                transducer=sherpa_onnx.OnlineTransducerModelConfig(
-                    encoder=str(files["encoder"]),
-                    decoder=str(files["decoder"]),
-                    joiner=str(files["joiner"]),
-                ),
-                tokens=str(files["tokens"]),
-                num_threads=num_threads,
-                provider="cpu",
-                debug=False,
-            ),
+        self._spotter = sherpa_onnx.KeywordSpotter(
+            tokens=str(files["tokens"]),
+            encoder=str(files["encoder"]),
+            decoder=str(files["decoder"]),
+            joiner=str(files["joiner"]),
             keywords_file=str(files["keywords_file"]),
+            num_threads=num_threads,
+            sample_rate=16000,
+            feature_dim=80,
+            provider="cpu",
         )
-        self._spotter = sherpa_onnx.KeywordSpotter(config)
         self._stream = self._spotter.create_stream()
         self._wake_word = wake_word.replace(" ", "")
 
     def reset(self) -> None:
-        self._stream = self._spotter.create_stream()
+        self._spotter.reset_stream(self._stream)
 
     def accept_audio(self, samples: np.ndarray, sample_rate: int = 16000) -> bool:
         if sample_rate != 16000:
@@ -53,8 +48,7 @@ class WakeWordDetector:
         self._stream.accept_waveform(sample_rate, samples)
         while self._spotter.is_ready(self._stream):
             self._spotter.decode_stream(self._stream)
-            result = self._spotter.get_result(self._stream)
-            keyword = getattr(result, "keyword", "") or getattr(result, "text", "")
+            keyword = self._spotter.get_result(self._stream)
             if keyword and keyword.replace(" ", "") == self._wake_word:
                 self.reset()
                 return True

@@ -18,7 +18,11 @@ from voice_runtime_config import (
     AUDIO_DEVICE,
     COMMAND_MAX_DURATION_SEC,
     COMMAND_START_TIMEOUT_SEC,
+    WAKE_ASR_CHECK_INTERVAL_SEC,
+    WAKE_ASR_WINDOW_SEC,
+    WAKE_DETECTOR_MODE,
     KWS_NUM_THREADS,
+    WAKE_MATCH_THRESHOLD,
     PARAFORMER_MODEL_DIR,
     PROMPT_GUARD_DURATION_SEC,
     VAD_MIN_SPEECH_DURATION_SEC,
@@ -29,6 +33,7 @@ from voice_runtime_config import (
     WAKE_WORD,
     validate_runtime_config,
 )
+from voice_asr_wake_word import AsrWakeWordDetector
 from voice_wake_runtime import WakeWordRuntime
 from voice_wake_word import WakeWordDetector
 
@@ -122,7 +127,17 @@ def main():
 
     runtime = WakeWordRuntime(
         audio=PersistentAudioSession(AUDIO_DEVICE, 16000, AUDIO_CHUNK_MS),
-        wake_detector=WakeWordDetector(WAKE_MODEL_DIR, WAKE_WORD, KWS_NUM_THREADS),
+        wake_detector=(
+            WakeWordDetector(WAKE_MODEL_DIR, WAKE_WORD, KWS_NUM_THREADS)
+            if WAKE_DETECTOR_MODE == "kws"
+            else AsrWakeWordDetector(
+                legacy.asr_model,
+                WAKE_WORD,
+                window_sec=WAKE_ASR_WINDOW_SEC,
+                check_interval_sec=WAKE_ASR_CHECK_INTERVAL_SEC,
+                match_threshold=WAKE_MATCH_THRESHOLD,
+            )
+        ),
         vad=CommandVadDetector(
             VAD_MODEL_PATH, VAD_MIN_SPEECH_DURATION_SEC, VAD_SILENCE_DURATION_SEC
         ),

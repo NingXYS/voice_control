@@ -10,12 +10,16 @@ class CommandVadDetector:
         except ImportError as exc:
             raise RuntimeError("sherpa_onnx is required for VAD") from exc
         config = sherpa_onnx.VadModelConfig()
-        config.silero_vad.model = model_path
-        config.silero_vad.threshold = 0.5
-        config.silero_vad.min_silence_duration = min_silence_sec
-        config.silero_vad.min_speech_duration = min_speech_sec
-        config.silero_vad.max_speech_duration = 30.0
+        config.silero_vad = sherpa_onnx.SileroVadModelConfig(
+            model=model_path,
+            threshold=0.5,
+            min_silence_duration=min_silence_sec,
+            min_speech_duration=min_speech_sec,
+            max_speech_duration=30.0,
+        )
         config.sample_rate = 16000
+        config.num_threads = 1
+        config.provider = "cpu"
         self._vad = sherpa_onnx.VoiceActivityDetector(config, buffer_size_in_seconds=30)
         self._segments = deque()
 
@@ -28,7 +32,7 @@ class CommandVadDetector:
 
     @property
     def speech_started(self) -> bool:
-        return bool(self._vad.detected())
+        return bool(self._vad.is_speech_detected())
 
     def pop_segment(self):
         return self._segments.popleft() if self._segments else None

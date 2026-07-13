@@ -2,6 +2,7 @@
 from enum import Enum, auto
 import time
 import numpy as np
+import voice_tts
 
 
 class VoiceState(Enum):
@@ -28,6 +29,7 @@ class WakeWordRuntime:
         self.cooldown = cooldown
         self.prompt_guard = prompt_guard
         self.clock = clock
+        self._tts_speak = voice_tts.tts_speak
         self.state = VoiceState.WAITING_WAKE_WORD
         self._stop = False
         self._cooldown_until = 0.0
@@ -36,11 +38,10 @@ class WakeWordRuntime:
         self._stop = True
 
     def _reply_speaker(self, text):
-        import voice_tts
         previous = self.state
         self.state = VoiceState.SPEAKING
         try:
-            voice_tts.tts_speak(text)
+            self._tts_speak(text)
         finally:
             self.state = previous
 

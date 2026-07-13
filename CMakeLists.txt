@@ -43,10 +43,21 @@ install(FILES
   scripts/voice_runtime_config.py
   scripts/voice_wake_word.py
   scripts/voice_command_vad.py
+  scripts/voice_asr_wake_word.py
   scripts/voice_audio_session.py
   scripts/voice_prompt_tone.py
   scripts/voice_wake_runtime.py
+  scripts/voice_tts.py
+  scripts/voice_llm_client.py
+  scripts/voice_local_knowledge.py
+  scripts/latency_metrics.py
   DESTINATION lib/${PROJECT_NAME}
+)
+
+install(DIRECTORY
+  scripts/vits-piper-zh_CN-huayan-medium
+  DESTINATION lib/${PROJECT_NAME}
+  PATTERN ".git" EXCLUDE
 )
 
 ament_package()
