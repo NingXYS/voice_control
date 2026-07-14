@@ -54,6 +54,10 @@ LOCAL_REPLY_RULES = [
 # 模块级缓存
 _CSV_RULES_CACHE = None
 
+# 这些短语表示用户只说了手臂名称，只允许整句匹配。
+# 若继续使用子串匹配，知识库中的“右臂”会吞掉所有包含右臂的控制指令。
+_EXACT_MATCH_ONLY_PHRASES = frozenset({"左臂", "右臂", "左手", "右手"})
+
 
 def normalize_text(text: str) -> str:
     """
@@ -197,7 +201,8 @@ def match_local_reply(text: str, rules: list[dict[str, object]] | None = None) -
     - 先规范化输入。
     - 若输入为空，返回 None。
     - 若传入 rules，只使用传入规则；否则组合 LOCAL_REPLY_RULES 和 get_csv_reply_rules()。
-    - 匹配策略：规范化后的问题短语包含于输入，或输入包含于问题短语；任一命中返回 {"reply": reply}。
+    - “左臂/右臂/左手/右手”这类孤立手臂短语在匹配任一侧出现时，只允许整句匹配。
+    - 其他短语保持原有双向包含匹配策略。
     - 不得返回 action JSON，不得生成动作字段。
     """
     if not isinstance(text, str):
@@ -220,7 +225,11 @@ def match_local_reply(text: str, rules: list[dict[str, object]] | None = None) -
             
         phrases = _extract_and_normalize_phrases(rule)
         for phrase in phrases:
-            if (phrase in norm_text) or (norm_text in phrase):
+            if phrase in _EXACT_MATCH_ONLY_PHRASES or norm_text in _EXACT_MATCH_ONLY_PHRASES:
+                matched = norm_text == phrase
+            else:
+                matched = (phrase in norm_text) or (norm_text in phrase)
+            if matched:
                 return {"reply": reply}
     return None
 
