@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
-"""Offline wake-word entry that reuses the existing voice_qwen_llm route."""
+"""Offline wake-word entry using the shared voice text pipeline."""
 import importlib
-import os
 import signal
-import sys
-import tempfile
-import types
 
 import numpy as np
-import soundfile as sf
 
 from voice_audio_session import PersistentAudioSession
 from voice_command_vad import CommandVadDetector
@@ -37,92 +32,37 @@ from voice_asr_wake_word import AsrWakeWordDetector
 from voice_wake_runtime import WakeWordRuntime
 from voice_wake_word import WakeWordDetector
 
-legacy = None
+
+voice_pipeline = None
 
 
-def _load_legacy():
-    """Import the legacy route without initializing pynput's desktop backend.
-
-    The wake-word entry never uses the legacy keyboard callbacks. A temporary
-    module shim prevents pynput from attempting to connect to X during import,
-    while the standalone keyboard entry continues to import the real package.
-    """
-    inserted_pynput_shim = "pynput" not in sys.modules
-    if inserted_pynput_shim:
-        pynput_shim = types.ModuleType("pynput")
-        pynput_shim.keyboard = types.SimpleNamespace()
-        sys.modules["pynput"] = pynput_shim
-
-    try:
-        module = importlib.import_module("voice_qwen_llm")
-    finally:
-        if inserted_pynput_shim:
-            sys.modules.pop("pynput", None)
-
-    # voice_qwen_llm predates the shared configuration module. Keep its model
-    # and keyboard-debug audio paths aligned with the wake-word entry.
+def _load_voice_pipeline():
+    """Load the shared pipeline without importing the keyboard backend."""
+    module = importlib.import_module("voice_qwen_llm")
     module.PARAFORMER_MODEL_DIR = PARAFORMER_MODEL_DIR
     module.AUDIO_DEVICE = AUDIO_DEVICE
     return module
 
 
 def recognize_audio(samples, sample_rate):
-    stream = legacy.asr_model.create_stream()
-    stream.accept_waveform(sample_rate, np.asarray(samples, dtype=np.float32))
-    legacy.asr_model.decode_stream(stream)
-    return stream.result.text.strip()
+    return voice_pipeline.recognize_audio(
+        np.asarray(samples, dtype=np.float32),
+        sample_rate,
+    )
 
 
 def process_text(text, reply_speaker):
-    """Pass recognized text through the unchanged legacy routing function."""
-    path = None
-    original_model = legacy.asr_model
-    original_audio_file = legacy.AUDIO_FILE
-    original_tts = legacy.voice_tts.tts_speak
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            path = tmp.name
-
-        class _Result:
-            pass
-
-        class _Stream:
-            result = _Result()
-
-            def accept_waveform(self, *_):
-                pass
-
-        class _Model:
-            def create_stream(self):
-                stream = _Stream()
-                stream.result.text = text
-                return stream
-
-            def decode_stream(self, *_):
-                pass
-
-        legacy.asr_model = _Model()
-        sf.write(path, np.zeros(1600, dtype=np.float32), 16000)
-        legacy.AUDIO_FILE = path
-        legacy.is_recording = True
-        legacy.recording_process = None
-        legacy.voice_tts.tts_speak = reply_speaker
-        legacy.stop_and_recognize()
-    finally:
-        legacy.voice_tts.tts_speak = original_tts
-        legacy.AUDIO_FILE = original_audio_file
-        legacy.asr_model = original_model
-        if path and os.path.exists(path):
-            os.unlink(path)
+    """Route recognized text through the shared text-processing boundary."""
+    return voice_pipeline.process_text(text, reply_speaker=reply_speaker)
 
 
 def main():
-    global legacy
+    global voice_pipeline
 
     validate_runtime_config()
-    legacy = _load_legacy()
-    legacy.load_models()
-    if legacy.asr_model is None:
+    voice_pipeline = _load_voice_pipeline()
+    voice_pipeline.load_models()
+    if voice_pipeline.asr_model is None:
         raise SystemExit("Paraformer ASR model failed to load")
 
     runtime = WakeWordRuntime(
@@ -131,7 +71,7 @@ def main():
             WakeWordDetector(WAKE_MODEL_DIR, WAKE_WORD, KWS_NUM_THREADS)
             if WAKE_DETECTOR_MODE == "kws"
             else AsrWakeWordDetector(
-                legacy.asr_model,
+                voice_pipeline.asr_model,
                 WAKE_WORD,
                 window_sec=WAKE_ASR_WINDOW_SEC,
                 check_interval_sec=WAKE_ASR_CHECK_INTERVAL_SEC,
@@ -139,7 +79,9 @@ def main():
             )
         ),
         vad=CommandVadDetector(
-            VAD_MODEL_PATH, VAD_MIN_SPEECH_DURATION_SEC, VAD_SILENCE_DURATION_SEC
+            VAD_MODEL_PATH,
+            VAD_MIN_SPEECH_DURATION_SEC,
+            VAD_SILENCE_DURATION_SEC,
         ),
         asr_callback=recognize_audio,
         process_callback=process_text,
@@ -153,8 +95,8 @@ def main():
     signal.signal(signal.SIGTERM, lambda *_: runtime.request_stop())
     print(f"🎙️ 离线唤醒已启动，请说：{WAKE_WORD}")
     runtime.run()
-    if legacy.ros_initialized:
-        legacy.rclpy.shutdown()
+    if voice_pipeline.ros_initialized:
+        voice_pipeline.rclpy.shutdown()
 
 
 if __name__ == "__main__":
