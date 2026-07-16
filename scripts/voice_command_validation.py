@@ -1,4 +1,8 @@
-"""Fail-closed validation for robot commands."""
+"""Fail-closed validation for Dify replies and robot-controller commands.
+
+The robot command schema mirrors ``src/robot_controller.cpp``. No motion field
+is inferred, defaulted, converted, renamed, or repaired.
+"""
 from __future__ import annotations
 
 import math
@@ -6,8 +10,6 @@ from typing import Any
 
 VALID_ACTIONS = {"move_joint", "move_cartesian", "home", "get_status"}
 VALID_ARMS = {"left", "right"}
-VALID_JOINTS = set(range(1, 7))
-
 COMMAND_FIELDS = {
     "home": {"action", "arm"},
     "get_status": {"action", "arm"},
@@ -16,49 +18,59 @@ COMMAND_FIELDS = {
 }
 
 
-def _number(v: Any) -> bool:
-    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(float(v))
+def _finite_number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    )
 
 
 def validate_and_fix_command(command: Any):
+    """Compatibility name; validates only and never repairs a payload."""
     if not isinstance(command, dict):
-        return None, ["command must be object"]
+        return None, ["command must be a JSON object"]
 
-    if "reply" in command:
-        if set(command) != {"reply"} or not isinstance(command.get("reply"), str):
-            return None, ["invalid reply"]
-        return command.copy(), []
+    checked = command.copy()
+    if "reply" in checked:
+        if set(checked) != {"reply"}:
+            return None, ["reply payload must not contain extra fields"]
+        reply = checked.get("reply")
+        if not isinstance(reply, str) or not reply.strip():
+            return None, ["reply must be a non-empty string"]
+        return checked, []
 
-    action = command.get("action")
+    action = checked.get("action")
     if action not in VALID_ACTIONS:
-        return None, ["invalid action"]
+        return None, [f"unsupported action: {action!r}"]
 
-    errors = []
+    errors: list[str] = []
     expected = COMMAND_FIELDS[action]
-    if set(command) - expected:
-        errors.append("unexpected fields")
-    if expected - set(command):
-        errors.append("missing fields")
-    if command.get("arm") not in VALID_ARMS:
-        errors.append("invalid arm")
+    missing = sorted(expected - set(checked))
+    unexpected = sorted(set(checked) - expected)
+    if missing:
+        errors.append(f"missing fields: {missing}")
+    if unexpected:
+        errors.append(f"unexpected fields: {unexpected}")
+    if checked.get("arm") not in VALID_ARMS:
+        errors.append("arm must be left or right")
 
     if action == "move_joint":
-        joint = command.get("joint")
-        if isinstance(joint, bool) or joint not in VALID_JOINTS:
-            errors.append("invalid joint")
-        if not _number(command.get("value")):
-            errors.append("invalid value")
-        if command.get("type") not in {"delta", "absolute"}:
-            errors.append("invalid type")
-
-    if action == "move_cartesian":
+        joint = checked.get("joint")
+        if isinstance(joint, bool) or not isinstance(joint, int) or not 1 <= joint <= 6:
+            errors.append("joint must be an integer from 1 to 6")
+        if not _finite_number(checked.get("value")):
+            errors.append("value must be a finite number")
+        if checked.get("type") not in {"delta", "absolute"}:
+            errors.append("type must be delta or absolute")
+    elif action == "move_cartesian":
         for axis in ("x", "y", "z"):
-            if not _number(command.get(axis)):
-                errors.append("invalid axis")
-        if not isinstance(command.get("relative"), bool):
-            errors.append("invalid relative")
+            if not _finite_number(checked.get(axis)):
+                errors.append(f"{axis} must be a finite number")
+        if not isinstance(checked.get("relative"), bool):
+            errors.append("relative must be boolean")
 
-    return (command.copy(), []) if not errors else (None, errors)
+    return (checked, []) if not errors else (None, errors)
 
 
 def validate_command(command: Any):
@@ -67,12 +79,16 @@ def validate_command(command: Any):
 
 
 def validate_command_batch(commands: Any):
-    """Validate all commands before execution. One failure rejects the batch."""
+    """Validate an entire response before any side effect.
+
+    One invalid element rejects the whole batch so a partially valid Dify
+    response can never cause a partial robot movement.
+    """
     if not isinstance(commands, list) or not commands:
         return None
-    checked = []
+    checked: list[dict[str, Any]] = []
     for command in commands:
-        valid, errors = validate_and_fix_command(command)
+        valid, _ = validate_and_fix_command(command)
         if valid is None:
             return None
         checked.append(valid)
