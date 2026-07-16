@@ -30,4 +30,24 @@ def parse_output(text):
 def run_dialogue(user_text, timeout=60):
     if not DIFY_API_KEY:
         return None
-    try
+    try:
+        response = requests.post(
+            f"{DIFY_BASE_URL}/v1/workflows/run",
+            headers={
+                "Authorization": f"Bearer {DIFY_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "inputs": {"text": user_text},
+                "response_mode": "blocking",
+                "user": "voice_robot",
+            },
+            timeout=timeout,
+        )
+        if response.status_code != 200:
+            return None
+        data = response.json()
+        output = data.get("data", {}).get("outputs", {}).get("result")
+        return parse_output(output)
+    except (requests.RequestException, ValueError, TypeError):
+        return None
