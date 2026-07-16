@@ -29,7 +29,7 @@ def main():
     global voice_runtime
     validate_runtime_config()
     voice_runtime = VoiceRuntimeContainer.from_local(
-        recognizer=lambda audio: None,
+        recognizer=local_recognizer,
         speaker=play_prompt_tone,
     )
     runtime = WakeWordRuntime(
