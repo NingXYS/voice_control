@@ -44,10 +44,12 @@ install(FILES
   scripts/voice_runtime_container.py
   scripts/voice_text_pipeline.py
   scripts/voice_command_validation.py
+  scripts/voice_robot_executor.py
   scripts/voice_local_knowledge.py
   scripts/latency_metrics.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
 install(DIRECTORY scripts/vits-piper-zh_CN-huayan-medium DESTINATION lib/${PROJECT_NAME} PATTERN ".git" EXCLUDE)
+
 ament_package()
