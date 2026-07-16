@@ -6,7 +6,6 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
-
 option(VOICE_CONTROL_BUILD_ROBOT_CONTROLLER "Build the robot controller executable" ON)
 
 if(VOICE_CONTROL_BUILD_ROBOT_CONTROLLER)
@@ -16,29 +15,14 @@ if(VOICE_CONTROL_BUILD_ROBOT_CONTROLLER)
   find_package(tf2 REQUIRED)
   find_package(tf2_ros REQUIRED)
   find_package(tf2_geometry_msgs REQUIRED)
-
-  # JSON library
   find_package(nlohmann_json 3.2.0 REQUIRED)
-
   add_executable(robot_controller src/robot_controller.cpp)
-  ament_target_dependencies(robot_controller
-    rclcpp
-    std_msgs
-    moveit_ros_planning_interface
-    tf2
-    tf2_ros
-    tf2_geometry_msgs
-  )
+  ament_target_dependencies(robot_controller rclcpp std_msgs moveit_ros_planning_interface tf2 tf2_ros tf2_geometry_msgs)
   target_link_libraries(robot_controller nlohmann_json::nlohmann_json)
-
-  install(TARGETS
-    robot_controller
-    DESTINATION lib/${PROJECT_NAME}
-  )
+  install(TARGETS robot_controller DESTINATION lib/${PROJECT_NAME})
 endif()
 
 install(PROGRAMS
-  scripts/voice_qwen_llm.py
   scripts/voice_wake_entry.py
   scripts/voice_tts_node.py
   scripts/build_wake_keyword.py
@@ -54,16 +38,16 @@ install(FILES
   scripts/voice_prompt_tone.py
   scripts/voice_wake_runtime.py
   scripts/voice_tts.py
-  scripts/voice_llm_client.py
+  scripts/voice_dialogue_backend.py
+  scripts/voice_asr_backend.py
+  scripts/voice_tts_backend.py
+  scripts/voice_runtime_container.py
+  scripts/voice_text_pipeline.py
+  scripts/voice_command_validation.py
   scripts/voice_local_knowledge.py
   scripts/latency_metrics.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
-install(DIRECTORY
-  scripts/vits-piper-zh_CN-huayan-medium
-  DESTINATION lib/${PROJECT_NAME}
-  PATTERN ".git" EXCLUDE
-)
-
+install(DIRECTORY scripts/vits-piper-zh_CN-huayan-medium DESTINATION lib/${PROJECT_NAME} PATTERN ".git" EXCLUDE)
 ament_package()
