@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
-"""Offline wake-word entry using modular voice pipeline."""
-import importlib
+"""Offline wake-word entry using modular voice runtime."""
 import signal
-
 import numpy as np
 
 from voice_audio_session import PersistentAudioSession
@@ -12,42 +10,32 @@ from voice_runtime_config import *
 from voice_asr_wake_word import AsrWakeWordDetector
 from voice_wake_runtime import WakeWordRuntime
 from voice_wake_word import WakeWordDetector
+from voice_runtime_container import VoiceRuntimeContainer
 
-voice_pipeline = None
-
-
-def _load_voice_pipeline():
-    return importlib.import_module("voice_text_pipeline")
+voice_runtime = None
 
 
 def recognize_audio(samples, sample_rate):
-    # ASR migration boundary. Current ASR stays local.
-    return voice_pipeline.asr_backend.transcribe(
-        (np.asarray(samples, dtype=np.float32), sample_rate)
-    )
+    return voice_runtime.recognize(np.asarray(samples, dtype=np.float32), sample_rate)
 
 
 def process_text(text, reply_speaker):
-    return voice_pipeline.process_text(text, speaker=reply_speaker)
+    if voice_runtime.tts_backend:
+        voice_runtime.tts_backend._speaker = reply_speaker
+    return voice_runtime.handle_text(text)
 
 
 def main():
-    global voice_pipeline
+    global voice_runtime
     validate_runtime_config()
-    voice_pipeline = _load_voice_pipeline()
-
+    voice_runtime = VoiceRuntimeContainer.from_local(
+        recognizer=lambda audio: None,
+        speaker=play_prompt_tone,
+    )
     runtime = WakeWordRuntime(
         audio=PersistentAudioSession(AUDIO_DEVICE, 16000, AUDIO_CHUNK_MS),
-        wake_detector=(
-            WakeWordDetector(WAKE_MODEL_DIR, WAKE_WORD, KWS_NUM_THREADS)
-            if WAKE_DETECTOR_MODE == "kws"
-            else AsrWakeWordDetector(
-                None, WAKE_WORD,
-                window_sec=WAKE_ASR_WINDOW_SEC,
-                check_interval_sec=WAKE_ASR_CHECK_INTERVAL_SEC,
-                match_threshold=WAKE_MATCH_THRESHOLD,
-            )
-        ),
+        wake_detector=WakeWordDetector(WAKE_MODEL_DIR, WAKE_WORD, KWS_NUM_THREADS)
+        if WAKE_DETECTOR_MODE == "kws" else AsrWakeWordDetector(None, WAKE_WORD),
         vad=CommandVadDetector(VAD_MODEL_PATH, VAD_MIN_SPEECH_DURATION_SEC, VAD_SILENCE_DURATION_SEC),
         asr_callback=recognize_audio,
         process_callback=process_text,
