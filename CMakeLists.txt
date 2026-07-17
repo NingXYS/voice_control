@@ -46,10 +46,20 @@ install(FILES
   scripts/voice_command_validation.py
   scripts/voice_robot_executor.py
   scripts/voice_local_knowledge.py
+  scripts/voice_qwen_llm.py
   scripts/latency_metrics.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
-install(DIRECTORY scripts/vits-piper-zh_CN-huayan-medium DESTINATION lib/${PROJECT_NAME} PATTERN ".git" EXCLUDE)
+set(PIPER_ASSET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/scripts/vits-piper-zh_CN-huayan-medium")
+if(EXISTS "${PIPER_ASSET_DIR}")
+  install(
+    DIRECTORY "${PIPER_ASSET_DIR}"
+    DESTINATION lib/${PROJECT_NAME}
+    PATTERN ".git" EXCLUDE
+  )
+else()
+  message(STATUS "Piper model assets are external; set PIPER_MODEL_DIR at runtime")
+endif()
 
 ament_package()

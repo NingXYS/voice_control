@@ -2,6 +2,7 @@ import ast
 import os
 import subprocess
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -12,6 +13,13 @@ SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import build_wake_keyword
+import voice_asr_backend
+import voice_dialogue_backend
+import voice_robot_executor
+import voice_runtime_config
+import voice_runtime_container
+import voice_text_pipeline
+import voice_tts_backend
 import voice_wake_entry
 
 
@@ -34,45 +42,98 @@ class WakeEntryImportTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_pipeline_loader_applies_shared_paths_without_pynput(self):
-        fake_pipeline = types.SimpleNamespace()
-        previous_pynput = sys.modules.pop("pynput", None)
-        try:
-            with mock.patch.dict(
-                sys.modules, {"voice_qwen_llm": fake_pipeline}, clear=False
-            ), mock.patch.object(
-                voice_wake_entry, "PARAFORMER_MODEL_DIR", "/models/paraformer"
-            ), mock.patch.object(
-                voice_wake_entry, "AUDIO_DEVICE", "plughw:1,0"
-            ):
-                loaded = voice_wake_entry._load_voice_pipeline()
+    def test_paraformer_backend_uses_configured_model_directory(self):
+        captured = {}
 
-            self.assertIs(loaded, fake_pipeline)
-            self.assertEqual(
-                fake_pipeline.PARAFORMER_MODEL_DIR,
-                "/models/paraformer",
-            )
-            self.assertEqual(fake_pipeline.AUDIO_DEVICE, "plughw:1,0")
-            self.assertNotIn("pynput", sys.modules)
-        finally:
-            sys.modules.pop("voice_qwen_llm", None)
-            if previous_pynput is not None:
-                sys.modules["pynput"] = previous_pynput
+        class FakeOfflineRecognizer:
+            @staticmethod
+            def from_paraformer(**kwargs):
+                captured.update(kwargs)
+                return object()
+
+        fake_module = types.SimpleNamespace(OfflineRecognizer=FakeOfflineRecognizer)
+        with tempfile.TemporaryDirectory() as model_dir:
+            Path(model_dir, "model.int8.onnx").touch()
+            Path(model_dir, "tokens.txt").touch()
+            with mock.patch.dict(sys.modules, {"sherpa_onnx": fake_module}, clear=False):
+                backend = voice_asr_backend.ParaformerASRBackend(model_dir)
+                backend.initialize()
+
+        self.assertIsNotNone(backend.model)
+        self.assertEqual(captured["paraformer"], str(Path(model_dir, "model.int8.onnx")))
+        self.assertEqual(captured["tokens"], str(Path(model_dir, "tokens.txt")))
 
     def test_process_text_delegates_to_shared_boundary(self):
-        calls = []
-        speaker = lambda _text: None
-        fake_pipeline = types.SimpleNamespace(
-            process_text=lambda text, reply_speaker=None: calls.append(
-                (text, reply_speaker)
-            )
+        speaker = mock.Mock()
+        fake_runtime = types.SimpleNamespace(
+            handle_text=mock.Mock(return_value=[{"reply": "好的"}]),
         )
         with mock.patch.object(
-            voice_wake_entry, "voice_pipeline", fake_pipeline
+            voice_wake_entry, "voice_runtime", fake_runtime
         ):
-            voice_wake_entry.process_text("向前移动", speaker)
+            result = voice_wake_entry.process_text("介绍一下", speaker)
 
-        self.assertEqual(calls, [("向前移动", speaker)])
+        fake_runtime.handle_text.assert_called_once_with("介绍一下", reply_speaker=speaker)
+        self.assertEqual(result, [{"reply": "好的"}])
+
+    def test_runtime_asset_validation_does_not_require_dify_key(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            paraformer = Path(temp_dir, "paraformer")
+            paraformer.mkdir()
+            Path(paraformer, "model.int8.onnx").touch()
+            Path(paraformer, "tokens.txt").touch()
+            vad = Path(temp_dir, "vad.onnx")
+            vad.touch()
+            with mock.patch.object(voice_runtime_config, "PARAFORMER_MODEL_DIR", str(paraformer)), \
+                mock.patch.object(voice_runtime_config, "VAD_MODEL_PATH", str(vad)), \
+                mock.patch.object(voice_runtime_config, "WAKE_DETECTOR_MODE", "asr"), \
+                mock.patch.object(voice_runtime_config, "DIFY_API_KEY", ""):
+                voice_runtime_config.validate_runtime_assets()
+
+    def test_online_pipeline_rejects_partial_invalid_dify_batch(self):
+        speaker = mock.Mock()
+        response = [{"reply": "好的"}, {"action": "unknown"}]
+        with mock.patch.object(voice_text_pipeline, "run_dialogue", return_value=response):
+            self.assertIsNone(voice_text_pipeline.process_text("测试", speaker=speaker))
+        speaker.assert_not_called()
+
+    def test_dify_backend_does_not_send_without_api_key(self):
+        session = mock.Mock()
+        backend = voice_dialogue_backend.DifyWorkflowBackend(api_key="", session=session)
+        self.assertIsNone(backend.run("测试"))
+        self.assertIn("not configured", backend.last_error)
+        post = session.post
+        post.assert_not_called()
+
+    def test_dify_backend_uses_configured_input_and_output_keys(self):
+        response = mock.Mock(status_code=200)
+        response.json.return_value = {
+            "data": {"outputs": {"answer": '```json\n[{"reply":"好的"}]\n```'}}
+        }
+        session = mock.Mock()
+        session.post.return_value = response
+        backend = voice_dialogue_backend.DifyWorkflowBackend(
+            base_url="http://dify.local/",
+            api_key="key",
+            input_key="question",
+            output_key="answer",
+            session=session,
+        )
+
+        self.assertEqual(backend.run("测试"), [{"reply": "好的"}])
+        session.post.assert_called_once_with(
+            "http://dify.local/v1/workflows/run",
+            headers={
+                "Authorization": "Bearer key",
+                "Content-Type": "application/json",
+            },
+            json={
+                "inputs": {"question": "测试"},
+                "response_mode": "blocking",
+                "user": "voice_robot",
+            },
+            timeout=60.0,
+        )
 
     def test_wake_entry_has_no_legacy_adaptation_artifacts(self):
         source = (SCRIPTS / "voice_wake_entry.py").read_text(encoding="utf-8")
@@ -110,21 +171,50 @@ class SharedPipelineSourceTests(unittest.TestCase):
             if isinstance(node, ast.Import):
                 self.assertNotIn("pynput", {alias.name for alias in node.names})
 
-    def test_keyboard_stop_uses_shared_boundaries(self):
-        stop_function = next(
+    def test_online_process_text_exposes_dify_boundaries(self):
+        process_function = next(
             node
             for node in self.tree.body
             if isinstance(node, ast.FunctionDef)
-            and node.name == "stop_and_recognize"
+            and node.name == "process_text"
         )
-        called_names = {
-            node.func.id
-            for node in ast.walk(stop_function)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-        }
-        self.assertIn("recognize_audio", called_names)
-        self.assertIn("process_text", called_names)
+        parameters = {argument.arg for argument in process_function.args.args}
+        self.assertTrue({"text", "reply_speaker", "tracker", "runtime"}.issubset(parameters))
+        self.assertNotIn("stop_and_recognize", self.source)
+
+
+class OnlineBackendTests(unittest.TestCase):
+    def test_piper_backend_is_lazy_and_uses_explicit_model_dir(self):
+        fake_tts = types.SimpleNamespace(tts_init=mock.Mock(return_value=True), tts_speak=mock.Mock(return_value=True))
+        with mock.patch.dict(sys.modules, {"voice_tts": fake_tts}, clear=False):
+            backend = voice_tts_backend.PiperTTSBackend("/models/piper")
+            self.assertTrue(backend.speak("你好"))
+        fake_tts.tts_init.assert_called_once_with("/models/piper")
+        fake_tts.tts_speak.assert_called_once_with("你好")
+
+    def test_robot_commands_are_disabled_by_default(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("VOICE_ENABLE_ROBOT_COMMAND", None)
+            self.assertFalse(voice_runtime_config.robot_commands_enabled())
+        with mock.patch.dict(os.environ, {"VOICE_ENABLE_ROBOT_COMMAND": "1"}):
+            self.assertTrue(voice_runtime_config.robot_commands_enabled())
+
+    def test_runtime_container_does_not_create_robot_executor_by_default(self):
+        with mock.patch.object(voice_runtime_container, "robot_commands_enabled", return_value=False), \
+            mock.patch.object(voice_runtime_container, "create_local_asr_backend"), \
+            mock.patch.object(voice_runtime_container, "create_local_tts_backend"), \
+            mock.patch.object(voice_runtime_container, "DifyWorkflowBackend"):
+            container = voice_runtime_container.VoiceRuntimeContainer.from_config()
+        self.assertIsNone(container.executor)
+
+    def test_robot_command_serialization_is_strict(self):
+        command = {"action": "home", "arm": "left"}
+        self.assertEqual(
+            voice_robot_executor.serialize_robot_command(command),
+            '{"action":"home","arm":"left"}',
+        )
+        with self.assertRaises(ValueError):
+            voice_robot_executor.serialize_robot_command({"reply": "不能发布"})
 
 
 class BuildWakeKeywordTests(unittest.TestCase):

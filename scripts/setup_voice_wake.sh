@@ -5,11 +5,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# Define fixed runtime root and directories
-VOICE_WAKE_RUNTIME_ROOT="${VOICE_WAKE_RUNTIME_ROOT:-$HOME/model/lyz/voice_control_runtime}"
-VENV_DIR="${VOICE_WAKE_RUNTIME_ROOT}/.venv"
-BUILD_DIR="${VOICE_WAKE_RUNTIME_ROOT}/build"
-INSTALL_DIR="${VOICE_WAKE_RUNTIME_ROOT}/install"
+VENV_DIR="${VOICE_WAKE_VENV_DIR:-${REPO_ROOT}/.venv_online}"
+BUILD_DIR="${REPO_ROOT}/build_online"
+INSTALL_DIR="${REPO_ROOT}/install_online"
+LOG_DIR="${REPO_ROOT}/log_online"
 
 PYTHON_BIN="/usr/bin/python3"
 
@@ -36,7 +35,7 @@ if ! env -i PATH=/usr/bin:/bin PYTHONNOUSERSITE=1 /usr/bin/python3 -I -c 'import
 fi
 
 echo "Creating/updating virtual environment at $VENV_DIR..."
-mkdir -p "$VOICE_WAKE_RUNTIME_ROOT"
+mkdir -p "$(dirname "$VENV_DIR")"
 
 # Create venv with --system-site-packages, ensuring we do not use Conda Python or elevated privileges
 env -i PATH=/usr/bin:/bin PYTHONNOUSERSITE=1 /usr/bin/python3 -I -m venv --system-site-packages "$VENV_DIR"
@@ -73,21 +72,26 @@ env -i \
   PATH="/usr/bin:/bin" \
   PYTHONNOUSERSITE=1 \
   REPO_ROOT="$REPO_ROOT" \
-  VOICE_WAKE_RUNTIME_ROOT="$VOICE_WAKE_RUNTIME_ROOT" \
+  BUILD_DIR="$BUILD_DIR" \
+  INSTALL_DIR="$INSTALL_DIR" \
+  LOG_DIR="$LOG_DIR" \
   bash -c '
     set -eo pipefail
     source /opt/ros/humble/setup.bash
     set -u
     cd "$REPO_ROOT"
-    colcon --log-base "$VOICE_WAKE_RUNTIME_ROOT/log" build \
-      --merge-install \
+    colcon --log-base "$LOG_DIR" build \
       --packages-select voice_control \
-      --build-base "$VOICE_WAKE_RUNTIME_ROOT/build" \
-      --install-base "$VOICE_WAKE_RUNTIME_ROOT/install" \
+      --build-base "$BUILD_DIR" \
+      --install-base "$INSTALL_DIR" \
       --cmake-args \
         -DVOICE_CONTROL_BUILD_ROBOT_CONTROLLER=OFF \
         -DPython3_EXECUTABLE=/usr/bin/python3
   '
 
-echo "Build successful. Running launcher check..."
-bash "${SCRIPT_DIR}/run_voice_wake.sh" --check
+if [ -n "${DIFY_API_KEY:-}" ]; then
+    echo "Build successful. Running launcher check..."
+    bash "${SCRIPT_DIR}/run_voice_wake.sh" --check
+else
+    echo "Build successful. Launcher check skipped because DIFY_API_KEY is not set."
+fi

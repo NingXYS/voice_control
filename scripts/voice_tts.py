@@ -8,7 +8,15 @@ import subprocess
 import tempfile
 import threading
 
-_MODEL_DIR = os.path.join(os.path.dirname(__file__), "vits-piper-zh_CN-huayan-medium")
+_MODEL_DIR = os.environ.get(
+    "PIPER_MODEL_DIR",
+    os.environ.get(
+        "TTS_MODEL_DIR",
+        os.path.expanduser(
+            "~/model/lyz/src/voice_control/scripts/vits-piper-zh_CN-huayan-medium"
+        ),
+    ),
+)
 _TARGET_SR = 44100  # 重采样目标采样率（22kHz 部分声卡不支持，统一升到 44.1kHz）
 
 _tts = None  # sherpa_onnx.OfflineTts 实例
@@ -22,15 +30,15 @@ def tts_init(model_dir=None):
     if _tts is not None:
         return True  # 已初始化
 
-    path = model_dir or _MODEL_DIR
+    path = model_dir or os.environ.get("PIPER_MODEL_DIR") or os.environ.get("TTS_MODEL_DIR") or _MODEL_DIR
     model_file = os.path.join(path, "zh_CN-huayan-medium.onnx")
     tokens_file = os.path.join(path, "tokens.txt")
     data_dir = os.path.join(path, "espeak-ng-data")
 
     # 检查必要文件
-    for f in [model_file, tokens_file, data_dir]:
-        if not os.path.exists(f):
-            print(f"❌ TTS 初始化失败: 文件缺失 {f}")
+    for asset in (model_file, tokens_file, data_dir):
+        if not os.path.exists(asset):
+            print(f"⚠️ TTS asset missing: {asset}")
             return False
 
     try:
@@ -47,51 +55,57 @@ def tts_init(model_dir=None):
             ),
         )
         _tts = sherpa_onnx.OfflineTts(config)
-        print(f"✅ TTS 初始化成功 (huayan-medium)")
+        print(f"✅ TTS initialized: {path}")
         return True
-    except Exception as e:
-        print(f"❌ TTS 初始化失败: {e}")
+    except Exception as exc:
+        print(f"⚠️ TTS initialization failed: {exc}")
+        _tts = None
         return False
 
 
 def tts_speak(text):
     """合成文本并播放音频。失败静默跳过，不影响主流程。"""
-    if not text or not text.strip():
-        return
+    if not isinstance(text, str) or not text.strip() or not tts_init():
+        return False
 
-    tts_init()  # 懒初始化
-
+    wav_path = None
     with _lock:
         try:
+            import numpy as np
+            import soundfile as sf
+
             audio = _tts.generate(text, sid=0, speed=1.0)
             if audio is None or len(audio.samples) == 0:
-                return
+                return False
 
             samples = audio.samples
-            # 采样率转换（22050 → 44100，兼容不同声卡）
             if audio.sample_rate != _TARGET_SR:
-                import numpy as np
-                n = int(len(samples) * _TARGET_SR / audio.sample_rate)
-                # 用 numpy 线性插值重采样（无需 scipy）
+                count = int(len(samples) * _TARGET_SR / audio.sample_rate)
                 samples = np.interp(
-                    np.linspace(0, len(samples) - 1, n),
+                    np.linspace(0, len(samples) - 1, count),
                     np.arange(len(samples)),
                     samples,
                 ).astype("float32")
 
-            # 写入临时 WAV，用 aplay 播放（避免 sounddevice 线程冲突）
-            import soundfile as sf
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-                sf.write(f.name, samples.astype("float32"), _TARGET_SR)
-                wav_path = f.name
-            subprocess.run(
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
+                wav_path = handle.name
+            sf.write(wav_path, samples.astype("float32"), _TARGET_SR)
+            completed = subprocess.run(
                 ["aplay", "-q", wav_path],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                check=False,
             )
-            os.unlink(wav_path)
-        except Exception:
-            pass  # 静默跳过，不阻塞主流程
+            return completed.returncode == 0
+        except Exception as exc:
+            print(f"⚠️ TTS playback failed: {exc}")
+            return False
+        finally:
+            if wav_path:
+                try:
+                    os.unlink(wav_path)
+                except OSError:
+                    pass
 
 
 def tts_cleanup():

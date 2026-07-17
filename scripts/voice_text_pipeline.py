@@ -1,31 +1,61 @@
 #!/usr/bin/env python3
-"""Shared text pipeline after ASR.
-
-Order:
-1. local fixed replies
-2. Dify dialogue
-3. strict validation before robot execution
-"""
-
 from voice_dialogue_backend import run_dialogue
-from voice_command_validation import validate_command
+from voice_command_validation import validate_command_batch
 
 
-def process_text(text, executor=None, speaker=None):
-    commands = run_dialogue(text)
+def _run_dialogue(dialogue, text):
+    if dialogue is None:
+        return run_dialogue(text)
+    if callable(dialogue):
+        return dialogue(text)
+    return dialogue.run(text)
+
+
+def _execute(executor, command) -> bool:
+    if executor is None:
+        return False
+    result = executor(command) if callable(executor) else executor.execute(command)
+    return result is not False
+
+
+def process_text(
+    text,
+    executor=None,
+    speaker=None,
+    dialogue=None,
+    runtime=None,
+    reply_speaker=None,
+    tracker=None,
+):
+    del tracker
+    if not isinstance(text, str) or not text.strip():
+        return None
+
+    if runtime is not None:
+        executor = executor if executor is not None else getattr(runtime, "executor", None)
+        dialogue = dialogue if dialogue is not None else getattr(runtime, "dialogue_backend", None)
+        speaker = reply_speaker or speaker or getattr(runtime, "speak", None)
+    else:
+        speaker = reply_speaker or speaker
+
+    commands = _run_dialogue(dialogue, text)
     if commands is None:
         return None
 
-    valid = []
-    for command in commands:
-        checked = validate_command(command)
-        if checked is not None:
-            valid.append(checked)
+    checked = validate_command_batch(commands)
+    if checked is None:
+        return None
 
-    for command in valid:
-        if command.get("reply") and speaker:
+    actions = [command for command in checked if "reply" not in command]
+    if actions and executor is None:
+        return None
+
+    for command in actions:
+        if not _execute(executor, command):
+            return None
+
+    for command in checked:
+        if "reply" in command and speaker is not None:
             speaker(command["reply"])
-        elif executor:
-            executor(command)
 
-    return valid
+    return checked

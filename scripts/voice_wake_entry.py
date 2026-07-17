@@ -1,12 +1,33 @@
 #!/usr/bin/env python3
-"""Offline wake-word entry using modular voice runtime."""
+from __future__ import annotations
+
 import signal
+
 import numpy as np
 
 from voice_audio_session import PersistentAudioSession
 from voice_command_vad import CommandVadDetector
 from voice_prompt_tone import play_prompt_tone
-from voice_runtime_config import *
+from voice_runtime_config import (
+    AUDIO_CHUNK_MS,
+    AUDIO_DEVICE,
+    COMMAND_MAX_DURATION_SEC,
+    COMMAND_START_TIMEOUT_SEC,
+    KWS_NUM_THREADS,
+    PROMPT_GUARD_DURATION_SEC,
+    SAMPLE_RATE,
+    VAD_MIN_SPEECH_DURATION_SEC,
+    VAD_MODEL_PATH,
+    VAD_SILENCE_DURATION_SEC,
+    WAKE_ASR_CHECK_INTERVAL_SEC,
+    WAKE_ASR_WINDOW_SEC,
+    WAKE_COOLDOWN_SEC,
+    WAKE_DETECTOR_MODE,
+    WAKE_MATCH_THRESHOLD,
+    WAKE_MODEL_DIR,
+    WAKE_WORD,
+    validate_runtime_config,
+)
 from voice_asr_wake_word import AsrWakeWordDetector
 from voice_wake_runtime import WakeWordRuntime
 from voice_wake_word import WakeWordDetector
@@ -16,38 +37,69 @@ voice_runtime = None
 
 
 def recognize_audio(samples, sample_rate):
+    if voice_runtime is None:
+        raise RuntimeError("voice runtime is not initialized")
     return voice_runtime.recognize(np.asarray(samples, dtype=np.float32), sample_rate)
 
 
 def process_text(text, reply_speaker):
-    if voice_runtime.tts_backend:
-        voice_runtime.tts_backend._speaker = reply_speaker
-    return voice_runtime.handle_text(text)
+    if voice_runtime is None:
+        raise RuntimeError("voice runtime is not initialized")
+    return voice_runtime.handle_text(text, reply_speaker=reply_speaker)
+
+
+def build_voice_runtime():
+    return VoiceRuntimeContainer.from_config()
+
+
+def _build_wake_detector(runtime):
+    if WAKE_DETECTOR_MODE == "kws":
+        return WakeWordDetector(WAKE_MODEL_DIR, WAKE_WORD, KWS_NUM_THREADS)
+    return AsrWakeWordDetector(
+        runtime.wake_asr_model,
+        WAKE_WORD,
+        window_sec=WAKE_ASR_WINDOW_SEC,
+        check_interval_sec=WAKE_ASR_CHECK_INTERVAL_SEC,
+        match_threshold=WAKE_MATCH_THRESHOLD,
+        sample_rate=SAMPLE_RATE,
+    )
 
 
 def main():
     global voice_runtime
     validate_runtime_config()
-    voice_runtime = VoiceRuntimeContainer.from_local(
-        recognizer=local_recognizer,
-        speaker=play_prompt_tone,
-    )
-    runtime = WakeWordRuntime(
-        audio=PersistentAudioSession(AUDIO_DEVICE, 16000, AUDIO_CHUNK_MS),
-        wake_detector=WakeWordDetector(WAKE_MODEL_DIR, WAKE_WORD, KWS_NUM_THREADS)
-        if WAKE_DETECTOR_MODE == "kws" else AsrWakeWordDetector(None, WAKE_WORD),
-        vad=CommandVadDetector(VAD_MODEL_PATH, VAD_MIN_SPEECH_DURATION_SEC, VAD_SILENCE_DURATION_SEC),
-        asr_callback=recognize_audio,
-        process_callback=process_text,
-        prompt_callback=play_prompt_tone,
-        start_timeout=COMMAND_START_TIMEOUT_SEC,
-        max_duration=COMMAND_MAX_DURATION_SEC,
-        cooldown=WAKE_COOLDOWN_SEC,
-        prompt_guard=PROMPT_GUARD_DURATION_SEC,
-    )
-    signal.signal(signal.SIGINT, lambda *_: runtime.request_stop())
-    signal.signal(signal.SIGTERM, lambda *_: runtime.request_stop())
-    runtime.run()
+    container = build_voice_runtime()
+    try:
+        container.initialize()
+        voice_runtime = container
+        if not container.dialogue_backend.configured:
+            print("⚠️ DIFY_API_KEY is not configured; Dify requests will be skipped")
+
+        runtime = WakeWordRuntime(
+            audio=PersistentAudioSession(AUDIO_DEVICE, SAMPLE_RATE, AUDIO_CHUNK_MS),
+            wake_detector=_build_wake_detector(container),
+            vad=CommandVadDetector(
+                VAD_MODEL_PATH,
+                VAD_MIN_SPEECH_DURATION_SEC,
+                VAD_SILENCE_DURATION_SEC,
+            ),
+            asr_callback=recognize_audio,
+            process_callback=process_text,
+            prompt_callback=play_prompt_tone,
+            start_timeout=COMMAND_START_TIMEOUT_SEC,
+            max_duration=COMMAND_MAX_DURATION_SEC,
+            cooldown=WAKE_COOLDOWN_SEC,
+            prompt_guard=PROMPT_GUARD_DURATION_SEC,
+            speaker_callback=container.speak,
+            sample_rate=SAMPLE_RATE,
+        )
+        signal.signal(signal.SIGINT, lambda *_: runtime.request_stop())
+        signal.signal(signal.SIGTERM, lambda *_: runtime.request_stop())
+        print(f"🎙️ Voice runtime started. Wake word: {WAKE_WORD}")
+        runtime.run()
+    finally:
+        container.close()
+        voice_runtime = None
 
 
 if __name__ == "__main__":

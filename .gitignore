@@ -1,10 +1,14 @@
 # Python
+.venv_online/
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
 build/
+build_online/
+install_online/
+log_online/
 develop-eggs/
 dist/
 downloads/

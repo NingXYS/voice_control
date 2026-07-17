@@ -1,38 +1,38 @@
 #!/usr/bin/env python3
-"""Compatibility entry for the online voice pipeline.
-
-The old module name is kept so existing launch scripts/imports continue to
-work. The online branch no longer contains Ollama/Qwen execution here.
-Dialogue routing is handled by voice_dialogue_backend through the shared
-pipeline.
-"""
 from __future__ import annotations
 
-from typing import Any
-
-try:
-    from voice_asr_backend import create_local_asr_backend
-except Exception:
-    create_local_asr_backend = None
-
-try:
-    from voice_text_pipeline import process_text as _process_text
-except Exception:
-    _process_text = None
+_runtime = None
 
 
-def recognize_audio(audio_path: str):
-    """Compatibility wrapper for the previous ASR entry point."""
-    if create_local_asr_backend is None:
-        return None
-    return create_local_asr_backend().recognize(audio_path)
+def load_models():
+    global _runtime
+    if _runtime is None:
+        from voice_runtime_container import VoiceRuntimeContainer
+        _runtime = VoiceRuntimeContainer.from_config()
+        _runtime.initialize()
+    return _runtime
 
 
-def process_text(text: str, runtime=None) -> Any:
-    """Send text into the Dify based pipeline."""
-    if _process_text is None:
-        raise RuntimeError("voice text pipeline unavailable")
-    return _process_text(text, runtime=runtime)
+def recognize_audio(samples, sample_rate=None):
+    runtime = load_models()
+    return runtime.asr_backend.transcribe(samples, sample_rate)
 
 
-__all__ = ["recognize_audio", "process_text"]
+def process_text(text, reply_speaker=None, tracker=None, runtime=None):
+    selected = runtime or load_models()
+    return selected.handle_text(text, reply_speaker=reply_speaker, tracker=tracker)
+
+
+def close_runtime():
+    global _runtime
+    if _runtime is not None:
+        _runtime.close()
+        _runtime = None
+
+
+def main():
+    raise SystemExit("Run voice_wake_entry.py for the modular voice runtime")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,31 +1,83 @@
 #!/usr/bin/env python3
-"""Runtime dependency container for voice pipeline backends."""
+from __future__ import annotations
 
-from voice_asr_backend import LocalASRBackend
-from voice_tts_backend import LocalTTSBackend
+from voice_asr_backend import LocalASRBackend, create_local_asr_backend
+from voice_dialogue_backend import DifyWorkflowBackend
+from voice_robot_executor import ROSRobotExecutor
 from voice_text_pipeline import process_text
+from voice_tts_backend import LocalTTSBackend, create_local_tts_backend
+from voice_runtime_config import robot_commands_enabled
 
 
 class VoiceRuntimeContainer:
-    def __init__(self, asr=None, tts=None, executor=None):
+    def __init__(self, asr=None, tts=None, dialogue=None, executor=None):
         self.asr_backend = asr
         self.tts_backend = tts
+        self.dialogue_backend = dialogue
         self.executor = executor
+        self.robot_executor = executor
 
     @classmethod
-    def from_local(cls, recognizer, speaker, executor=None):
+    def from_local(cls, recognizer=None, speaker=None, executor=None, dialogue=None):
+        asr = LocalASRBackend(recognizer) if recognizer is not None else create_local_asr_backend()
+        tts = LocalTTSBackend(speaker) if speaker is not None else create_local_tts_backend()
         return cls(
-            asr=LocalASRBackend(recognizer),
-            tts=LocalTTSBackend(speaker),
+            asr=asr,
+            tts=tts,
+            dialogue=dialogue or DifyWorkflowBackend(),
             executor=executor,
         )
 
-    def recognize(self, samples, sample_rate):
-        return self.asr_backend.transcribe((samples, sample_rate))
+    @classmethod
+    def from_config(cls):
+        executor = ROSRobotExecutor() if robot_commands_enabled() else None
+        return cls(
+            asr=create_local_asr_backend(),
+            tts=create_local_tts_backend(),
+            dialogue=DifyWorkflowBackend(),
+            executor=executor,
+        )
 
-    def handle_text(self, text):
+    def initialize(self) -> None:
+        if self.asr_backend is None:
+            raise RuntimeError("ASR backend is required")
+        initialize_asr = getattr(self.asr_backend, "initialize", None)
+        if callable(initialize_asr):
+            initialize_asr()
+        if self.executor is not None:
+            initialize_executor = getattr(self.executor, "initialize", None)
+            if callable(initialize_executor):
+                initialize_executor()
+
+    @property
+    def wake_asr_model(self):
+        initialize = getattr(self.asr_backend, "initialize", None)
+        if callable(initialize):
+            initialize()
+        model = getattr(self.asr_backend, "model", None)
+        if model is None:
+            raise RuntimeError("the selected ASR backend cannot drive ASR wake-word mode")
+        return model
+
+    def recognize(self, samples, sample_rate):
+        return self.asr_backend.transcribe(samples, sample_rate)
+
+    def speak(self, text):
+        if self.tts_backend is None:
+            return False
+        return self.tts_backend.speak(text)
+
+    def handle_text(self, text, reply_speaker=None, tracker=None):
         return process_text(
             text,
             executor=self.executor,
-            speaker=self.tts_backend.speak if self.tts_backend else None,
+            speaker=reply_speaker or self.speak,
+            dialogue=self.dialogue_backend,
+            tracker=tracker,
         )
+
+    def close(self) -> None:
+        for component in (self.executor, self.tts_backend, self.asr_backend, self.dialogue_backend):
+            close = getattr(component, "close", None)
+            if callable(close):
+                close()

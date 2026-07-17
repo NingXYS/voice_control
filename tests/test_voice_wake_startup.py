@@ -22,7 +22,7 @@ POLLUTION_VARIABLES = (
     "PYTHONPATH",
     "LD_LIBRARY_PATH",
 )
-VENV_FIRST_PATH_COMMAND = 'export PATH="${VOICE_WAKE_RUNTIME_ROOT}/.venv/bin:/usr/bin:/bin"'
+VENV_FIRST_PATH_COMMAND = 'export PATH="${VOICE_WAKE_VENV_DIR}/bin:/usr/bin:/bin"'
 NO_USER_SITE_COMMAND = "export PYTHONNOUSERSITE=1"
 
 
@@ -133,8 +133,12 @@ class VoiceWakeStartupTests(unittest.TestCase):
         self.assertTrue("CONDA_PREFIX" in content, "run_voice_wake.sh should reference CONDA_PREFIX for cleaning")
         self.assertTrue("PYTHONPATH" in content, "run_voice_wake.sh should reference PYTHONPATH for cleaning")
         
-        # Must use fixed runtime root (default: $HOME/model/lyz/voice_control_runtime)
-        self.assertTrue("voice_control_runtime" in content, "run_voice_wake.sh should use voice_control_runtime")
+        self.assertIn("ONLINE_INSTALL_ROOT", content)
+        self.assertIn("install_online", content)
+        self.assertIn("voice_control/lib/voice_control/voice_wake_entry.py", content)
+        self.assertIn("TTS_MODEL_DIR", content)
+        self.assertIn("DIFY_API_KEY", content)
+        self.assertIn("sherpa-onnx-paraformer-zh-2023-09-14", content)
         
         # Must only start voice_wake_entry.py (and not robot_controller)
         self.assertIn("voice_wake_entry.py", content)
@@ -150,8 +154,9 @@ class VoiceWakeStartupTests(unittest.TestCase):
         self.assertIn("-DVOICE_CONTROL_BUILD_ROBOT_CONTROLLER=OFF", content, "setup_voice_wake.sh must pass -DVOICE_CONTROL_BUILD_ROBOT_CONTROLLER=OFF")
         self.assertNotIn("sudo", content, "setup_voice_wake.sh must not contain sudo")
         
-        # Must use fixed build and install directories under voice_control_runtime
-        self.assertTrue("voice_control_runtime" in content, "setup_voice_wake.sh should use voice_control_runtime")
+        self.assertIn("build_online", content)
+        self.assertIn("install_online", content)
+        self.assertIn("log_online", content)
 
         # Must pass PYTHONNOUSERSITE=1 to colcon build env -i subshell
         self.assertTrue("PYTHONNOUSERSITE=1" in content, "setup_voice_wake.sh clean build subshell must use/pass PYTHONNOUSERSITE=1")
@@ -196,7 +201,7 @@ class VoiceWakeStartupTests(unittest.TestCase):
         with open(self.setup_script_path, "r", encoding="utf-8") as f:
             content = f.read()
 
-        self.assertIn('colcon --log-base "$VOICE_WAKE_RUNTIME_ROOT/log" build', content, "setup_voice_wake.sh must use exact colcon log redirection syntax before build command")
+        self.assertIn('colcon --log-base "$LOG_DIR" build', content)
 
     def test_setup_isolates_all_system_python_invocations(self):
         """Verify version check, ensurepip check, and venv creation are isolated using env -i, PYTHONNOUSERSITE=1, and python -I."""
@@ -277,7 +282,7 @@ class VoiceWakeStartupTests(unittest.TestCase):
                         mutated.append(replacement)
                     self.assertFalse(_has_launcher_cleanup(mutated))
 
-        wrong_path = 'export PATH="/usr/bin:/bin:${VOICE_WAKE_RUNTIME_ROOT}/.venv/bin"'
+        wrong_path = 'export PATH="/usr/bin:/bin:${VOICE_WAKE_VENV_DIR}/bin"'
         mutated_path = [wrong_path if command == VENV_FIRST_PATH_COMMAND else command for command in commands]
         self.assertFalse(_has_launcher_cleanup(mutated_path))
 

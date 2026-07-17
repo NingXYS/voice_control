@@ -23,8 +23,8 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# Define fixed runtime root and directories
-VOICE_WAKE_RUNTIME_ROOT="${VOICE_WAKE_RUNTIME_ROOT:-$HOME/model/lyz/voice_control_runtime}"
+ONLINE_INSTALL_ROOT="${ONLINE_INSTALL_ROOT:-${REPO_ROOT}/install_online}"
+VOICE_WAKE_VENV_DIR="${VOICE_WAKE_VENV_DIR:-${REPO_ROOT}/.venv_online}"
 
 # Execute launcher logic in a clean subshell
 (
@@ -37,25 +37,33 @@ VOICE_WAKE_RUNTIME_ROOT="${VOICE_WAKE_RUNTIME_ROOT:-$HOME/model/lyz/voice_contro
     unset LD_LIBRARY_PATH
 
     # Set clean PATH and disable user-site packages
-    export PATH="${VOICE_WAKE_RUNTIME_ROOT}/.venv/bin:/usr/bin:/bin"
+    export PATH="${VOICE_WAKE_VENV_DIR}/bin:/usr/bin:/bin"
     export PYTHONNOUSERSITE=1
 
-    # Check if venv and installation overlay exist
-    if [ ! -d "${VOICE_WAKE_RUNTIME_ROOT}/.venv" ] || [ ! -f "${VOICE_WAKE_RUNTIME_ROOT}/install/setup.bash" ]; then
-        echo "Error: Runtime directory or installation overlay not found." >&2
+    if [ ! -f "${ONLINE_INSTALL_ROOT}/setup.bash" ]; then
+        echo "Error: online installation overlay not found at ${ONLINE_INSTALL_ROOT}." >&2
         echo "Please run 'bash scripts/setup_voice_wake.sh' first." >&2
         exit 1
     fi
 
     # Source ROS 2 humble and custom install overlay
     source /opt/ros/humble/setup.bash
-    source "${VOICE_WAKE_RUNTIME_ROOT}/install/setup.bash"
+    source "${ONLINE_INSTALL_ROOT}/setup.bash"
 
-    # Default configurations if variables are not set
-    export PARAFORMER_MODEL_DIR="${PARAFORMER_MODEL_DIR:-$HOME/model/voice_models/paraformer}"
-    export WAKE_MODEL_DIR="${WAKE_MODEL_DIR:-$HOME/model/voice_models/kws}"
+    export PARAFORMER_MODEL_DIR="${PARAFORMER_MODEL_DIR:-$HOME/model/sherpa-onnx-paraformer-zh-2023-09-14}"
+    export WAKE_MODEL_DIR="${WAKE_MODEL_DIR:-$HOME/model/voice_models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20}"
     export VAD_MODEL_PATH="${VAD_MODEL_PATH:-$HOME/model/voice_models/vad/silero_vad.onnx}"
+    export PIPER_MODEL_DIR="${PIPER_MODEL_DIR:-${TTS_MODEL_DIR:-$HOME/model/lyz/src/voice_control/scripts/vits-piper-zh_CN-huayan-medium}}"
+    export TTS_MODEL_DIR="${TTS_MODEL_DIR:-${PIPER_MODEL_DIR}}"
+    export DIFY_BASE_URL="${DIFY_BASE_URL:-http://localhost:80}"
+    export DIFY_INPUT_KEY="${DIFY_INPUT_KEY:-text}"
+    export DIFY_OUTPUT_KEY="${DIFY_OUTPUT_KEY:-result}"
     export AUDIO_DEVICE="${AUDIO_DEVICE:-default}"
+
+    if [ -z "${DIFY_API_KEY:-}" ]; then
+        echo "Check failed: DIFY_API_KEY is not set." >&2
+        exit 1
+    fi
 
     # Perform Verification:
     # 1. Verify Python 3.10
@@ -88,8 +96,8 @@ for lib in libs:
         exit 1
     fi
 
-    # 3. Verify fixed overlay contains the python entry point script
-    SCRIPT_IN_OVERLAY="${VOICE_WAKE_RUNTIME_ROOT}/install/lib/voice_control/voice_wake_entry.py"
+    # 3. Verify online overlay contains the python entry point script
+    SCRIPT_IN_OVERLAY="${ONLINE_INSTALL_ROOT}/voice_control/lib/voice_control/voice_wake_entry.py"
     if [ ! -f "$SCRIPT_IN_OVERLAY" ]; then
         echo "Check failed: voice_wake_entry.py not found in fixed overlay at: $SCRIPT_IN_OVERLAY" >&2
         exit 1
@@ -104,6 +112,28 @@ for lib in libs:
     if [ ! -f "${VAD_MODEL_PATH}" ]; then
         echo "Check failed: VAD model file missing at ${VAD_MODEL_PATH}" >&2
         exit 1
+    fi
+
+    for file in \
+        "${TTS_MODEL_DIR}/zh_CN-huayan-medium.onnx" \
+        "${TTS_MODEL_DIR}/tokens.txt"; do
+        if [ ! -f "$file" ]; then
+            echo "Check failed: TTS model file missing at $file" >&2
+            exit 1
+        fi
+    done
+    if [ ! -d "${TTS_MODEL_DIR}/espeak-ng-data" ]; then
+        echo "Check failed: TTS espeak data missing at ${TTS_MODEL_DIR}/espeak-ng-data" >&2
+        exit 1
+    fi
+
+    if [ "${WAKE_DETECTOR_MODE:-asr}" = "kws" ]; then
+        for file in tokens.txt encoder.onnx decoder.onnx joiner.onnx keywords.txt; do
+            if [ ! -f "${WAKE_MODEL_DIR}/${file}" ]; then
+                echo "Check failed: KWS model file missing at ${WAKE_MODEL_DIR}/${file}" >&2
+                exit 1
+            fi
+        done
     fi
 
     if ! command -v arecord >/dev/null 2>&1; then
