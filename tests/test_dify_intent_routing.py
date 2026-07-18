@@ -33,6 +33,9 @@ class DifyIntentRoutingTests(unittest.TestCase):
             ("给我唱首歌", "fixed_reply"),
             ("今天天气怎么样", "fixed_reply"),
             ("左臂向下10厘米", "local_action"),
+            ("左臂向上抬十厘米", "local_action"),
+            ("左臂向上抬十五厘米", "local_action"),
+            ("左臂关节1旋转三十度", "local_action"),
             ("右臂向前5厘米然后左臂向上10厘米", "control_action"),
             ("左臂向下", "ambiguous_control"),
             ("机器人的坐标系怎么定义", "robot_knowledge"),
@@ -122,6 +125,38 @@ class DifyIntentRoutingTests(unittest.TestCase):
                     "y": 0.0,
                     "z": -0.1,
                     "relative": True,
+                },
+            ),
+            (
+                "左臂向上抬十厘米",
+                {
+                    "action": "move_cartesian",
+                    "arm": "left",
+                    "x": 0.0,
+                    "y": 0.0,
+                    "z": 0.1,
+                    "relative": True,
+                },
+            ),
+            (
+                "左臂向上抬十五厘米",
+                {
+                    "action": "move_cartesian",
+                    "arm": "left",
+                    "x": 0.0,
+                    "y": 0.0,
+                    "z": 0.15,
+                    "relative": True,
+                },
+            ),
+            (
+                "左臂关节1旋转三十度",
+                {
+                    "action": "move_joint",
+                    "arm": "left",
+                    "joint": 1,
+                    "value": 0.524,
+                    "type": "delta",
                 },
             ),
             (

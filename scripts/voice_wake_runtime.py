@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-from collections import deque
 from enum import Enum, auto
 import time
 
 import numpy as np
-
-from voice_runtime_config import COMMAND_PRE_ROLL_SEC
 
 
 class VoiceState(Enum):
@@ -37,10 +34,6 @@ class WakeWordRuntime:
         self.clock = clock
         self.sample_rate = int(sample_rate)
         self._tts_speak = speaker_callback or (lambda _text: False)
-        self._pre_roll_samples = max(
-            0,
-            int(round(self.sample_rate * COMMAND_PRE_ROLL_SEC)),
-        )
         self.state = VoiceState.WAITING_WAKE_WORD
         self._stop = False
         self._cooldown_until = 0.0
@@ -116,9 +109,6 @@ class WakeWordRuntime:
                 wait_started = self.clock()
                 record_started = None
                 collected = []
-                speech_prefix = []
-                pre_roll = deque()
-                pre_roll_samples = 0
 
                 while not self._stop:
                     chunk = self.audio.read_chunk()
@@ -128,27 +118,16 @@ class WakeWordRuntime:
                         if self.vad.speech_started:
                             record_started = now
                             self.state = VoiceState.RECORDING_COMMAND
-                            speech_prefix = list(pre_roll)
-                            collected = [*speech_prefix, accepted_chunk]
+                            collected = [accepted_chunk]
                         elif now - wait_started >= self.start_timeout:
                             break
-                        elif self._pre_roll_samples > 0:
-                            pre_roll.append(accepted_chunk)
-                            pre_roll_samples += len(accepted_chunk)
-                            while pre_roll and pre_roll_samples > self._pre_roll_samples:
-                                excess = pre_roll_samples - self._pre_roll_samples
-                                first = pre_roll[0]
-                                if len(first) <= excess:
-                                    pre_roll.popleft()
-                                    pre_roll_samples -= len(first)
-                                else:
-                                    pre_roll[0] = first[excess:]
-                                    pre_roll_samples -= excess
                     else:
                         collected.append(accepted_chunk)
                         segment = self.vad.pop_segment()
                         if segment is not None:
-                            collected = [*speech_prefix, segment]
+                            # The VAD segment already contains the complete utterance.
+                            # Prepending a separately buffered prefix duplicates its onset.
+                            collected = [segment]
                             break
                         if now - record_started >= self.max_duration:
                             break

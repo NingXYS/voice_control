@@ -142,7 +142,7 @@ class OnlineVoicePhase1Tests(unittest.TestCase):
             runtime.run()
         self.assertEqual(runtime.state, VoiceState.STOPPED)
 
-    def test_runtime_preserves_audio_before_vad_speech_start(self):
+    def test_runtime_uses_vad_segment_once(self):
         pre_roll = np.ones(1600, dtype=np.float32)
         speech = np.full(1600, 2.0, dtype=np.float32)
 
@@ -184,7 +184,9 @@ class OnlineVoicePhase1Tests(unittest.TestCase):
                 return self.calls >= 2
 
             def pop_segment(self):
-                return np.array([0.5, 0.6], dtype=np.float32) if self.calls >= 3 else None
+                if self.calls < 3:
+                    return None
+                return np.concatenate((pre_roll, speech))
 
         captured = []
         runtime = WakeWordRuntime(
@@ -203,7 +205,7 @@ class OnlineVoicePhase1Tests(unittest.TestCase):
         runtime.run()
 
         self.assertEqual(len(captured), 1)
-        np.testing.assert_allclose(captured[0][:1600], pre_roll)
+        np.testing.assert_allclose(captured[0], np.concatenate((pre_roll, speech)))
 
 
 if __name__ == "__main__":

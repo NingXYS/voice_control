@@ -29,6 +29,26 @@ class LocalActionParserTests(unittest.TestCase):
                     "relative": True,
                 }
             ],
+            "左臂向上抬十厘米": [
+                {
+                    "action": "move_cartesian",
+                    "arm": "left",
+                    "x": 0,
+                    "y": 0,
+                    "z": 0.1,
+                    "relative": True,
+                }
+            ],
+            "左臂向上抬十五厘米": [
+                {
+                    "action": "move_cartesian",
+                    "arm": "left",
+                    "x": 0,
+                    "y": 0,
+                    "z": 0.15,
+                    "relative": True,
+                }
+            ],
             "右臂向前5厘米左臂向上10厘米": [
                 {
                     "action": "move_cartesian",
@@ -48,6 +68,15 @@ class LocalActionParserTests(unittest.TestCase):
                 },
             ],
             "左臂关节1旋转30度": [
+                {
+                    "action": "move_joint",
+                    "arm": "left",
+                    "joint": 1,
+                    "value": 0.523599,
+                    "type": "delta",
+                }
+            ],
+            "左臂关节1旋转三十度": [
                 {
                     "action": "move_joint",
                     "arm": "left",

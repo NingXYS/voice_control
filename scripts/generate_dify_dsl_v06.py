@@ -11,11 +11,12 @@ LOCAL_INTENT_CODE = """import re
 
 def main(user_text: str) -> dict:
     text = re.sub(r'[\\s，。！？；：,.!?;:]+', '', user_text or '')
+    number_token = r'(?:-?\\d+(?:\\.\\d+)?|[零〇一二两三四五六七八九十百千万点]+)'
     arms = re.findall(r'左臂|右臂|左手|右手', text)
     directions = re.findall(r'向上|向下|向前|向后|向左|向右', text)
-    distances = re.findall(r'-?\\d+(?:\\.\\d+)?(?:毫米|厘米|米)', text)
+    distances = re.findall(rf'{number_token}(?:毫米|厘米|米)', text)
     joints = re.findall(r'关节[1-6]', text)
-    angles = re.findall(r'-?\\d+(?:\\.\\d+)?(?:度|弧度)', text)
+    angles = re.findall(rf'{number_token}(?:度|弧度)', text)
     has_home = any(keyword in text for keyword in ('回零', '归零', '零位'))
     has_status = '状态' in text or ('查询' in text and '位置' in text)
     is_simple = bool(arms) and (
@@ -65,6 +66,44 @@ LOCAL_ACTION_CODE = """import json
 import math
 import re
 
+_NUMBER_TOKEN = r'(?:-?\\d+(?:\\.\\d+)?|[零〇一二两三四五六七八九十百千万点]+)'
+_CHINESE_DIGITS = {'零': 0, '〇': 0, '一': 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9}
+_CHINESE_UNITS = {'十': 10, '百': 100, '千': 1000, '万': 10000}
+
+def _parse_number(value: str) -> float | None:
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    integer_text, _, fraction_text = value.partition('点')
+    integer = 0
+    section = 0
+    digit = 0
+    for char in integer_text:
+        if char in _CHINESE_DIGITS:
+            digit = _CHINESE_DIGITS[char]
+            continue
+        unit = _CHINESE_UNITS.get(char)
+        if unit is None:
+            return None
+        if unit >= 10000:
+            section = (section + digit) * unit
+            integer += section
+            section = 0
+        else:
+            section += (digit or 1) * unit
+        digit = 0
+    integer += section + digit
+    if not fraction_text:
+        return float(integer)
+    fraction_digits = []
+    for char in fraction_text:
+        if char not in _CHINESE_DIGITS:
+            return None
+        fraction_digits.append(str(_CHINESE_DIGITS[char]))
+    fraction = ''.join(fraction_digits)
+    return float(f'{integer}.{fraction}')
+
 def main(user_text: str) -> dict:
     text = re.sub(r'[\\s，。！？；：,.!?;:]+', '', user_text or '')
     arm_match = re.search(r'左臂|左手|右臂|右手', text)
@@ -77,11 +116,14 @@ def main(user_text: str) -> dict:
         command = {'action': 'get_status', 'arm': arm}
     else:
         joint_match = re.search(r'关节([1-6])', text)
-        angle_match = re.search(r'(-?\\d+(?:\\.\\d+)?)(度|弧度)', text)
+        angle_match = re.search(rf'({_NUMBER_TOKEN})(度|弧度)', text)
         direction_match = re.search(r'向上|向下|向前|向后|向左|向右', text)
-        distance_match = re.search(r'(-?\\d+(?:\\.\\d+)?)(毫米|厘米|米)', text)
+        distance_match = re.search(rf'({_NUMBER_TOKEN})(毫米|厘米|米)', text)
         if joint_match is not None and angle_match is not None:
-            value = float(angle_match.group(1))
+            value = _parse_number(angle_match.group(1))
+            if value is None:
+                command = {'reply': '请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。'}
+                return {'result': json.dumps(command, ensure_ascii=False)}
             if angle_match.group(2) == '度':
                 value = math.radians(value)
             if value > 0 and any(keyword in text for keyword in ('反转', '反向')):
@@ -94,7 +136,10 @@ def main(user_text: str) -> dict:
                 'type': 'delta',
             }
         elif direction_match is not None and distance_match is not None:
-            distance = float(distance_match.group(1))
+            distance = _parse_number(distance_match.group(1))
+            if distance is None:
+                command = {'reply': '请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。'}
+                return {'result': json.dumps(command, ensure_ascii=False)}
             scale = {'毫米': 0.001, '厘米': 0.01, '米': 1.0}[distance_match.group(2)]
             value = round(distance * scale, 6)
             direction = direction_match.group(0)

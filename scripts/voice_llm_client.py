@@ -190,12 +190,30 @@ _CARTESIAN_MAP = {
     "后": ("y", -1),
 }
 
+_CHINESE_DIGITS = {
+    "零": 0,
+    "〇": 0,
+    "一": 1,
+    "二": 2,
+    "两": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+}
+_CHINESE_UNITS = {"十": 10, "百": 100, "千": 1000, "万": 10000}
+_NUMBER_TOKEN = r"(?:\d+(?:\.\d+)?|[零〇一二两三四五六七八九十百千万点]+)"
+
 # 单个动作片段的匹配模式
-# 笛卡尔：左臂/右臂 + 向?方向 + 数字 + 厘米
+# 笛卡尔：左臂/右臂 + 向?方向 + 可选动作词 + 数字/中文数字 + 厘米
 _RE_CARTESIAN = re.compile(
     r'(左臂|右臂)'              # arm
     r'向?([上下左右前后])'       # direction
-    r'(\d+(?:\.\d+)?)'         # value (支持小数)
+    r'(?:抬|降|移动|走)?'        # optional spoken action word
+    rf'({_NUMBER_TOKEN})'        # value (Arabic or Chinese number)
     r'\s*厘米'
 )
 
@@ -206,7 +224,7 @@ _RE_JOINT = re.compile(
     r'关节(\d)'                # joint number
     r'(反转)?'                 # reverse flag (optional)
     r'(?:旋转)?'               # 旋转 (optional, "反转30度" 不需要此词)
-    r'(\d+(?:\.\d+)?)'         # angle
+    rf'({_NUMBER_TOKEN})'        # angle (Arabic or Chinese number)
     r'\s*度'                   # unit
 )
 
@@ -226,7 +244,7 @@ def check_simple_action_command(text, tracker=None):
     - 多动作：右臂向前5厘米左臂向上10厘米
 
     不支持（返回 None）：
-    - 中文数字、省略臂、省略单位、省略数值
+    - 省略臂、省略单位、省略数值
     - 问答、介绍、混合问答动作
     - home、get_status 等不在 VALID_ACTIONS 中的动作
     - 模糊语义：动一下、旋转一圈、握手等
@@ -303,7 +321,9 @@ def _parse_one_segment(seg):
         joint = int(m.group(2))
         if joint < 1 or joint > 6:
             return None
-        angle_deg = float(m.group(4))
+        angle_deg = _parse_number(m.group(4))
+        if angle_deg is None:
+            return None
         reverse = m.group(3) is not None  # "反转" 存在
         value_rad = round(angle_deg * _math.pi / 180.0, 6)
         if reverse:
@@ -322,7 +342,9 @@ def _parse_one_segment(seg):
         arm_raw = m.group(1)
         arm = "left" if arm_raw == "左臂" else "right"
         direction = m.group(2)
-        value_cm = float(m.group(3))
+        value_cm = _parse_number(m.group(3))
+        if value_cm is None:
+            return None
         value_m = round(value_cm / 100.0, 6)
 
         axis, sign = _CARTESIAN_MAP[direction]
@@ -338,6 +360,43 @@ def _parse_one_segment(seg):
         return cmd
 
     return None
+
+
+def _parse_number(value: str) -> float | None:
+    """Parse an Arabic or common spoken Chinese number."""
+    try:
+        return float(value)
+    except ValueError:
+        pass
+
+    integer_text, _, fraction_text = value.partition("点")
+    integer = 0
+    section = 0
+    digit = 0
+    for char in integer_text:
+        if char in _CHINESE_DIGITS:
+            digit = _CHINESE_DIGITS[char]
+            continue
+        unit = _CHINESE_UNITS.get(char)
+        if unit is None:
+            return None
+        if unit >= 10000:
+            section = (section + digit) * unit
+            integer += section
+            section = 0
+        else:
+            section += (digit or 1) * unit
+        digit = 0
+    integer += section + digit
+
+    if not fraction_text:
+        return float(integer)
+    fraction_digits = []
+    for char in fraction_text:
+        if char not in _CHINESE_DIGITS:
+            return None
+        fraction_digits.append(str(_CHINESE_DIGITS[char]))
+    return float(f"{integer}.{''.join(fraction_digits)}")
 
 
 # ==================== Ollama 可用性检查（带短 TTL 缓存）====================
