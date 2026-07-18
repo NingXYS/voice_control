@@ -1,5 +1,7 @@
 """Persistent ALSA PCM capture using arecord."""
+import os
 import subprocess
+
 import numpy as np
 
 
@@ -35,6 +37,41 @@ class PersistentAudioSession:
                 raise RuntimeError(f"arecord stopped unexpectedly (exit={code})")
             data.extend(part)
         return np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768.0
+
+    def discard_buffered(self) -> int:
+        """Drain PCM already buffered in the arecord pipe without blocking.
+
+        This is used after local playback so audio captured while TTS/prompt output
+        was blocking the runtime cannot later be replayed into KWS/VAD as if it were
+        fresh microphone input. Returns the number of discarded PCM16 samples.
+        """
+        if self._process is None or self._process.stdout is None:
+            return 0
+
+        try:
+            fd = self._process.stdout.fileno()
+            was_blocking = os.get_blocking(fd)
+            os.set_blocking(fd, False)
+        except (AttributeError, OSError, ValueError):
+            return 0
+
+        discarded_bytes = 0
+        try:
+            while True:
+                try:
+                    part = os.read(fd, 65536)
+                except BlockingIOError:
+                    break
+                if not part:
+                    break
+                discarded_bytes += len(part)
+        finally:
+            try:
+                os.set_blocking(fd, was_blocking)
+            except OSError:
+                pass
+
+        return discarded_bytes // 2
 
     def close(self) -> None:
         process, self._process = self._process, None
