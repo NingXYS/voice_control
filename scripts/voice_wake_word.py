@@ -2,6 +2,13 @@
 from pathlib import Path
 import numpy as np
 
+from voice_runtime_config import (
+    KWS_KEYWORDS_SCORE,
+    KWS_KEYWORDS_THRESHOLD,
+    KWS_MAX_ACTIVE_PATHS,
+    KWS_NUM_TRAILING_BLANKS,
+)
+
 
 class WakeWordDetector:
     def __init__(self, model_dir: str, wake_word: str, num_threads: int = 2):
@@ -29,6 +36,10 @@ class WakeWordDetector:
             joiner=str(files["joiner"]),
             keywords_file=str(files["keywords_file"]),
             num_threads=num_threads,
+            max_active_paths=KWS_MAX_ACTIVE_PATHS,
+            num_trailing_blanks=KWS_NUM_TRAILING_BLANKS,
+            keywords_score=KWS_KEYWORDS_SCORE,
+            keywords_threshold=KWS_KEYWORDS_THRESHOLD,
             sample_rate=16000,
             feature_dim=80,
             provider="cpu",

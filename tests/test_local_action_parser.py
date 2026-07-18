@@ -479,7 +479,7 @@ class LocalReplyCommandTests(unittest.TestCase):
 
     def test_capability_hit_returns_reply_list(self):
         """能力说明类命中，且不声明未对齐的 home/get_status 能力。"""
-        for text in ["你能做什么", "你会做什么", "你有什么功能",
+        for text in ["你能做什么", "你会做什么", "你会干什么", "你你会干什么", "你有什么功能",
                      "你支持哪些指令", "你能控制什么"]:
             with self.subTest(text=text):
                 result = check_local_reply_command(text)

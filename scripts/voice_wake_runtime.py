@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from collections import deque
 from enum import Enum, auto
 import time
 
 import numpy as np
+
+from voice_runtime_config import COMMAND_PRE_ROLL_SEC
 
 
 class VoiceState(Enum):
@@ -33,6 +36,10 @@ class WakeWordRuntime:
         self.clock = clock
         self.sample_rate = int(sample_rate)
         self._tts_speak = speaker_callback or (lambda _text: False)
+        self._pre_roll_samples = max(
+            0,
+            int(round(self.sample_rate * COMMAND_PRE_ROLL_SEC)),
+        )
         self.state = VoiceState.WAITING_WAKE_WORD
         self._stop = False
         self._cooldown_until = 0.0
@@ -81,23 +88,39 @@ class WakeWordRuntime:
                 wait_started = self.clock()
                 record_started = None
                 collected = []
+                speech_prefix = []
+                pre_roll = deque()
+                pre_roll_samples = 0
 
                 while not self._stop:
                     chunk = self.audio.read_chunk()
-                    self.vad.accept_audio(chunk)
+                    accepted_chunk = self.vad.accept_audio(chunk)
                     now = self.clock()
                     if record_started is None:
                         if self.vad.speech_started:
                             record_started = now
                             self.state = VoiceState.RECORDING_COMMAND
-                            collected.append(chunk)
+                            speech_prefix = list(pre_roll)
+                            collected = [*speech_prefix, accepted_chunk]
                         elif now - wait_started >= self.start_timeout:
                             break
+                        elif self._pre_roll_samples > 0:
+                            pre_roll.append(accepted_chunk)
+                            pre_roll_samples += len(accepted_chunk)
+                            while pre_roll and pre_roll_samples > self._pre_roll_samples:
+                                excess = pre_roll_samples - self._pre_roll_samples
+                                first = pre_roll[0]
+                                if len(first) <= excess:
+                                    pre_roll.popleft()
+                                    pre_roll_samples -= len(first)
+                                else:
+                                    pre_roll[0] = first[excess:]
+                                    pre_roll_samples -= excess
                     else:
-                        collected.append(chunk)
+                        collected.append(accepted_chunk)
                         segment = self.vad.pop_segment()
                         if segment is not None:
-                            collected = [segment]
+                            collected = [*speech_prefix, segment]
                             break
                         if now - record_started >= self.max_duration:
                             break
@@ -112,8 +135,15 @@ class WakeWordRuntime:
                 self.state = VoiceState.PROCESSING
                 try:
                     text = self.asr_callback(audio, self.sample_rate)
+                    print(f"🗣️ 识别输入: {text or '<未识别>'}", flush=True)
                     if text:
-                        self.process_callback(text, self._reply_speaker)
+                        result = self.process_callback(text, self._reply_speaker)
+                        print(
+                            f"🤖 处理输出: {result if result is not None else '<无有效输出>'}",
+                            flush=True,
+                        )
+                    else:
+                        print("🤖 处理输出: <未处理>", flush=True)
                 except Exception as exc:
                     print(f"⚠️ Voice turn failed: {exc}")
                 finally:

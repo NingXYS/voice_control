@@ -1,48 +1,127 @@
 #!/usr/bin/env python3
+# noqa: SIZE_OK — Dify 生成器需要在同一文件内保存嵌入代码、提示词和声明式工作流图。
 """生成 Dify Workflow DSL v0.6.0 YAML 文件（含条件分支后置的知识库检索）"""
 import uuid
+from pathlib import Path
 import yaml
 
 WF_ID = str(uuid.uuid4())
 
-# 意图分类 Prompt
-INTENT_CLASSIFY_PROMPT = """你是一个专门用于双臂机械臂控制系统的轻量意图分类器。
-请根据用户输入的自然语言，将意图准确分类为以下五类之一，并且【只输出】分类对应的英文标识，不要包含任何标点符号、解释或 Markdown 格式。
+LOCAL_INTENT_CODE = """import re
 
-【可选的分类标识】
-- fixed_reply
-- control_action
-- ambiguous_control
-- robot_knowledge
-- complex_fallback
+def main(user_text: str) -> dict:
+    text = re.sub(r'[\\s，。！？；：,.!?;:]+', '', user_text or '')
+    arms = re.findall(r'左臂|右臂|左手|右手', text)
+    directions = re.findall(r'向上|向下|向前|向后|向左|向右', text)
+    distances = re.findall(r'-?\\d+(?:\\.\\d+)?(?:毫米|厘米|米)', text)
+    joints = re.findall(r'关节[1-6]', text)
+    angles = re.findall(r'-?\\d+(?:\\.\\d+)?(?:度|弧度)', text)
+    has_home = any(keyword in text for keyword in ('回零', '归零', '零位'))
+    has_status = '状态' in text or ('查询' in text and '位置' in text)
+    is_simple = bool(arms) and (
+        bool(directions and distances)
+        or bool(joints and angles)
+        or has_home
+        or has_status
+    )
+    is_composite = (
+        len(arms) > 1
+        or len(directions) > 1
+        or len(joints) > 1
+        or any(keyword in text for keyword in ('然后', '同时', '并且', '接着', '再把', '再将'))
+    )
+    if is_simple:
+        return {'intent': 'control_action' if is_composite else 'local_action'}
+    if any(keyword in text for keyword in ('有什么限制', '支持哪些关节', '移动多远', '坐标系', '怎么下达指令', '指令格式', '指令要求', '机械臂可以', '抓取', '拿东西', '放东西', '能旋转', '可以旋转')):
+        return {'intent': 'robot_knowledge'}
+    if any(keyword in text for keyword in ('你是谁', '你叫什么', '你是什么', '介绍', '你能做什么', '你会做什么', '你会干什么', '你能干什么', '功能', '你好', '您好', '谢谢', '感谢', '辛苦了', '唱歌', '唱首歌', '唱一首', '跳舞', '天气', '气温', '下雨', '联网', '上网', '在线检索')):
+        return {'intent': 'fixed_reply'}
+    if any(keyword in text for keyword in ('左臂', '右臂', '左手', '右手', '关节', '移动', '向上', '向下', '向前', '向后', '向左', '向右', '抬', '降', '旋转', '转动', '回零', '归零', '状态', '位置')):
+        return {'intent': 'ambiguous_control'}
+    return {'intent': 'complex_fallback'}"""
 
-【分类规则 - 严格遵守】
-1. fixed_reply：自我介绍、能力询问、寒暄、感谢、打招呼等基本人机交互。
-   - 例如："你是谁"、"你能做什么"、"谢谢你"、"你好"、"介绍下你自己"
-2. control_action：明确的控制指令，包含手臂（左臂/右臂）、动作方向（向上/向下/向前/向后/向左/向右）或关节（关节1-6）、以及具体的运动距离（如厘米、米）或旋转角度（如度、弧度）等。
-   - 例如："左臂向上10厘米"、"右臂向前5厘米"、"左臂关节1旋转30度"、"右臂回零位"、"查询左臂状态"
-3. ambiguous_control：属于控制动作意图，但缺少必要参数。例如只说了手臂没说动作，或者只说了动作没说手臂，或者缺少具体方向、关节、距离/角度等。
-   - 例如："抬起你的左手"、"动一下"、"往前一点"、"左臂向上"、"查询状态"、"回零"、"左手抬起来"、"左手"、"右臂"、"转一下"
-4. robot_knowledge：询问机器人的限制、参数、规范、设计说明、坐标系、动作支持范围等需要查阅说明书或知识库上下文的问题。
-   - 例如："机器人有什么限制"、"支持哪些关节"、"右臂可以移动多远"、"坐标系是怎么定义的"、"怎么下达指令"、"机械臂可以拿东西吗"、"能不能联网"
-5. complex_fallback：无法被上述四类清晰且可靠归类的复杂或异常输入。
+FIXED_REPLY_CODE = """import json
+import re
 
-【输出格式】
-只输出五类标识之一（即 fixed_reply, control_action, ambiguous_control, robot_knowledge, complex_fallback），绝对不要输出其他字符！"""
+def main(user_text: str) -> dict:
+    text = re.sub(r'[\\s，。！？；：,.!?;:]+', '', user_text or '')
+    if any(keyword in text for keyword in ('唱歌', '唱首歌', '唱一首', '跳舞')):
+        reply = '我不能唱歌。我可以控制左右两条机械臂，支持关节旋转和空间移动。'
+    elif any(keyword in text for keyword in ('天气', '气温', '下雨')):
+        reply = '我无法查询天气。我可以帮助控制左右两条机械臂。'
+    elif any(keyword in text for keyword in ('联网', '上网', '在线检索')):
+        reply = '我不能联网检索。我可以帮助控制左右两条机械臂。'
+    elif any(keyword in text for keyword in ('你能做什么', '你会做什么', '你会干什么', '你能干什么', '你有什么功能', '你支持哪些指令', '你能控制什么', '你支持哪些动作', '功能')):
+        reply = '我可以控制左右两条机械臂，支持关节旋转和空间移动。'
+    elif any(keyword in text for keyword in ('你是谁', '你叫什么', '你是什么', '介绍一下自己', '介绍自己', '介绍一下你', '自我介绍', '介绍你')):
+        reply = '我是施耐力双臂六关节机械臂，拥有左右两条手臂，各六个关节。'
+    elif any(keyword in text for keyword in ('谢谢', '感谢', '辛苦了')):
+        reply = '不客气，很高兴能帮到你。'
+    else:
+        reply = '你好！我是机械臂控制助手，请问有什么可以帮您？'
+    return {'result': json.dumps({'reply': reply}, ensure_ascii=False)}"""
 
-# 固定回复 Prompt
-FIXED_REPLY_PROMPT = """你是施耐力双臂六关节机械臂控制助手。
-请对用户的寒暄、问候、感谢或自我介绍等简单交互进行礼貌简短的回复。
+LOCAL_ACTION_CODE = """import json
+import math
+import re
 
-【输出格式约束】
-必须只输出一个 JSON 对象，且仅包含 reply 字段，例如：
-{"reply": "你好！我是施耐力双臂机械臂控制助手。请说明你需要我控制左臂还是右臂进行动作。"}
-绝对不要包含任何 markdown 标记、代码块、或者额外的解释。
-
-【已知的能力】
-本系统目前支持控制左右臂在三维空间内直线移动（空间移动）、六个关节的旋转（关节旋转）、回到零位（回零）以及查询当前位置与关节状态。
-控制指令需要明确手臂、方向或关节、距离或角度。
-本系统不支持抓取、松开、拿放物品、联网检索、云服务、物体识别或其它真实物理外设操控，请不要承诺这些能力。"""
+def main(user_text: str) -> dict:
+    text = re.sub(r'[\\s，。！？；：,.!?;:]+', '', user_text or '')
+    arm_match = re.search(r'左臂|左手|右臂|右手', text)
+    if arm_match is None:
+        return {'result': json.dumps({'reply': '请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。'}, ensure_ascii=False)}
+    arm = 'left' if arm_match.group(0) in ('左臂', '左手') else 'right'
+    if any(keyword in text for keyword in ('回零', '归零', '零位')):
+        command = {'action': 'home', 'arm': arm}
+    elif '状态' in text or ('查询' in text and '位置' in text):
+        command = {'action': 'get_status', 'arm': arm}
+    else:
+        joint_match = re.search(r'关节([1-6])', text)
+        angle_match = re.search(r'(-?\\d+(?:\\.\\d+)?)(度|弧度)', text)
+        direction_match = re.search(r'向上|向下|向前|向后|向左|向右', text)
+        distance_match = re.search(r'(-?\\d+(?:\\.\\d+)?)(毫米|厘米|米)', text)
+        if joint_match is not None and angle_match is not None:
+            value = float(angle_match.group(1))
+            if angle_match.group(2) == '度':
+                value = math.radians(value)
+            if value > 0 and any(keyword in text for keyword in ('反转', '反向')):
+                value = -value
+            command = {
+                'action': 'move_joint',
+                'arm': arm,
+                'joint': int(joint_match.group(1)),
+                'value': round(value, 3),
+                'type': 'delta',
+            }
+        elif direction_match is not None and distance_match is not None:
+            distance = float(distance_match.group(1))
+            scale = {'毫米': 0.001, '厘米': 0.01, '米': 1.0}[distance_match.group(2)]
+            value = round(distance * scale, 6)
+            direction = direction_match.group(0)
+            x, y, z = 0.0, 0.0, 0.0
+            if direction == '向右':
+                x = value
+            elif direction == '向左':
+                x = -value
+            elif direction == '向前':
+                y = value
+            elif direction == '向后':
+                y = -value
+            elif direction == '向上':
+                z = value
+            else:
+                z = -value
+            command = {
+                'action': 'move_cartesian',
+                'arm': arm,
+                'x': x,
+                'y': y,
+                'z': z,
+                'relative': True,
+            }
+        else:
+            command = {'reply': '请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。'}
+    return {'result': json.dumps(command, ensure_ascii=False)}"""
 
 # 动作解析 Prompt
 CONTROL_ACTION_PROMPT = """你是双臂机械臂控制助手，负责将用户的自然语言指令转换为JSON。
@@ -159,7 +238,7 @@ CODE_NODE_CODE = """import json
 import re
 
 def main(raw_json: str) -> dict:
-    result = raw_json.strip()
+    result = re.sub(r'<think>.*?</think>', '', raw_json, flags=re.DOTALL | re.IGNORECASE).strip()
     if result.startswith('```json'):
         result = result[7:]
     elif result.startswith('```'):
@@ -226,26 +305,15 @@ dsl = {
                 {
                     "id": "intent_classify",
                     "data": {
-                        "type": "llm",
-                        "title": "意图分类",
-                        "description": "轻量意图分类",
-                        "context": {"enabled": False},
-                        "model": {
-                            "mode": "chat",
-                            "provider": "",
-                            "name": "",
-                            "completion_params": {
-                                "temperature": 0.1,
-                                "max_tokens": 64,
-                                "top_p": 0.95,
-                                "stop": []
-                            }
-                        },
-                        "prompt_template": [
-                            {"role": "system", "text": INTENT_CLASSIFY_PROMPT},
-                            {"role": "user", "text": "{{#start_voice_text.text#}}"}
+                        "type": "code",
+                        "title": "本地意图分类",
+                        "description": "规则分类，不调用模型",
+                        "code_language": "python3",
+                        "code": LOCAL_INTENT_CODE,
+                        "variables": [
+                            {"variable": "user_text", "value_selector": ["start_voice_text", "text"]}
                         ],
-                        "variables": []
+                        "outputs": {"intent": {"type": "string"}}
                     },
                     "position": {"x": 250, "y": 200},
                 },
@@ -261,9 +329,21 @@ dsl = {
                                 "conditions": [
                                     {
                                         "id": "cond_fixed",
-                                        "variable_selector": ["intent_classify", "text"],
+                                        "variable_selector": ["intent_classify", "intent"],
                                         "comparison_operator": "is",
                                         "value": "fixed_reply"
+                                    }
+                                ]
+                            },
+                            {
+                                "case_id": "case_local_action",
+                                "logical_operator": "and",
+                                "conditions": [
+                                    {
+                                        "id": "cond_local_action",
+                                        "variable_selector": ["intent_classify", "intent"],
+                                        "comparison_operator": "is",
+                                        "value": "local_action"
                                     }
                                 ]
                             },
@@ -273,7 +353,7 @@ dsl = {
                                 "conditions": [
                                     {
                                         "id": "cond_control",
-                                        "variable_selector": ["intent_classify", "text"],
+                                        "variable_selector": ["intent_classify", "intent"],
                                         "comparison_operator": "is",
                                         "value": "control_action"
                                     }
@@ -285,7 +365,7 @@ dsl = {
                                 "conditions": [
                                     {
                                         "id": "cond_ambiguous",
-                                        "variable_selector": ["intent_classify", "text"],
+                                        "variable_selector": ["intent_classify", "intent"],
                                         "comparison_operator": "is",
                                         "value": "ambiguous_control"
                                     }
@@ -297,7 +377,7 @@ dsl = {
                                 "conditions": [
                                     {
                                         "id": "cond_knowledge",
-                                        "variable_selector": ["intent_classify", "text"],
+                                        "variable_selector": ["intent_classify", "intent"],
                                         "comparison_operator": "is",
                                         "value": "robot_knowledge"
                                     }
@@ -308,30 +388,34 @@ dsl = {
                     "position": {"x": 450, "y": 200},
                 },
                 {
-                    "id": "llm_fixed_reply",
+                    "id": "fixed_reply_local",
                     "data": {
-                        "type": "llm",
-                        "title": "固定问答回复",
-                        "description": "处理寒暄与基本信息回复",
-                        "context": {"enabled": False},
-                        "model": {
-                            "mode": "chat",
-                            "provider": "",
-                            "name": "",
-                            "completion_params": {
-                                "temperature": 0.1,
-                                "max_tokens": 512,
-                                "top_p": 0.95,
-                                "stop": []
-                            }
-                        },
-                        "prompt_template": [
-                            {"role": "system", "text": FIXED_REPLY_PROMPT},
-                            {"role": "user", "text": "{{#start_voice_text.text#}}"}
+                        "type": "code",
+                        "title": "本地固定问答",
+                        "description": "确定性本地回复，不调用模型",
+                        "code_language": "python3",
+                        "code": FIXED_REPLY_CODE,
+                        "variables": [
+                            {"variable": "user_text", "value_selector": ["start_voice_text", "text"]}
                         ],
-                        "variables": []
+                        "outputs": {"result": {"type": "string"}}
                     },
                     "position": {"x": 700, "y": 0},
+                },
+                {
+                    "id": "local_action_parse",
+                    "data": {
+                        "type": "code",
+                        "title": "本地动作解析",
+                        "description": "解析常见单条明确动作，不调用模型",
+                        "code_language": "python3",
+                        "code": LOCAL_ACTION_CODE,
+                        "variables": [
+                            {"variable": "user_text", "value_selector": ["start_voice_text", "text"]}
+                        ],
+                        "outputs": {"result": {"type": "string"}}
+                    },
+                    "position": {"x": 700, "y": 100},
                 },
                 {
                     "id": "llm_control_action",
@@ -346,7 +430,7 @@ dsl = {
                             "name": "",
                             "completion_params": {
                                 "temperature": 0.1,
-                                "max_tokens": 512,
+                                "max_tokens": 256,
                                 "top_p": 0.95,
                                 "stop": []
                             }
@@ -396,7 +480,7 @@ dsl = {
                             "name": "",
                             "completion_params": {
                                 "temperature": 0.1,
-                                "max_tokens": 512,
+                                "max_tokens": 256,
                                 "top_p": 0.95,
                                 "stop": []
                             }
@@ -414,7 +498,7 @@ dsl = {
                     "data": {
                         "type": "template-transform",
                         "title": "复杂兜底澄清",
-                        "template": '{"reply": "请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。"}',
+                        "template": '{"reply": "这个问题不属于机械臂控制范围。我可以回答机械臂能力并处理明确的控制指令。"}',
                         "variables": []
                     },
                     "position": {"x": 700, "y": 600},
@@ -426,7 +510,8 @@ dsl = {
                         "title": "合并分支输出",
                         "output_type": "string",
                         "variables": [
-                            ["llm_fixed_reply", "text"],
+                            ["fixed_reply_local", "result"],
+                            ["local_action_parse", "result"],
                             ["llm_control_action", "text"],
                             ["tmpl_ambiguous_control", "output"],
                             ["llm_robot_knowledge", "text"],
@@ -475,10 +560,16 @@ dsl = {
                 },
                 # route_by_intent branches
                 {
-                    "id": "route_by_intent-case_fixed-llm_fixed_reply-target",
+                    "id": "route_by_intent-case_fixed-fixed_reply_local-target",
                     "source": "route_by_intent",
                     "sourceHandle": "case_fixed",
-                    "target": "llm_fixed_reply",
+                    "target": "fixed_reply_local",
+                },
+                {
+                    "id": "route_by_intent-case_local_action-local_action_parse-target",
+                    "source": "route_by_intent",
+                    "sourceHandle": "case_local_action",
+                    "target": "local_action_parse",
                 },
                 {
                     "id": "route_by_intent-case_control-llm_control_action-target",
@@ -512,8 +603,13 @@ dsl = {
                 },
                 # converge to aggregator
                 {
-                    "id": "llm_fixed_reply-source-merge_outputs-target",
-                    "source": "llm_fixed_reply",
+                    "id": "fixed_reply_local-source-merge_outputs-target",
+                    "source": "fixed_reply_local",
+                    "target": "merge_outputs",
+                },
+                {
+                    "id": "local_action_parse-source-merge_outputs-target",
+                    "source": "local_action_parse",
                     "target": "merge_outputs",
                 },
                 {
@@ -553,7 +649,7 @@ dsl = {
     }
 }
 
-output_path = "/home/ning/model/lyz/src/voice_control/scripts/voice_ros2_dify_v06.yml"
+output_path = Path(__file__).with_name("voice_ros2_dify_v06.yml")
 with open(output_path, "w") as f:
     yaml.dump(dsl, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 

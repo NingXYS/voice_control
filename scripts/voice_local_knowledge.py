@@ -18,7 +18,7 @@ LOCAL_REPLY_RULES = [
         "reply": "我是施耐力双臂六关节机械臂，拥有左右两条手臂，各六个关节。"
     },
     {
-        "keywords": ["你能做什么", "你会做什么", "你有什么功能", "你支持哪些指令", "你能控制什么", "你能干什么", "你支持哪些动作", "功能"],
+        "keywords": ["你能做什么", "你会做什么", "你会干什么", "你有什么功能", "你支持哪些指令", "你能控制什么", "你能干什么", "你支持哪些动作", "功能"],
         "reply": "我可以控制左右两条机械臂，支持关节旋转和空间移动。"
     },
     {
@@ -78,6 +78,14 @@ def normalize_text(text: str) -> str:
     pattern = "[" + re.escape(punctuation) + r"\s]"
     normalized = re.sub(pattern, "", text)
     return normalized.lower()
+
+
+def _collapse_repeated_prefix(text: str) -> str:
+    for width in range(1, min(4, len(text) // 2) + 1):
+        prefix = text[:width]
+        if text.startswith(prefix + prefix):
+            return prefix + text[2 * width:]
+    return text
 
 
 def is_safe_reply_payload(value: object) -> bool:
@@ -210,27 +218,33 @@ def match_local_reply(text: str, rules: list[dict[str, object]] | None = None) -
     norm_text = normalize_text(text)
     if not norm_text:
         return None
+
+    match_texts = [norm_text]
+    repaired_text = _collapse_repeated_prefix(norm_text)
+    if repaired_text != norm_text:
+        match_texts.append(repaired_text)
         
     if rules is not None:
         target_rules = rules
     else:
         target_rules = LOCAL_REPLY_RULES + get_csv_reply_rules()
         
-    for rule in target_rules:
-        if not isinstance(rule, dict):
-            continue
-        reply = rule.get("reply")
-        if not isinstance(reply, str) or not reply.strip():
-            continue
-            
-        phrases = _extract_and_normalize_phrases(rule)
-        for phrase in phrases:
-            if phrase in _EXACT_MATCH_ONLY_PHRASES or norm_text in _EXACT_MATCH_ONLY_PHRASES:
-                matched = norm_text == phrase
-            else:
-                matched = (phrase in norm_text) or (norm_text in phrase)
-            if matched:
-                return {"reply": reply}
+    for candidate in match_texts:
+        for rule in target_rules:
+            if not isinstance(rule, dict):
+                continue
+            reply = rule.get("reply")
+            if not isinstance(reply, str) or not reply.strip():
+                continue
+
+            phrases = _extract_and_normalize_phrases(rule)
+            for phrase in phrases:
+                if phrase in _EXACT_MATCH_ONLY_PHRASES or candidate in _EXACT_MATCH_ONLY_PHRASES:
+                    matched = candidate == phrase
+                else:
+                    matched = (phrase in candidate) or (candidate in phrase)
+                if matched:
+                    return {"reply": reply}
     return None
 
 

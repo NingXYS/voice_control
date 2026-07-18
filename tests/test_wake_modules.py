@@ -3,6 +3,8 @@ import sys
 import types
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from unittest import mock
 import numpy as np
 
@@ -84,6 +86,7 @@ class FakeVad:
 
     def accept_audio(self, _):
         self.n += 1
+        return np.asarray(_, dtype=np.float32)
 
     @property
     def speech_started(self):
@@ -98,22 +101,33 @@ class RuntimeTests(unittest.TestCase):
         chunks = [np.zeros(1600, dtype=np.float32) for _ in range(3)]
         audio = FakeAudio(chunks)
         processed = []
+
+        def process(text, speaker):
+            processed.append(text)
+            speaker("回答")
+            runtime.request_stop()
+            return [{"reply": "回答"}]
+
         runtime = WakeWordRuntime(
             audio,
             FakeWake(),
             FakeVad(),
             lambda *_: "自我介绍",
-            lambda text, speaker: (processed.append(text), runtime.request_stop()),
+            process,
             lambda: True,
             3,
             10,
             0,
             prompt_guard=0,
         )
-        runtime.run()
+        output = StringIO()
+        with redirect_stdout(output):
+            runtime.run()
         self.assertEqual(processed, ["自我介绍"])
         self.assertEqual(runtime.state, VoiceState.STOPPED)
         self.assertTrue(audio.closed)
+        self.assertIn("🗣️ 识别输入: 自我介绍", output.getvalue())
+        self.assertIn("🤖 处理输出: [{'reply': '回答'}]", output.getvalue())
 
     def test_reply_speaker_uses_cached_tts_function(self):
         chunks = [np.zeros(1600, dtype=np.float32) for _ in range(1)]
@@ -190,6 +204,10 @@ class WakeWordDetectorApiTests(unittest.TestCase):
                 "joiner": os.path.join(temp_dir, "joiner.onnx"),
                 "keywords_file": os.path.join(temp_dir, "keywords.txt"),
                 "num_threads": 2,
+                "max_active_paths": 4,
+                "num_trailing_blanks": 2,
+                "keywords_score": 1.5,
+                "keywords_threshold": 0.35,
                 "sample_rate": 16000,
                 "feature_dim": 80,
                 "provider": "cpu",
@@ -262,9 +280,48 @@ class CommandVadDetectorApiTests(unittest.TestCase):
             detector.accept_audio(np.array([1.0, 0.0], dtype=np.float32))
 
         self.assertTrue(detector.speech_started)
+        self.assertEqual(detector._vad.config.silero_vad.threshold, 0.6)
         segment = detector.pop_segment()
         self.assertIsNotNone(segment)
         np.testing.assert_allclose(segment, np.array([0.1, 0.2], dtype=np.float32))
+
+    def test_filters_quiet_audio_before_vad(self):
+        class FakeVad:
+            def __init__(self, config, buffer_size_in_seconds=60):
+                self.accepted = []
+
+            def accept_waveform(self, samples):
+                self.accepted.append(np.asarray(samples, dtype=np.float32).copy())
+
+            def empty(self):
+                return True
+
+            def is_speech_detected(self):
+                return False
+
+            def reset(self):
+                self.accepted.clear()
+
+        class FakeSileroVadModelConfig:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        class FakeVadModelConfig:
+            def __init__(self):
+                self.silero_vad = None
+
+        fake_module = types.SimpleNamespace(
+            VadModelConfig=FakeVadModelConfig,
+            SileroVadModelConfig=FakeSileroVadModelConfig,
+            VoiceActivityDetector=FakeVad,
+        )
+        with mock.patch.dict(sys.modules, {"sherpa_onnx": fake_module}, clear=False):
+            detector = voice_command_vad.CommandVadDetector("/tmp/vad.onnx", 0.25, 0.9)
+            detector.accept_audio(np.full(1600, 0.001, dtype=np.float32))
+            detector.accept_audio(np.full(1600, 0.02, dtype=np.float32))
+
+        np.testing.assert_allclose(detector._vad.accepted[0], 0.0)
+        np.testing.assert_allclose(detector._vad.accepted[1], 0.02)
 
 
 class AsrWakeWordDetectorApiTests(unittest.TestCase):

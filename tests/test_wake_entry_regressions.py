@@ -8,6 +8,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import numpy as np
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
@@ -62,6 +64,28 @@ class WakeEntryImportTests(unittest.TestCase):
         self.assertIsNotNone(backend.model)
         self.assertEqual(captured["paraformer"], str(Path(model_dir, "model.int8.onnx")))
         self.assertEqual(captured["tokens"], str(Path(model_dir, "tokens.txt")))
+
+    def test_paraformer_audio_normalization_removes_dc_offset(self):
+        backend = voice_asr_backend.ParaformerASRBackend("/models")
+
+        samples, sample_rate = backend._normalize_audio(
+            np.array([0.3, 0.5], dtype=np.float32),
+            16000,
+        )
+
+        self.assertEqual(sample_rate, 16000)
+        self.assertAlmostEqual(float(np.mean(samples)), 0.0, places=6)
+
+    def test_paraformer_audio_normalization_caps_quiet_input_gain(self):
+        backend = voice_asr_backend.ParaformerASRBackend("/models")
+
+        samples, _ = backend._normalize_audio(
+            np.array([-0.001, 0.001], dtype=np.float32),
+            16000,
+        )
+
+        rms = float(np.sqrt(np.mean(np.square(samples))))
+        self.assertAlmostEqual(rms, 0.003, places=6)
 
     def test_process_text_delegates_to_shared_boundary(self):
         speaker = mock.Mock()

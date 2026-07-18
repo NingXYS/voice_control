@@ -59,6 +59,7 @@ VOICE_WAKE_VENV_DIR="${VOICE_WAKE_VENV_DIR:-${REPO_ROOT}/.venv_online}"
     export DIFY_INPUT_KEY="${DIFY_INPUT_KEY:-text}"
     export DIFY_OUTPUT_KEY="${DIFY_OUTPUT_KEY:-result}"
     export AUDIO_DEVICE="${AUDIO_DEVICE:-default}"
+    export WAKE_DETECTOR_MODE="${WAKE_DETECTOR_MODE:-kws}"
 
     if [ -z "${DIFY_API_KEY:-}" ]; then
         echo "Check failed: DIFY_API_KEY is not set." >&2
@@ -103,6 +104,30 @@ for lib in libs:
         exit 1
     fi
 
+    INSTALLED_PACKAGE_DIR="${ONLINE_INSTALL_ROOT}/voice_control/lib/voice_control"
+    for file in \
+        voice_wake_entry.py \
+        voice_runtime_config.py \
+        voice_wake_runtime.py \
+        voice_wake_word.py \
+        voice_command_vad.py \
+        voice_asr_backend.py \
+        voice_text_pipeline.py \
+        voice_llm_client.py \
+        voice_local_knowledge.py; do
+        if ! cmp -s "${REPO_ROOT}/scripts/${file}" "${INSTALLED_PACKAGE_DIR}/${file}"; then
+            echo "Check failed: installed overlay is stale for ${file}." >&2
+            echo "Please run 'bash scripts/setup_voice_wake.sh' before launching." >&2
+            exit 1
+        fi
+    done
+    KNOWLEDGE_BASE_FILE="${ONLINE_INSTALL_ROOT}/voice_control/lib/knowledge_base/robot_knowledge.csv"
+    if [ ! -f "${KNOWLEDGE_BASE_FILE}" ]; then
+        echo "Check failed: local knowledge base not found at ${KNOWLEDGE_BASE_FILE}." >&2
+        echo "Please run 'bash scripts/setup_voice_wake.sh' before launching." >&2
+        exit 1
+    fi
+
     # 4. Verify required model assets and arecord exist
     if [ ! -f "${PARAFORMER_MODEL_DIR}/model.int8.onnx" ] || [ ! -f "${PARAFORMER_MODEL_DIR}/tokens.txt" ]; then
         echo "Check failed: Paraformer model files missing in ${PARAFORMER_MODEL_DIR} (model.int8.onnx / tokens.txt)" >&2
@@ -127,7 +152,7 @@ for lib in libs:
         exit 1
     fi
 
-    if [ "${WAKE_DETECTOR_MODE:-asr}" = "kws" ]; then
+    if [ "${WAKE_DETECTOR_MODE}" = "kws" ]; then
         for file in tokens.txt encoder.onnx decoder.onnx joiner.onnx keywords.txt; do
             if [ ! -f "${WAKE_MODEL_DIR}/${file}" ]; then
                 echo "Check failed: KWS model file missing at ${WAKE_MODEL_DIR}/${file}" >&2

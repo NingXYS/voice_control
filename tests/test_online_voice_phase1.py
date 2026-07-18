@@ -4,6 +4,8 @@ import sys
 import unittest
 from unittest import mock
 
+import numpy as np
+
 ROOT = os.path.dirname(os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 
@@ -14,6 +16,62 @@ from voice_wake_runtime import VoiceState, WakeWordRuntime
 
 
 class OnlineVoicePhase1Tests(unittest.TestCase):
+    def test_local_knowledge_hit_skips_dialogue_and_speaks(self):
+        speaker = mock.Mock()
+
+        class DialogueMustNotRun:
+            def run(self, _text):
+                raise AssertionError("local knowledge hit must bypass Dify")
+
+        result = voice_text_pipeline.process_text(
+            "你是谁",
+            speaker=speaker,
+            dialogue=DialogueMustNotRun(),
+        )
+
+        self.assertEqual(
+            result,
+            [{"reply": "我是施耐力双臂六关节机械臂，拥有左右两条手臂，各六个关节。"}],
+        )
+        speaker.assert_called_once_with(result[0]["reply"])
+
+    def test_local_route_preserves_action_text_for_dialogue(self):
+
+        class Executor:
+            def __init__(self):
+                self.execute = mock.Mock(return_value=True)
+
+        executor = Executor()
+
+        class Dialogue:
+            response = [{
+                "action": "move_cartesian",
+                "arm": "right",
+                "x": 0.0,
+                "y": 0.05,
+                "z": 0.0,
+                "relative": True,
+            }]
+
+            def __init__(self):
+                self.calls = []
+
+            def run(self, text):
+                self.calls.append(text)
+                return self.response
+
+        dialogue = Dialogue()
+
+        result = voice_text_pipeline.process_text(
+            "右臂向前五厘米",
+            executor=executor,
+            dialogue=dialogue,
+        )
+
+        self.assertEqual(result, dialogue.response)
+        self.assertEqual(dialogue.calls, ["右臂向前五厘米"])
+        executor.execute.assert_called_once_with(dialogue.response[0])
+
     def test_dify_code_fence_output_is_parsed(self):
         self.assertEqual(
             voice_dialogue_backend.parse_output('```json\n[{"reply":"收到"}]\n```'),
@@ -83,6 +141,69 @@ class OnlineVoicePhase1Tests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             runtime.run()
         self.assertEqual(runtime.state, VoiceState.STOPPED)
+
+    def test_runtime_preserves_audio_before_vad_speech_start(self):
+        pre_roll = np.ones(1600, dtype=np.float32)
+        speech = np.full(1600, 2.0, dtype=np.float32)
+
+        class Audio:
+            def __init__(self):
+                wake_chunk = np.zeros(1600, dtype=np.float32)
+                self.chunks = iter([wake_chunk, pre_roll, speech, wake_chunk])
+                self.closed = False
+
+            def open(self):
+                pass
+
+            def read_chunk(self):
+                return next(self.chunks)
+
+            def close(self):
+                self.closed = True
+
+        class Wake:
+            def accept_audio(self, _):
+                return True
+
+            def reset(self):
+                pass
+
+        class Vad:
+            def __init__(self):
+                self.calls = 0
+
+            def reset(self):
+                self.calls = 0
+
+            def accept_audio(self, _):
+                self.calls += 1
+                return np.asarray(_, dtype=np.float32)
+
+            @property
+            def speech_started(self):
+                return self.calls >= 2
+
+            def pop_segment(self):
+                return np.array([0.5, 0.6], dtype=np.float32) if self.calls >= 3 else None
+
+        captured = []
+        runtime = WakeWordRuntime(
+            Audio(),
+            Wake(),
+            Vad(),
+            lambda audio, _: captured.append(audio) or "ok",
+            lambda *_: runtime.request_stop(),
+            lambda: None,
+            3,
+            10,
+            0,
+            prompt_guard=0,
+        )
+
+        runtime.run()
+
+        self.assertEqual(len(captured), 1)
+        np.testing.assert_allclose(captured[0][:1600], pre_roll)
 
 
 if __name__ == "__main__":

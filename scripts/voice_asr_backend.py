@@ -7,6 +7,8 @@ from typing import Any, Callable
 
 import numpy as np
 
+from voice_runtime_config import ASR_MAX_GAIN, ASR_TARGET_RMS
+
 
 class ASRBackend:
     model = None
@@ -96,8 +98,20 @@ class ParaformerASRBackend(ASRBackend):
             samples = np.asarray(samples, dtype=np.float32)
             if samples.ndim > 1:
                 samples = samples.mean(axis=1)
-            return samples, int(sample_rate)
-        return np.asarray(audio, dtype=np.float32), int(sample_rate or self.sample_rate)
+            return self._normalize_input_level(samples), int(sample_rate)
+        samples = np.asarray(audio, dtype=np.float32)
+        return self._normalize_input_level(samples), int(sample_rate or self.sample_rate)
+
+    @staticmethod
+    def _normalize_input_level(samples: np.ndarray) -> np.ndarray:
+        if samples.size == 0:
+            return samples
+        centered = samples - np.mean(samples, dtype=np.float64)
+        rms = float(np.sqrt(np.mean(np.square(centered), dtype=np.float64)))
+        if rms <= 1e-12:
+            return centered.astype(np.float32, copy=False)
+        gain = min(ASR_TARGET_RMS / rms, ASR_MAX_GAIN)
+        return np.clip(centered * gain, -1.0, 1.0).astype(np.float32, copy=False)
 
     def close(self) -> None:
         self.model = None

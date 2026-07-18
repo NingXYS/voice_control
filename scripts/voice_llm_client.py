@@ -148,7 +148,7 @@ _LOCAL_REPLY_IDENTITY_KW = [
 ]
 
 _LOCAL_REPLY_CAPABILITY_KW = [
-    "你能做什么", "你会做什么", "你有什么功能", "你支持哪些指令", "你能控制什么",
+    "你能做什么", "你会做什么", "你会干什么", "你有什么功能", "你支持哪些指令", "你能控制什么",
 ]
 
 _LOCAL_REPLY_THANKS_KW = [

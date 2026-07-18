@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from voice_dialogue_backend import run_dialogue
 from voice_command_validation import validate_command_batch
+from voice_llm_client import check_local_reply_command
 
 
 def _run_dialogue(dialogue, text):
@@ -27,7 +28,6 @@ def process_text(
     reply_speaker=None,
     tracker=None,
 ):
-    del tracker
     if not isinstance(text, str) or not text.strip():
         return None
 
@@ -37,6 +37,17 @@ def process_text(
         speaker = reply_speaker or speaker or getattr(runtime, "speak", None)
     else:
         speaker = reply_speaker or speaker
+
+    local_commands = check_local_reply_command(text, tracker=tracker)
+    if local_commands is not None:
+        checked = validate_command_batch(local_commands)
+        if checked is None:
+            return None
+        print("⚡ 本地知识库命中，跳过 Dify")
+        for command in checked:
+            if "reply" in command and speaker is not None:
+                speaker(command["reply"])
+        return checked
 
     commands = _run_dialogue(dialogue, text)
     if commands is None:

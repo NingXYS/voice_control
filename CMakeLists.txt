@@ -47,10 +47,18 @@ install(FILES
   scripts/voice_command_validation.py
   scripts/voice_robot_executor.py
   scripts/voice_local_knowledge.py
+  scripts/voice_llm_client.py
   scripts/voice_qwen_llm.py
   scripts/latency_metrics.py
   DESTINATION lib/${PROJECT_NAME}
 )
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/knowledge_base")
+  install(
+    DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/knowledge_base/"
+    DESTINATION lib/knowledge_base
+  )
+endif()
 
 set(PIPER_ASSET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/scripts/vits-piper-zh_CN-huayan-medium")
 if(EXISTS "${PIPER_ASSET_DIR}")

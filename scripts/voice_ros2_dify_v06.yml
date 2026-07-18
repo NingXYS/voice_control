@@ -8,7 +8,7 @@ app:
   icon: 🤖
   icon_background: '#FFEAD5'
 workflow:
-  id: ffa36444-d319-400e-b38a-bf88c3752803
+  id: fef31ebf-8d88-43d7-915e-8128415c2025
   title: 语音指令解析工作流(知识库)
   features:
     file_upload:
@@ -35,37 +35,41 @@ workflow:
         y: 200
     - id: intent_classify
       data:
-        type: llm
-        title: 意图分类
-        description: 轻量意图分类
-        context:
-          enabled: false
-        model:
-          mode: chat
-          provider: ''
-          name: ''
-          completion_params:
-            temperature: 0.1
-            max_tokens: 64
-            top_p: 0.95
-            stop: []
-        prompt_template:
-        - role: system
-          text: "你是一个专门用于双臂机械臂控制系统的轻量意图分类器。\n请根据用户输入的自然语言，将意图准确分类为以下五类之一，并且【只输出】分类对应的英文标识，不要包含任何标点符号、解释或\
-            \ Markdown 格式。\n\n【可选的分类标识】\n- fixed_reply\n- control_action\n- ambiguous_control\n\
-            - robot_knowledge\n- complex_fallback\n\n【分类规则 - 严格遵守】\n1. fixed_reply：自我介绍、能力询问、寒暄、感谢、打招呼等基本人机交互。\n\
-            \   - 例如：\"你是谁\"、\"你能做什么\"、\"谢谢你\"、\"你好\"、\"介绍下你自己\"\n2. control_action：明确的控制指令，包含手臂（左臂/右臂）、动作方向（向上/向下/向前/向后/向左/向右）或关节（关节1-6）、以及具体的运动距离（如厘米、米）或旋转角度（如度、弧度）等。\n\
-            \   - 例如：\"左臂向上10厘米\"、\"右臂向前5厘米\"、\"左臂关节1旋转30度\"、\"右臂回零位\"、\"查询左臂状态\"\n\
-            3. ambiguous_control：属于控制动作意图，但缺少必要参数。例如只说了手臂没说动作，或者只说了动作没说手臂，或者缺少具体方向、关节、距离/角度等。\n\
-            \   - 例如：\"抬起你的左手\"、\"动一下\"、\"往前一点\"、\"左臂向上\"、\"查询状态\"、\"回零\"、\"左手抬起来\"\
-            、\"左手\"、\"右臂\"、\"转一下\"\n4. robot_knowledge：询问机器人的限制、参数、规范、设计说明、坐标系、动作支持范围等需要查阅说明书或知识库上下文的问题。\n\
-            \   - 例如：\"机器人有什么限制\"、\"支持哪些关节\"、\"右臂可以移动多远\"、\"坐标系是怎么定义的\"、\"怎么下达指令\"\
-            、\"机械臂可以拿东西吗\"、\"能不能联网\"\n5. complex_fallback：无法被上述四类清晰且可靠归类的复杂或异常输入。\n\
-            \n【输出格式】\n只输出五类标识之一（即 fixed_reply, control_action, ambiguous_control,\
-            \ robot_knowledge, complex_fallback），绝对不要输出其他字符！"
-        - role: user
-          text: '{{#start_voice_text.text#}}'
-        variables: []
+        type: code
+        title: 本地意图分类
+        description: 规则分类，不调用模型
+        code_language: python3
+        code: "import re\n\ndef main(user_text: str) -> dict:\n    text = re.sub(r'[\\\
+          s，。！？；：,.!?;:]+', '', user_text or '')\n    arms = re.findall(r'左臂|右臂|左手|右手',\
+          \ text)\n    directions = re.findall(r'向上|向下|向前|向后|向左|向右', text)\n    distances\
+          \ = re.findall(r'-?\\d+(?:\\.\\d+)?(?:毫米|厘米|米)', text)\n    joints = re.findall(r'关节[1-6]',\
+          \ text)\n    angles = re.findall(r'-?\\d+(?:\\.\\d+)?(?:度|弧度)', text)\n\
+          \    has_home = any(keyword in text for keyword in ('回零', '归零', '零位'))\n\
+          \    has_status = '状态' in text or ('查询' in text and '位置' in text)\n    is_simple\
+          \ = bool(arms) and (\n        bool(directions and distances)\n        or\
+          \ bool(joints and angles)\n        or has_home\n        or has_status\n\
+          \    )\n    is_composite = (\n        len(arms) > 1\n        or len(directions)\
+          \ > 1\n        or len(joints) > 1\n        or any(keyword in text for keyword\
+          \ in ('然后', '同时', '并且', '接着', '再把', '再将'))\n    )\n    if is_simple:\n \
+          \       return {'intent': 'control_action' if is_composite else 'local_action'}\n\
+          \    if any(keyword in text for keyword in ('有什么限制', '支持哪些关节', '移动多远', '坐标系',\
+          \ '怎么下达指令', '指令格式', '指令要求', '机械臂可以', '抓取', '拿东西', '放东西', '能旋转', '可以旋转')):\n\
+          \        return {'intent': 'robot_knowledge'}\n    if any(keyword in text\
+          \ for keyword in ('你是谁', '你叫什么', '你是什么', '介绍', '你能做什么', '你会做什么', '你会干什么',\
+          \ '你能干什么', '功能', '你好', '您好', '谢谢', '感谢', '辛苦了', '唱歌', '唱首歌', '唱一首', '跳舞',\
+          \ '天气', '气温', '下雨', '联网', '上网', '在线检索')):\n        return {'intent': 'fixed_reply'}\n\
+          \    if any(keyword in text for keyword in ('左臂', '右臂', '左手', '右手', '关节',\
+          \ '移动', '向上', '向下', '向前', '向后', '向左', '向右', '抬', '降', '旋转', '转动', '回零',\
+          \ '归零', '状态', '位置')):\n        return {'intent': 'ambiguous_control'}\n\
+          \    return {'intent': 'complex_fallback'}"
+        variables:
+        - variable: user_text
+          value_selector:
+          - start_voice_text
+          - text
+        outputs:
+          intent:
+            type: string
       position:
         x: 250
         y: 200
@@ -80,16 +84,25 @@ workflow:
           - id: cond_fixed
             variable_selector:
             - intent_classify
-            - text
+            - intent
             comparison_operator: is
             value: fixed_reply
+        - case_id: case_local_action
+          logical_operator: and
+          conditions:
+          - id: cond_local_action
+            variable_selector:
+            - intent_classify
+            - intent
+            comparison_operator: is
+            value: local_action
         - case_id: case_control
           logical_operator: and
           conditions:
           - id: cond_control
             variable_selector:
             - intent_classify
-            - text
+            - intent
             comparison_operator: is
             value: control_action
         - case_id: case_ambiguous
@@ -98,7 +111,7 @@ workflow:
           - id: cond_ambiguous
             variable_selector:
             - intent_classify
-            - text
+            - intent
             comparison_operator: is
             value: ambiguous_control
         - case_id: case_knowledge
@@ -107,57 +120,94 @@ workflow:
           - id: cond_knowledge
             variable_selector:
             - intent_classify
-            - text
+            - intent
             comparison_operator: is
             value: robot_knowledge
       position:
         x: 450
         y: 200
-    - id: llm_fixed_reply
+    - id: fixed_reply_local
       data:
-        type: llm
-        title: 固定问答回复
-        description: 处理寒暄与基本信息回复
-        context:
-          enabled: false
-        model:
-          mode: chat
-          provider: ''
-          name: ''
-          completion_params:
-            temperature: 0.1
-            max_tokens: 512
-            top_p: 0.95
-            stop: []
-        prompt_template:
-        - role: system
-          text: '你是施耐力双臂六关节机械臂控制助手。
-
-            请对用户的寒暄、问候、感谢或自我介绍等简单交互进行礼貌简短的回复。
-
-
-            【输出格式约束】
-
-            必须只输出一个 JSON 对象，且仅包含 reply 字段，例如：
-
-            {"reply": "你好！我是施耐力双臂机械臂控制助手。请说明你需要我控制左臂还是右臂进行动作。"}
-
-            绝对不要包含任何 markdown 标记、代码块、或者额外的解释。
-
-
-            【已知的能力】
-
-            本系统目前支持控制左右臂在三维空间内直线移动（空间移动）、六个关节的旋转（关节旋转）、回到零位（回零）以及查询当前位置与关节状态。
-
-            控制指令需要明确手臂、方向或关节、距离或角度。
-
-            本系统不支持抓取、松开、拿放物品、联网检索、云服务、物体识别或其它真实物理外设操控，请不要承诺这些能力。'
-        - role: user
-          text: '{{#start_voice_text.text#}}'
-        variables: []
+        type: code
+        title: 本地固定问答
+        description: 确定性本地回复，不调用模型
+        code_language: python3
+        code: "import json\nimport re\n\ndef main(user_text: str) -> dict:\n    text\
+          \ = re.sub(r'[\\s，。！？；：,.!?;:]+', '', user_text or '')\n    if any(keyword\
+          \ in text for keyword in ('唱歌', '唱首歌', '唱一首', '跳舞')):\n        reply = '我不能唱歌。我可以控制左右两条机械臂，支持关节旋转和空间移动。'\n\
+          \    elif any(keyword in text for keyword in ('天气', '气温', '下雨')):\n    \
+          \    reply = '我无法查询天气。我可以帮助控制左右两条机械臂。'\n    elif any(keyword in text for\
+          \ keyword in ('联网', '上网', '在线检索')):\n        reply = '我不能联网检索。我可以帮助控制左右两条机械臂。'\n\
+          \    elif any(keyword in text for keyword in ('你能做什么', '你会做什么', '你会干什么',\
+          \ '你能干什么', '你有什么功能', '你支持哪些指令', '你能控制什么', '你支持哪些动作', '功能')):\n        reply\
+          \ = '我可以控制左右两条机械臂，支持关节旋转和空间移动。'\n    elif any(keyword in text for keyword\
+          \ in ('你是谁', '你叫什么', '你是什么', '介绍一下自己', '介绍自己', '介绍一下你', '自我介绍', '介绍你')):\n\
+          \        reply = '我是施耐力双臂六关节机械臂，拥有左右两条手臂，各六个关节。'\n    elif any(keyword in\
+          \ text for keyword in ('谢谢', '感谢', '辛苦了')):\n        reply = '不客气，很高兴能帮到你。'\n\
+          \    else:\n        reply = '你好！我是机械臂控制助手，请问有什么可以帮您？'\n    return {'result':\
+          \ json.dumps({'reply': reply}, ensure_ascii=False)}"
+        variables:
+        - variable: user_text
+          value_selector:
+          - start_voice_text
+          - text
+        outputs:
+          result:
+            type: string
       position:
         x: 700
         y: 0
+    - id: local_action_parse
+      data:
+        type: code
+        title: 本地动作解析
+        description: 解析常见单条明确动作，不调用模型
+        code_language: python3
+        code: "import json\nimport math\nimport re\n\ndef main(user_text: str) ->\
+          \ dict:\n    text = re.sub(r'[\\s，。！？；：,.!?;:]+', '', user_text or '')\n\
+          \    arm_match = re.search(r'左臂|左手|右臂|右手', text)\n    if arm_match is None:\n\
+          \        return {'result': json.dumps({'reply': '请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。'},\
+          \ ensure_ascii=False)}\n    arm = 'left' if arm_match.group(0) in ('左臂',\
+          \ '左手') else 'right'\n    if any(keyword in text for keyword in ('回零', '归零',\
+          \ '零位')):\n        command = {'action': 'home', 'arm': arm}\n    elif '状态'\
+          \ in text or ('查询' in text and '位置' in text):\n        command = {'action':\
+          \ 'get_status', 'arm': arm}\n    else:\n        joint_match = re.search(r'关节([1-6])',\
+          \ text)\n        angle_match = re.search(r'(-?\\d+(?:\\.\\d+)?)(度|弧度)',\
+          \ text)\n        direction_match = re.search(r'向上|向下|向前|向后|向左|向右', text)\n\
+          \        distance_match = re.search(r'(-?\\d+(?:\\.\\d+)?)(毫米|厘米|米)', text)\n\
+          \        if joint_match is not None and angle_match is not None:\n     \
+          \       value = float(angle_match.group(1))\n            if angle_match.group(2)\
+          \ == '度':\n                value = math.radians(value)\n            if value\
+          \ > 0 and any(keyword in text for keyword in ('反转', '反向')):\n          \
+          \      value = -value\n            command = {\n                'action':\
+          \ 'move_joint',\n                'arm': arm,\n                'joint': int(joint_match.group(1)),\n\
+          \                'value': round(value, 3),\n                'type': 'delta',\n\
+          \            }\n        elif direction_match is not None and distance_match\
+          \ is not None:\n            distance = float(distance_match.group(1))\n\
+          \            scale = {'毫米': 0.001, '厘米': 0.01, '米': 1.0}[distance_match.group(2)]\n\
+          \            value = round(distance * scale, 6)\n            direction =\
+          \ direction_match.group(0)\n            x, y, z = 0.0, 0.0, 0.0\n      \
+          \      if direction == '向右':\n                x = value\n            elif\
+          \ direction == '向左':\n                x = -value\n            elif direction\
+          \ == '向前':\n                y = value\n            elif direction == '向后':\n\
+          \                y = -value\n            elif direction == '向上':\n     \
+          \           z = value\n            else:\n                z = -value\n \
+          \           command = {\n                'action': 'move_cartesian',\n \
+          \               'arm': arm,\n                'x': x,\n                'y':\
+          \ y,\n                'z': z,\n                'relative': True,\n     \
+          \       }\n        else:\n            command = {'reply': '请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。'}\n\
+          \    return {'result': json.dumps(command, ensure_ascii=False)}"
+        variables:
+        - variable: user_text
+          value_selector:
+          - start_voice_text
+          - text
+        outputs:
+          result:
+            type: string
+      position:
+        x: 700
+        y: 100
     - id: llm_control_action
       data:
         type: llm
@@ -171,7 +221,7 @@ workflow:
           name: ''
           completion_params:
             temperature: 0.1
-            max_tokens: 512
+            max_tokens: 256
             top_p: 0.95
             stop: []
         prompt_template:
@@ -264,7 +314,7 @@ workflow:
           name: ''
           completion_params:
             temperature: 0.1
-            max_tokens: 512
+            max_tokens: 256
             top_p: 0.95
             stop: []
         prompt_template:
@@ -285,7 +335,7 @@ workflow:
       data:
         type: template-transform
         title: 复杂兜底澄清
-        template: '{"reply": "请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。"}'
+        template: '{"reply": "这个问题不属于机械臂控制范围。我可以回答机械臂能力并处理明确的控制指令。"}'
         variables: []
       position:
         x: 700
@@ -296,8 +346,10 @@ workflow:
         title: 合并分支输出
         output_type: string
         variables:
-        - - llm_fixed_reply
-          - text
+        - - fixed_reply_local
+          - result
+        - - local_action_parse
+          - result
         - - llm_control_action
           - text
         - - tmpl_ambiguous_control
@@ -316,16 +368,17 @@ workflow:
         description: 验证LLM输出的JSON并确保格式正确
         code_language: python3
         code: "import json\nimport re\n\ndef main(raw_json: str) -> dict:\n    result\
-          \ = raw_json.strip()\n    if result.startswith('```json'):\n        result\
-          \ = result[7:]\n    elif result.startswith('```'):\n        result = result[3:]\n\
-          \    if result.endswith('```'):\n        result = result[:-3]\n    result\
-          \ = result.strip()\n    try:\n        parsed = json.loads(result)\n    except\
-          \ json.JSONDecodeError:\n        fixed = re.sub(r'\\}\\s*,\\s*\\{', '},{',\
-          \ result)\n        try:\n            parsed = json.loads('[' + fixed + ']')\n\
-          \        except json.JSONDecodeError:\n            return {'result': json.dumps([],\
-          \ ensure_ascii=False)}\n    if isinstance(parsed, dict):\n        parsed\
-          \ = [parsed]\n    elif not isinstance(parsed, list):\n        parsed = []\n\
-          \    return {'result': json.dumps(parsed, ensure_ascii=False)}"
+          \ = re.sub(r'<think>.*?</think>', '', raw_json, flags=re.DOTALL | re.IGNORECASE).strip()\n\
+          \    if result.startswith('```json'):\n        result = result[7:]\n   \
+          \ elif result.startswith('```'):\n        result = result[3:]\n    if result.endswith('```'):\n\
+          \        result = result[:-3]\n    result = result.strip()\n    try:\n \
+          \       parsed = json.loads(result)\n    except json.JSONDecodeError:\n\
+          \        fixed = re.sub(r'\\}\\s*,\\s*\\{', '},{', result)\n        try:\n\
+          \            parsed = json.loads('[' + fixed + ']')\n        except json.JSONDecodeError:\n\
+          \            return {'result': json.dumps([], ensure_ascii=False)}\n   \
+          \ if isinstance(parsed, dict):\n        parsed = [parsed]\n    elif not\
+          \ isinstance(parsed, list):\n        parsed = []\n    return {'result':\
+          \ json.dumps(parsed, ensure_ascii=False)}"
         variables:
         - variable: raw_json
           value_selector:
@@ -356,10 +409,14 @@ workflow:
     - id: intent_classify-source-route_by_intent-target
       source: intent_classify
       target: route_by_intent
-    - id: route_by_intent-case_fixed-llm_fixed_reply-target
+    - id: route_by_intent-case_fixed-fixed_reply_local-target
       source: route_by_intent
       sourceHandle: case_fixed
-      target: llm_fixed_reply
+      target: fixed_reply_local
+    - id: route_by_intent-case_local_action-local_action_parse-target
+      source: route_by_intent
+      sourceHandle: case_local_action
+      target: local_action_parse
     - id: route_by_intent-case_control-llm_control_action-target
       source: route_by_intent
       sourceHandle: case_control
@@ -379,8 +436,11 @@ workflow:
     - id: knowledge_retrieve-source-llm_robot_knowledge-target
       source: knowledge_retrieve
       target: llm_robot_knowledge
-    - id: llm_fixed_reply-source-merge_outputs-target
-      source: llm_fixed_reply
+    - id: fixed_reply_local-source-merge_outputs-target
+      source: fixed_reply_local
+      target: merge_outputs
+    - id: local_action_parse-source-merge_outputs-target
+      source: local_action_parse
       target: merge_outputs
     - id: llm_control_action-source-merge_outputs-target
       source: llm_control_action
