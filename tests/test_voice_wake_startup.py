@@ -161,6 +161,15 @@ class VoiceWakeStartupTests(unittest.TestCase):
         # Must pass PYTHONNOUSERSITE=1 to colcon build env -i subshell
         self.assertTrue("PYTHONNOUSERSITE=1" in content, "setup_voice_wake.sh clean build subshell must use/pass PYTHONNOUSERSITE=1")
 
+    def test_setup_bootstraps_python_metadata_tools(self):
+        with open(self.setup_script_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        self.assertIn("pip>=23.2", content)
+        self.assertIn("setuptools>=68,<80", content)
+        self.assertIn("wheel", content)
+        self.assertIn("packaging>=24.0", content)
+
     def test_setup_requires_self_contained_venv_pip(self):
         """Verify setup_voice_wake.sh does not contain --without-pip, uses system-site-packages, and uses strictly isolated pip install invocation."""
         self.assertTrue(os.path.exists(self.setup_script_path), "setup_voice_wake.sh does not exist")

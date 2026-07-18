@@ -3,3 +3,4 @@ soundfile==0.14.0
 sherpa-onnx==1.13.3
 pypinyin==0.55.0
 requests==2.25.1
+pynput==1.8.2

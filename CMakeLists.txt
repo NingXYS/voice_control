@@ -24,6 +24,7 @@ endif()
 
 install(PROGRAMS
   scripts/voice_wake_entry.py
+  scripts/voice_space_wake.py
   scripts/voice_tts_node.py
   scripts/build_wake_keyword.py
   DESTINATION lib/${PROJECT_NAME}

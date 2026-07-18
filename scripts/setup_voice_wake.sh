@@ -55,6 +55,15 @@ if [[ "$REAL_PIP_PATH" != "$REAL_VENV_DIR"/* ]]; then
     exit 1
 fi
 
+echo "Updating isolated Python build tools..."
+env -i \
+  HOME="$HOME" \
+  USER="$USER" \
+  PATH="${VENV_DIR}/bin:/usr/bin:/bin" \
+  PYTHONNOUSERSITE=1 \
+  "$VENV_DIR/bin/python" -I -m pip install --isolated --upgrade --no-cache-dir \
+  "pip>=23.2" "setuptools>=68,<80" "wheel" "packaging>=24.0"
+
 echo "Installing pinned direct python dependencies..."
 # Install with PYTHONNOUSERSITE=1, clearing PYTHONHOME/PYTHONPATH
 env -i \
