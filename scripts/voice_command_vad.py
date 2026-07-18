@@ -29,12 +29,20 @@ class CommandVadDetector:
     def accept_audio(self, samples: np.ndarray) -> np.ndarray:
         audio = np.asarray(samples, dtype=np.float32)
         rms = float(np.sqrt(np.mean(np.square(audio), dtype=np.float64)))
-        if not self._vad.is_speech_detected():
-            self._noise_rms = 0.9 * self._noise_rms + 0.1 * rms
+
+        # Use the previous stable noise floor for the current frame decision.
+        # Do not update noise statistics until this frame has been classified;
+        # otherwise speech onset can incorrectly raise the noise floor and be
+        # filtered out by the SNR gate.
         snr_db = 20.0 * np.log10(max(rms, 1e-12) / max(self._noise_rms, 1e-12))
         is_valid = rms >= SPEECH_MIN_RMS and snr_db >= SPEECH_MIN_SNR_DB
         filtered = audio if is_valid else np.zeros_like(audio)
+
         self._vad.accept_waveform(filtered)
+
+        if not self._vad.is_speech_detected() and not is_valid:
+            self._noise_rms = 0.9 * self._noise_rms + 0.1 * rms
+
         while not self._vad.empty():
             segment = self._vad.front
             self._segments.append(np.asarray(segment.samples, dtype=np.float32).copy())
