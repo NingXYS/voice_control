@@ -98,8 +98,8 @@ class WakeWordRuntime:
         self.audio.open()
         try:
             while not self._stop:
-                chunk = self.audio.read_chunk()
                 now = self.clock()
+                chunk = self.audio.read_chunk()
                 if now < self._cooldown_until:
                     continue
                 if not self._accept_wake_audio(chunk):

@@ -28,6 +28,8 @@ class CommandVadDetector:
 
     def accept_audio(self, samples: np.ndarray) -> np.ndarray:
         audio = np.asarray(samples, dtype=np.float32)
+        if audio.size == 0:
+            return audio
         rms = float(np.sqrt(np.mean(np.square(audio), dtype=np.float64)))
 
         # Use the previous stable noise floor for the current frame decision.
@@ -40,7 +42,7 @@ class CommandVadDetector:
 
         self._vad.accept_waveform(filtered)
 
-        if not self._vad.is_speech_detected() and not is_valid:
+        if not self._vad.is_speech_detected():
             self._noise_rms = 0.9 * self._noise_rms + 0.1 * rms
 
         while not self._vad.empty():

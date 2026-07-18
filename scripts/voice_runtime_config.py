@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 
@@ -132,8 +133,8 @@ def validate_runtime_config() -> None:
         ("VOICE_SESSION_TIMEOUT_SEC", VOICE_SESSION_TIMEOUT_SEC),
         ("SPEECH_MIN_SNR_DB", SPEECH_MIN_SNR_DB),
     ):
-        if value < 0:
-            raise ValueError(f"{name} must be non-negative")
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(f"{name} must be finite and non-negative")
 
     if WAKE_ASR_WINDOW_SEC <= 0 or WAKE_ASR_CHECK_INTERVAL_SEC <= 0:
         raise ValueError("wake ASR timing values must be positive")

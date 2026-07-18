@@ -97,6 +97,69 @@ class FakeVad:
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_post_tts_guard_discards_chunk_overlapping_guard_boundary(self):
+        class Clock:
+            def __init__(self):
+                self.now = 1.7
+
+            def __call__(self):
+                return self.now
+
+        class ClockedAudio:
+            def __init__(self, clock):
+                self.clock = clock
+                self.accepted = []
+
+            def open(self):
+                pass
+
+            def read_chunk(self):
+                self.clock.now += 0.1
+                return np.zeros(1600, dtype=np.float32)
+
+            def close(self):
+                pass
+
+        class Wake:
+            def __init__(self, clock, runtime):
+                self.clock = clock
+                self.runtime = runtime
+                self.accepted = []
+
+            def accept_audio(self, _chunk, _sample_rate):
+                self.accepted.append(self.clock.now)
+                self.runtime.request_stop()
+                return True
+
+            def reset(self):
+                pass
+
+        clock = Clock()
+        audio = ClockedAudio(clock)
+        runtime = None
+        wake = None
+        runtime = WakeWordRuntime(
+            audio,
+            None,
+            mock.Mock(),
+            lambda *_: "",
+            lambda *_: None,
+            lambda: None,
+            1,
+            1,
+            0,
+            prompt_guard=0,
+            clock=clock,
+        )
+        wake = Wake(clock, runtime)
+        runtime.wake_detector = wake
+        runtime._cooldown_until = 1.75
+
+        runtime.run()
+
+        self.assertEqual(len(wake.accepted), 1)
+        self.assertAlmostEqual(wake.accepted[0], 1.9)
+
     def test_single_turn_then_stop(self):
         chunks = [np.zeros(1600, dtype=np.float32) for _ in range(3)]
         audio = FakeAudio(chunks)
@@ -216,6 +279,81 @@ class WakeWordDetectorApiTests(unittest.TestCase):
 
 
 class CommandVadDetectorApiTests(unittest.TestCase):
+    def test_adapts_floor_to_sustained_non_speech_above_initial_gate(self):
+        class FakeVad:
+            def __init__(self, config, buffer_size_in_seconds=60):
+                self.accepted = []
+
+            def accept_waveform(self, samples):
+                self.accepted.append(np.asarray(samples, dtype=np.float32).copy())
+
+            def empty(self):
+                return True
+
+            def is_speech_detected(self):
+                return False
+
+            def reset(self):
+                self.accepted.clear()
+
+        class FakeSileroVadModelConfig:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        class FakeVadModelConfig:
+            def __init__(self):
+                self.silero_vad = None
+
+        fake_module = types.SimpleNamespace(
+            VadModelConfig=FakeVadModelConfig,
+            SileroVadModelConfig=FakeSileroVadModelConfig,
+            VoiceActivityDetector=FakeVad,
+        )
+        with mock.patch.dict(sys.modules, {"sherpa_onnx": fake_module}, clear=False):
+            detector = voice_command_vad.CommandVadDetector("/tmp/vad.onnx", 0.25, 0.9)
+            for _ in range(100):
+                detector.accept_audio(np.full(1600, 0.02, dtype=np.float32))
+
+        self.assertAlmostEqual(detector._noise_rms, 0.02, places=3)
+
+    def test_empty_audio_does_not_poison_noise_floor(self):
+        class FakeVad:
+            def __init__(self, config, buffer_size_in_seconds=60):
+                pass
+
+            def accept_waveform(self, samples):
+                raise AssertionError("empty audio must not reach sherpa VAD")
+
+            def empty(self):
+                return True
+
+            def is_speech_detected(self):
+                return False
+
+            def reset(self):
+                pass
+
+        class FakeSileroVadModelConfig:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        class FakeVadModelConfig:
+            def __init__(self):
+                self.silero_vad = None
+
+        fake_module = types.SimpleNamespace(
+            VadModelConfig=FakeVadModelConfig,
+            SileroVadModelConfig=FakeSileroVadModelConfig,
+            VoiceActivityDetector=FakeVad,
+        )
+        with mock.patch.dict(sys.modules, {"sherpa_onnx": fake_module}, clear=False):
+            detector = voice_command_vad.CommandVadDetector("/tmp/vad.onnx", 0.25, 0.9)
+            initial_noise = detector._noise_rms
+            filtered = detector.accept_audio(np.empty(0, dtype=np.float32))
+
+        self.assertEqual(filtered.size, 0)
+        self.assertEqual(detector._noise_rms, initial_noise)
+
     def test_uses_current_sherpa_vad_api(self):
         class FakeSpeech:
             def __init__(self, samples):
