@@ -23,6 +23,7 @@ def _configured_alias(primary: str, alias: str, *candidates: str) -> str:
         return value
     return _configured_path("", *candidates)
 
+
 SAMPLE_RATE = 16000
 AUDIO_DEVICE = os.environ.get("AUDIO_DEVICE", "default")
 PARAFORMER_MODEL_DIR = _configured_path(
@@ -31,7 +32,8 @@ PARAFORMER_MODEL_DIR = _configured_path(
     "/opt/voice-control/models/paraformer",
 )
 WAKE_WORD = os.environ.get("WAKE_WORD", "小西小西")
-WAKE_DETECTOR_MODE = os.environ.get("WAKE_DETECTOR_MODE", "asr").strip().lower()
+# Dedicated KWS is substantially less prone to fuzzy-ASR false alarms.
+WAKE_DETECTOR_MODE = os.environ.get("WAKE_DETECTOR_MODE", "kws").strip().lower()
 WAKE_MODEL_DIR = _configured_path(
     "WAKE_MODEL_DIR",
     "/home/ning/model/voice_models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20",
@@ -41,12 +43,40 @@ WAKE_ASR_WINDOW_SEC = float(os.environ.get("WAKE_ASR_WINDOW_SEC", "2.5"))
 WAKE_ASR_CHECK_INTERVAL_SEC = float(
     os.environ.get("WAKE_ASR_CHECK_INTERVAL_SEC", "0.5")
 )
-WAKE_MATCH_THRESHOLD = float(os.environ.get("WAKE_MATCH_THRESHOLD", "0.7"))
+WAKE_MATCH_THRESHOLD = float(os.environ.get("WAKE_MATCH_THRESHOLD", "0.82"))
+
+KWS_NUM_THREADS = int(os.environ.get("KWS_NUM_THREADS", "2"))
+KWS_MAX_ACTIVE_PATHS = int(os.environ.get("KWS_MAX_ACTIVE_PATHS", "4"))
+KWS_NUM_TRAILING_BLANKS = int(os.environ.get("KWS_NUM_TRAILING_BLANKS", "2"))
+KWS_KEYWORDS_SCORE = float(os.environ.get("KWS_KEYWORDS_SCORE", "1.5"))
+KWS_KEYWORDS_THRESHOLD = float(os.environ.get("KWS_KEYWORDS_THRESHOLD", "0.35"))
+
 VAD_MODEL_PATH = _configured_path(
     "VAD_MODEL_PATH",
     "/home/ning/model/voice_models/vad/silero_vad.onnx",
     "/opt/voice-control/models/vad/silero_vad.onnx",
 )
+VAD_THRESHOLD = float(os.environ.get("VAD_THRESHOLD", "0.60"))
+VAD_SILENCE_DURATION_SEC = float(os.environ.get("VAD_SILENCE_DURATION_SEC", "1.0"))
+VAD_MIN_SPEECH_DURATION_SEC = float(os.environ.get("VAD_MIN_SPEECH_DURATION_SEC", "0.30"))
+
+COMMAND_START_TIMEOUT_SEC = float(os.environ.get("COMMAND_START_TIMEOUT_SEC", "4.0"))
+COMMAND_MAX_DURATION_SEC = float(os.environ.get("COMMAND_MAX_DURATION_SEC", "15.0"))
+COMMAND_PRE_ROLL_SEC = float(os.environ.get("COMMAND_PRE_ROLL_SEC", "0.35"))
+SPEECH_MIN_RMS = float(os.environ.get("SPEECH_MIN_RMS", "0.006"))
+SPEECH_MIN_SNR_DB = float(os.environ.get("SPEECH_MIN_SNR_DB", "4.0"))
+
+VOICE_SESSION_TIMEOUT_SEC = float(os.environ.get("VOICE_SESSION_TIMEOUT_SEC", "60"))
+WAKE_COOLDOWN_SEC = float(os.environ.get("WAKE_COOLDOWN_SEC", "1.5"))
+PROMPT_GUARD_DURATION_SEC = float(os.environ.get("PROMPT_GUARD_DURATION_SEC", "0.25"))
+POST_TTS_GUARD_DURATION_SEC = float(
+    os.environ.get("POST_TTS_GUARD_DURATION_SEC", "0.45")
+)
+AUDIO_CHUNK_MS = int(os.environ.get("AUDIO_CHUNK_MS", "100"))
+
+ASR_TARGET_RMS = float(os.environ.get("ASR_TARGET_RMS", "0.08"))
+ASR_MAX_GAIN = float(os.environ.get("ASR_MAX_GAIN", "3.0"))
+
 PIPER_MODEL_DIR = _configured_alias(
     "PIPER_MODEL_DIR",
     "TTS_MODEL_DIR",
@@ -60,14 +90,6 @@ DIFY_API_KEY = os.environ.get("DIFY_API_KEY", "")
 DIFY_INPUT_KEY = os.environ.get("DIFY_INPUT_KEY", "text")
 DIFY_OUTPUT_KEY = os.environ.get("DIFY_OUTPUT_KEY", "result")
 DIFY_TIMEOUT_SEC = float(os.environ.get("DIFY_TIMEOUT_SEC", "60"))
-KWS_NUM_THREADS = int(os.environ.get("KWS_NUM_THREADS", "2"))
-COMMAND_START_TIMEOUT_SEC = float(os.environ.get("COMMAND_START_TIMEOUT_SEC", "3.0"))
-COMMAND_MAX_DURATION_SEC = float(os.environ.get("COMMAND_MAX_DURATION_SEC", "10.0"))
-VAD_SILENCE_DURATION_SEC = float(os.environ.get("VAD_SILENCE_DURATION_SEC", "0.9"))
-VAD_MIN_SPEECH_DURATION_SEC = float(os.environ.get("VAD_MIN_SPEECH_DURATION_SEC", "0.25"))
-WAKE_COOLDOWN_SEC = float(os.environ.get("WAKE_COOLDOWN_SEC", "1.5"))
-PROMPT_GUARD_DURATION_SEC = float(os.environ.get("PROMPT_GUARD_DURATION_SEC", "0.2"))
-AUDIO_CHUNK_MS = int(os.environ.get("AUDIO_CHUNK_MS", "100"))
 
 
 def robot_commands_enabled() -> bool:
@@ -84,8 +106,20 @@ def validate_runtime_config() -> None:
         raise ValueError("WAKE_WORD must not be empty")
     if WAKE_DETECTOR_MODE not in {"asr", "kws"}:
         raise ValueError("WAKE_DETECTOR_MODE must be asr or kws")
-    if KWS_NUM_THREADS <= 0:
-        raise ValueError("KWS_NUM_THREADS must be positive")
+
+    for name, value in (
+        ("KWS_NUM_THREADS", KWS_NUM_THREADS),
+        ("KWS_MAX_ACTIVE_PATHS", KWS_MAX_ACTIVE_PATHS),
+    ):
+        if value <= 0:
+            raise ValueError(f"{name} must be positive")
+    if KWS_NUM_TRAILING_BLANKS < 0:
+        raise ValueError("KWS_NUM_TRAILING_BLANKS must be non-negative")
+    if KWS_KEYWORDS_SCORE < 0:
+        raise ValueError("KWS_KEYWORDS_SCORE must be non-negative")
+    if not 0.0 <= KWS_KEYWORDS_THRESHOLD <= 1.0:
+        raise ValueError("KWS_KEYWORDS_THRESHOLD must be between 0 and 1")
+
     for name, value in (
         ("COMMAND_START_TIMEOUT_SEC", COMMAND_START_TIMEOUT_SEC),
         ("COMMAND_MAX_DURATION_SEC", COMMAND_MAX_DURATION_SEC),
@@ -93,13 +127,26 @@ def validate_runtime_config() -> None:
         ("VAD_MIN_SPEECH_DURATION_SEC", VAD_MIN_SPEECH_DURATION_SEC),
         ("WAKE_COOLDOWN_SEC", WAKE_COOLDOWN_SEC),
         ("PROMPT_GUARD_DURATION_SEC", PROMPT_GUARD_DURATION_SEC),
+        ("POST_TTS_GUARD_DURATION_SEC", POST_TTS_GUARD_DURATION_SEC),
+        ("COMMAND_PRE_ROLL_SEC", COMMAND_PRE_ROLL_SEC),
+        ("VOICE_SESSION_TIMEOUT_SEC", VOICE_SESSION_TIMEOUT_SEC),
+        ("SPEECH_MIN_SNR_DB", SPEECH_MIN_SNR_DB),
     ):
         if value < 0:
             raise ValueError(f"{name} must be non-negative")
+
     if WAKE_ASR_WINDOW_SEC <= 0 or WAKE_ASR_CHECK_INTERVAL_SEC <= 0:
         raise ValueError("wake ASR timing values must be positive")
     if not 0.0 <= WAKE_MATCH_THRESHOLD <= 1.0:
         raise ValueError("WAKE_MATCH_THRESHOLD must be between 0 and 1")
+    if not 0.0 <= VAD_THRESHOLD <= 1.0:
+        raise ValueError("VAD_THRESHOLD must be between 0 and 1")
+    if not 0.0 <= SPEECH_MIN_RMS <= 1.0:
+        raise ValueError("SPEECH_MIN_RMS must be between 0 and 1")
+    if not 0.0 < ASR_TARGET_RMS <= 1.0:
+        raise ValueError("ASR_TARGET_RMS must be between 0 and 1")
+    if ASR_MAX_GAIN < 1.0:
+        raise ValueError("ASR_MAX_GAIN must be at least 1")
     if COMMAND_START_TIMEOUT_SEC == 0 or COMMAND_MAX_DURATION_SEC == 0:
         raise ValueError("command timeouts must be positive")
     if AUDIO_CHUNK_MS < 20 or AUDIO_CHUNK_MS > 100:
@@ -112,7 +159,13 @@ def validate_runtime_config() -> None:
 
     if WAKE_DETECTOR_MODE == "kws":
         wake_dir = Path(WAKE_MODEL_DIR)
-        for filename in ("tokens.txt", "encoder.onnx", "decoder.onnx", "joiner.onnx", "keywords.txt"):
+        for filename in (
+            "tokens.txt",
+            "encoder.onnx",
+            "decoder.onnx",
+            "joiner.onnx",
+            "keywords.txt",
+        ):
             _require_file(wake_dir / filename, f"wake-word asset {filename}")
 
 
