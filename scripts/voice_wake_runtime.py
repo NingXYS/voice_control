@@ -21,8 +21,8 @@ class VoiceState(Enum):
 class WakeWordRuntime:
     def __init__(self, audio, wake_detector, vad, asr_callback, process_callback,
                  prompt_callback, start_timeout, max_duration, cooldown,
-                 prompt_guard=0.2, speaker_callback=None, clock=time.monotonic,
-                 sample_rate=16000):
+                 prompt_guard=0.2, post_tts_guard=0.0, speaker_callback=None,
+                 clock=time.monotonic, sample_rate=16000):
         self.audio = audio
         self.wake_detector = wake_detector
         self.vad = vad
@@ -33,6 +33,7 @@ class WakeWordRuntime:
         self.max_duration = float(max_duration)
         self.cooldown = float(cooldown)
         self.prompt_guard = float(prompt_guard)
+        self.post_tts_guard = float(post_tts_guard)
         self.clock = clock
         self.sample_rate = int(sample_rate)
         self._tts_speak = speaker_callback or (lambda _text: False)
@@ -43,9 +44,20 @@ class WakeWordRuntime:
         self.state = VoiceState.WAITING_WAKE_WORD
         self._stop = False
         self._cooldown_until = 0.0
+        self._post_tts_guard_until = 0.0
 
     def request_stop(self):
         self._stop = True
+
+    def _discard_stale_audio(self) -> int:
+        discard = getattr(self.audio, "discard_buffered", None)
+        if not callable(discard):
+            return 0
+        try:
+            return int(discard() or 0)
+        except Exception as exc:
+            print(f"⚠️ Failed to discard stale capture audio: {exc}")
+            return 0
 
     def _reply_speaker(self, text):
         previous = self.state
@@ -53,6 +65,14 @@ class WakeWordRuntime:
         try:
             return self._tts_speak(text)
         finally:
+            # Local playback blocks the runtime loop while arecord keeps capturing.
+            # Drain those stale frames before KWS is allowed to listen again, then
+            # enforce an additional guard for speaker tail/reverberation.
+            self._discard_stale_audio()
+            self._post_tts_guard_until = max(
+                self._post_tts_guard_until,
+                self.clock() + self.post_tts_guard,
+            )
             self.state = previous
 
     def _accept_wake_audio(self, chunk) -> bool:
@@ -67,7 +87,12 @@ class WakeWordRuntime:
             reset_wake()
         self.vad.reset()
         self.state = VoiceState.WAITING_WAKE_WORD
-        self._cooldown_until = self.clock() + self.cooldown
+        now = self.clock()
+        self._cooldown_until = max(
+            now + self.cooldown,
+            self._post_tts_guard_until,
+        )
+        self._post_tts_guard_until = 0.0
 
     def run(self):
         self.audio.open()
@@ -84,6 +109,9 @@ class WakeWordRuntime:
                 self.prompt_callback()
                 if self.prompt_guard:
                     time.sleep(self.prompt_guard)
+                # Prompt playback also accumulates microphone frames while this
+                # thread is blocked. Drop them before command VAD starts.
+                self._discard_stale_audio()
                 self.vad.reset()
                 wait_started = self.clock()
                 record_started = None
