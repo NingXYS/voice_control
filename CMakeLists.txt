@@ -27,6 +27,7 @@ install(PROGRAMS
   scripts/voice_space_wake.py
   scripts/voice_tts_node.py
   scripts/build_wake_keyword.py
+  scripts/kws_sweep.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
