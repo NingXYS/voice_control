@@ -59,11 +59,14 @@ def process_text(
 
     actions = [command for command in checked if "reply" not in command]
     if actions and executor is None:
-        return None
-
-    for command in actions:
-        if not _execute(executor, command):
-            return None
+        # VOICE_ENABLE_ROBOT_COMMAND defaults to off for safety.  A valid Dify
+        # command must still be returned to the wake runtime so the terminal can
+        # display what Dify produced instead of incorrectly showing <无有效输出>.
+        print("ℹ️ 已解析有效机械臂指令；机器人执行未启用，仅显示不执行", flush=True)
+    else:
+        for command in actions:
+            if not _execute(executor, command):
+                return None
 
     for command in checked:
         if "reply" in command and speaker is not None:
