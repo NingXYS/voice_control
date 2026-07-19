@@ -27,6 +27,11 @@ def _configured_alias(primary: str, alias: str, *candidates: str) -> str:
 
 SAMPLE_RATE = 16000
 AUDIO_DEVICE = os.environ.get("AUDIO_DEVICE", "default")
+AUDIO_FRONTEND_MODE = os.environ.get("VOICE_AUDIO_FRONTEND", "passthrough").strip().lower()
+AUDIO_FRONTEND_TARGET_RMS = float(os.environ.get("VOICE_AUDIO_FRONTEND_TARGET_RMS", "0.05"))
+AUDIO_FRONTEND_MAX_GAIN = float(os.environ.get("VOICE_AUDIO_FRONTEND_MAX_GAIN", "2.0"))
+VOICE_DEBUG_AUDIO = os.environ.get("VOICE_DEBUG_AUDIO", "0").strip().lower() in {"1", "true", "yes", "on"}
+VOICE_DEBUG_AUDIO_DIR = os.environ.get("VOICE_DEBUG_AUDIO_DIR", "debug_audio")
 PARAFORMER_MODEL_DIR = _configured_path(
     "PARAFORMER_MODEL_DIR",
     "/home/ning/model/sherpa-onnx-paraformer-zh-2023-09-14",
@@ -94,10 +99,7 @@ DIFY_TIMEOUT_SEC = float(os.environ.get("DIFY_TIMEOUT_SEC", "60"))
 
 def robot_commands_enabled() -> bool:
     return os.environ.get("VOICE_ENABLE_ROBOT_COMMAND", "0").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
+        "1", "true", "yes", "on",
     }
 
 
@@ -106,6 +108,12 @@ def validate_runtime_config() -> None:
         raise ValueError("WAKE_WORD must not be empty")
     if WAKE_DETECTOR_MODE not in {"asr", "kws"}:
         raise ValueError("WAKE_DETECTOR_MODE must be asr or kws")
+    if AUDIO_FRONTEND_MODE not in {"passthrough", "basic"}:
+        raise ValueError("VOICE_AUDIO_FRONTEND must be passthrough or basic")
+    if not 0.0 < AUDIO_FRONTEND_TARGET_RMS <= 1.0:
+        raise ValueError("VOICE_AUDIO_FRONTEND_TARGET_RMS must be between 0 and 1")
+    if AUDIO_FRONTEND_MAX_GAIN < 1.0 or not math.isfinite(AUDIO_FRONTEND_MAX_GAIN):
+        raise ValueError("VOICE_AUDIO_FRONTEND_MAX_GAIN must be finite and at least 1")
 
     for name, value in (
         ("KWS_NUM_THREADS", KWS_NUM_THREADS),
@@ -158,13 +166,7 @@ def validate_runtime_config() -> None:
 
     if WAKE_DETECTOR_MODE == "kws":
         wake_dir = Path(WAKE_MODEL_DIR)
-        for filename in (
-            "tokens.txt",
-            "encoder.onnx",
-            "decoder.onnx",
-            "joiner.onnx",
-            "keywords.txt",
-        ):
+        for filename in ("tokens.txt", "encoder.onnx", "decoder.onnx", "joiner.onnx", "keywords.txt"):
             _require_file(wake_dir / filename, f"wake-word asset {filename}")
 
 
