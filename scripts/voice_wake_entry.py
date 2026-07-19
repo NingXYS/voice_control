@@ -5,12 +5,20 @@ import signal
 
 import numpy as np
 
+from voice_audio_frontend import (
+    DebugAudioConfig,
+    FrontendAudioSession,
+    create_audio_frontend,
+)
 from voice_audio_session import PersistentAudioSession
 from voice_command_vad import CommandVadDetector
 from voice_prompt_tone import play_prompt_tone
 from voice_runtime_config import (
     AUDIO_CHUNK_MS,
     AUDIO_DEVICE,
+    AUDIO_FRONTEND_MAX_GAIN,
+    AUDIO_FRONTEND_MODE,
+    AUDIO_FRONTEND_TARGET_RMS,
     COMMAND_MAX_DURATION_SEC,
     COMMAND_START_TIMEOUT_SEC,
     KWS_NUM_THREADS,
@@ -20,6 +28,8 @@ from voice_runtime_config import (
     VAD_MIN_SPEECH_DURATION_SEC,
     VAD_MODEL_PATH,
     VAD_SILENCE_DURATION_SEC,
+    VOICE_DEBUG_AUDIO,
+    VOICE_DEBUG_AUDIO_DIR,
     WAKE_ASR_CHECK_INTERVAL_SEC,
     WAKE_ASR_WINDOW_SEC,
     WAKE_COOLDOWN_SEC,
@@ -66,6 +76,23 @@ def _build_wake_detector(runtime):
     )
 
 
+def _build_audio_session():
+    source = PersistentAudioSession(AUDIO_DEVICE, SAMPLE_RATE, AUDIO_CHUNK_MS)
+    frontend = create_audio_frontend(
+        AUDIO_FRONTEND_MODE,
+        target_rms=AUDIO_FRONTEND_TARGET_RMS,
+        max_gain=AUDIO_FRONTEND_MAX_GAIN,
+    )
+    return FrontendAudioSession(
+        source,
+        frontend,
+        debug=DebugAudioConfig(
+            enabled=VOICE_DEBUG_AUDIO,
+            directory=VOICE_DEBUG_AUDIO_DIR,
+        ),
+    )
+
+
 def main():
     global voice_runtime
     validate_runtime_config()
@@ -76,8 +103,15 @@ def main():
         if not container.dialogue_backend.configured:
             print("⚠️ DIFY_API_KEY is not configured; Dify requests will be skipped")
 
+        print(
+            "🎚️ Audio frontend: "
+            f"{AUDIO_FRONTEND_MODE} "
+            f"(target_rms={AUDIO_FRONTEND_TARGET_RMS}, max_gain={AUDIO_FRONTEND_MAX_GAIN}, "
+            f"debug_audio={VOICE_DEBUG_AUDIO})",
+            flush=True,
+        )
         runtime = WakeWordRuntime(
-            audio=PersistentAudioSession(AUDIO_DEVICE, SAMPLE_RATE, AUDIO_CHUNK_MS),
+            audio=_build_audio_session(),
             wake_detector=_build_wake_detector(container),
             vad=CommandVadDetector(
                 VAD_MODEL_PATH,
