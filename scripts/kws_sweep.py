@@ -74,25 +74,43 @@ def _make_spotter(model_dir: Path, keyword_file: Path, score: float, threshold: 
     )
 
 
-def _detect(spotter, samples: np.ndarray, sample_rate: int, chunk_ms: int) -> tuple[bool, float | None, float]:
-    stream = spotter.create_stream()
+def _feed_chunks(spotter, stream, samples: np.ndarray, sample_rate: int, chunk_ms: int):
     chunk_samples = max(1, sample_rate * chunk_ms // 1000)
-    started = time.perf_counter()
-    detected_at = None
-
-    padded = np.concatenate([samples, np.zeros(sample_rate, dtype=np.float32)])
-    for offset in range(0, len(padded), chunk_samples):
-        chunk = padded[offset:offset + chunk_samples]
+    for offset in range(0, len(samples), chunk_samples):
+        chunk = samples[offset:offset + chunk_samples]
         stream.accept_waveform(sample_rate, chunk)
+        yield offset, len(chunk)
+
+
+def _detect_first(spotter, samples: np.ndarray, sample_rate: int, chunk_ms: int) -> tuple[bool, float | None, float]:
+    stream = spotter.create_stream()
+    started = time.perf_counter()
+    padded = np.concatenate([samples, np.zeros(sample_rate, dtype=np.float32)])
+    for offset, chunk_len in _feed_chunks(spotter, stream, padded, sample_rate, chunk_ms):
         while spotter.is_ready(stream):
             spotter.decode_stream(stream)
             result = spotter.get_result(stream)
             if result:
-                detected_at = min((offset + len(chunk)) / sample_rate, len(samples) / sample_rate)
-                elapsed = time.perf_counter() - started
-                return True, detected_at, elapsed
-    elapsed = time.perf_counter() - started
-    return False, detected_at, elapsed
+                detected_at = min((offset + chunk_len) / sample_rate, len(samples) / sample_rate)
+                return True, detected_at, time.perf_counter() - started
+    return False, None, time.perf_counter() - started
+
+
+def _count_detections(spotter, samples: np.ndarray, sample_rate: int, chunk_ms: int) -> tuple[int, float]:
+    """Count every false trigger in a long negative recording."""
+    stream = spotter.create_stream()
+    started = time.perf_counter()
+    hits = 0
+    padded = np.concatenate([samples, np.zeros(sample_rate, dtype=np.float32)])
+    for _, _ in _feed_chunks(spotter, stream, padded, sample_rate, chunk_ms):
+        while spotter.is_ready(stream):
+            spotter.decode_stream(stream)
+            result = spotter.get_result(stream)
+            if result:
+                hits += 1
+                spotter.reset_stream(stream)
+                break
+    return hits, time.perf_counter() - started
 
 
 def _evaluate(model_dir: Path, keyword_tokens: str, positives: list[Path], negatives: list[Path], score: float, threshold: float, chunk_ms: int) -> dict:
@@ -111,7 +129,7 @@ def _evaluate(model_dir: Path, keyword_tokens: str, positives: list[Path], negat
         positive_runtime = 0.0
         for wav_path in positives:
             samples, rate = _load_wav(wav_path)
-            hit, latency, runtime = _detect(spotter, samples, rate, chunk_ms)
+            hit, latency, runtime = _detect_first(spotter, samples, rate, chunk_ms)
             positive_runtime += runtime
             if hit:
                 positive_hits += 1
@@ -124,9 +142,9 @@ def _evaluate(model_dir: Path, keyword_tokens: str, positives: list[Path], negat
         for wav_path in negatives:
             samples, rate = _load_wav(wav_path)
             negative_hours += len(samples) / rate / 3600.0
-            hit, _, runtime = _detect(spotter, samples, rate, chunk_ms)
+            hits, runtime = _count_detections(spotter, samples, rate, chunk_ms)
             negative_runtime += runtime
-            false_hits += int(hit)
+            false_hits += hits
 
     recall = positive_hits / len(positives) if positives else 0.0
     far_per_hour = false_hits / negative_hours if negative_hours > 0 else 0.0
