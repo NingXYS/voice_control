@@ -4,6 +4,10 @@ from voice_command_validation import validate_command_batch
 from voice_llm_client import check_local_reply_command
 
 
+ACTION_EXECUTION_REPLY = "好的，小西正在执行中"
+ACKNOWLEDGED_ACTIONS = {"move_cartesian", "move_joint", "home"}
+
+
 def _run_dialogue(dialogue, text):
     if dialogue is None:
         return run_dialogue(text)
@@ -58,6 +62,7 @@ def process_text(
         return None
 
     actions = [command for command in checked if "reply" not in command]
+    executed_motion = False
     if actions and executor is None:
         # VOICE_ENABLE_ROBOT_COMMAND defaults to off for safety.  A valid Dify
         # command must still be returned to the wake runtime so the terminal can
@@ -67,6 +72,11 @@ def process_text(
         for command in actions:
             if not _execute(executor, command):
                 return None
+            if command.get("action") in ACKNOWLEDGED_ACTIONS:
+                executed_motion = True
+
+    if executed_motion and speaker is not None:
+        speaker(ACTION_EXECUTION_REPLY)
 
     for command in checked:
         if "reply" in command and speaker is not None:
