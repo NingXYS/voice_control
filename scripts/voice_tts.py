@@ -2,8 +2,8 @@
 """
 TTS 共享模块 — 基于 sherpa_onnx + Piper/VITS 的离线语音合成与播放。
 
-默认继续使用 zh_CN-huayan-medium，并支持通过环境变量切换本地模型文件、
-说话人 ID 和语速，无需修改业务调用链。
+默认使用仓库内 Kokoro 中文多说话人模型，并支持通过环境变量切换本地模型文件、
+说话人 ID 和语速。没有 voices.bin 的旧 Piper/VITS 模型仍保持兼容。
 """
 import os
 import subprocess
@@ -15,7 +15,7 @@ _MODEL_DIR = os.environ.get(
     os.environ.get(
         "TTS_MODEL_DIR",
         os.path.expanduser(
-            "~/model/lyz/src/voice_control/scripts/vits-piper-zh_CN-huayan-medium"
+            "~/model/lyz/src/voice_control_online/tts/kokoro-multi-lang-v1_0"
         ),
     ),
 )
@@ -25,16 +25,21 @@ _tts = None  # sherpa_onnx.OfflineTts 实例
 _lock = threading.Lock()  # 合成/播放互斥，避免并发覆盖
 
 
-def _model_file():
-    return os.environ.get("TTS_MODEL_FILE", "zh_CN-huayan-medium.onnx")
+def _model_file(path):
+    configured = os.environ.get("TTS_MODEL_FILE", "").strip()
+    if configured:
+        return configured
+    if os.path.isfile(os.path.join(path, "model.onnx")):
+        return "model.onnx"
+    return "zh_CN-huayan-medium.onnx"
 
 
 def _speaker_id():
     try:
-        return int(os.environ.get("TTS_SPEAKER_ID", "0"))
+        return int(os.environ.get("TTS_SPEAKER_ID", "47"))
     except ValueError:
-        print("⚠️ TTS_SPEAKER_ID 必须是整数，回退到 0")
-        return 0
+        print("⚠️ TTS_SPEAKER_ID 必须是整数，回退到 47")
+        return 47
 
 
 def _speed():
@@ -57,9 +62,14 @@ def tts_init(model_dir=None):
         return True  # 已初始化
 
     path = model_dir or os.environ.get("PIPER_MODEL_DIR") or os.environ.get("TTS_MODEL_DIR") or _MODEL_DIR
-    model_file = os.path.join(path, _model_file())
+    model_file = os.path.join(path, _model_file(path))
     tokens_file = os.path.join(path, "tokens.txt")
     data_dir = os.path.join(path, "espeak-ng-data")
+    voices_file = os.path.join(path, "voices.bin")
+    lexicon = ",".join(
+        os.path.join(path, name)
+        for name in ("lexicon-us-en.txt", "lexicon-zh.txt")
+    )
 
     # 检查必要文件
     for asset in (model_file, tokens_file, data_dir):
@@ -70,16 +80,30 @@ def tts_init(model_dir=None):
     try:
         import sherpa_onnx
 
-        config = sherpa_onnx.OfflineTtsConfig(
-            model=sherpa_onnx.OfflineTtsModelConfig(
-                vits=sherpa_onnx.OfflineTtsVitsModelConfig(
-                    model=model_file,
-                    tokens=tokens_file,
-                    data_dir=data_dir,
+        if os.path.isfile(voices_file):
+            config = sherpa_onnx.OfflineTtsConfig(
+                model=sherpa_onnx.OfflineTtsModelConfig(
+                    kokoro=sherpa_onnx.OfflineTtsKokoroModelConfig(
+                        model=model_file,
+                        voices=voices_file,
+                        tokens=tokens_file,
+                        lexicon=lexicon,
+                        data_dir=data_dir,
+                    ),
+                    num_threads=2,
                 ),
-                num_threads=2,
-            ),
-        )
+            )
+        else:
+            config = sherpa_onnx.OfflineTtsConfig(
+                model=sherpa_onnx.OfflineTtsModelConfig(
+                    vits=sherpa_onnx.OfflineTtsVitsModelConfig(
+                        model=model_file,
+                        tokens=tokens_file,
+                        data_dir=data_dir,
+                    ),
+                    num_threads=2,
+                ),
+            )
         _tts = sherpa_onnx.OfflineTts(config)
         print(
             "✅ TTS initialized: "

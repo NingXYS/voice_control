@@ -21,6 +21,7 @@ import voice_robot_executor
 import voice_runtime_config
 import voice_runtime_container
 import voice_text_pipeline
+import voice_tts
 import voice_tts_backend
 import voice_wake_entry
 
@@ -239,6 +240,30 @@ class OnlineBackendTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             voice_robot_executor.serialize_robot_command({"reply": "不能发布"})
+
+
+class TtsModelSelectionTests(unittest.TestCase):
+    def test_kokoro_assets_select_kokoro_configuration(self):
+        config = types.SimpleNamespace
+        fake_module = types.SimpleNamespace(
+            OfflineTtsKokoroModelConfig=config,
+            OfflineTtsModelConfig=config,
+            OfflineTtsConfig=config,
+            OfflineTts=lambda value: types.SimpleNamespace(config=value),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model_dir = Path(temp_dir)
+            for filename in ("model.onnx", "tokens.txt", "voices.bin", "lexicon-us-en.txt", "lexicon-zh.txt"):
+                model_dir.joinpath(filename).touch()
+            model_dir.joinpath("espeak-ng-data").mkdir()
+            with mock.patch.dict(sys.modules, {"sherpa_onnx": fake_module}, clear=False):
+                voice_tts.tts_cleanup()
+                self.assertTrue(voice_tts.tts_init(str(model_dir)))
+                model = voice_tts._tts.config.model
+                self.assertEqual(model.kokoro.model, str(model_dir / "model.onnx"))
+                self.assertEqual(model.kokoro.voices, str(model_dir / "voices.bin"))
+                self.assertIn("lexicon-zh.txt", model.kokoro.lexicon)
+                voice_tts.tts_cleanup()
 
 
 class BuildWakeKeywordTests(unittest.TestCase):

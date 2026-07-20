@@ -61,3 +61,5 @@ CLAUDE.local.md
 .claude-local/
 scripts/vits-piper-zh_CN-huayan-medium/
 .gitignore
+
+tts/

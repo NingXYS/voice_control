@@ -109,11 +109,13 @@ ASR_MAX_GAIN = float(os.environ.get("ASR_MAX_GAIN", "3.0"))
 PIPER_MODEL_DIR = _configured_alias(
     "PIPER_MODEL_DIR",
     "TTS_MODEL_DIR",
+    str(Path(__file__).resolve().parent.parent / "tts/kokoro-multi-lang-v1_0"),
     "/home/ning/model/lyz/src/voice_control/scripts/vits-piper-zh_CN-huayan-medium",
     "/home/ning/model/voice_models/vits-piper-zh_CN-huayan-medium",
     str(Path(__file__).resolve().parent / "vits-piper-zh_CN-huayan-medium"),
 )
 TTS_MODEL_DIR = PIPER_MODEL_DIR
+TTS_MODEL_FILE = os.environ.get("TTS_MODEL_FILE", "").strip()
 DIFY_BASE_URL = os.environ.get("DIFY_BASE_URL", "http://localhost:80")
 DIFY_API_KEY = os.environ.get("DIFY_API_KEY", "")
 DIFY_INPUT_KEY = os.environ.get("DIFY_INPUT_KEY", "text")
@@ -205,7 +207,13 @@ def validate_runtime_assets() -> None:
 
 def validate_tts_assets() -> None:
     tts_dir = Path(PIPER_MODEL_DIR)
-    _require_file(tts_dir / "zh_CN-huayan-medium.onnx", "Piper model")
-    _require_file(tts_dir / "tokens.txt", "Piper tokens")
+    model_file = TTS_MODEL_FILE or (
+        "model.onnx" if (tts_dir / "voices.bin").is_file() else "zh_CN-huayan-medium.onnx"
+    )
+    _require_file(tts_dir / model_file, "TTS model")
+    _require_file(tts_dir / "tokens.txt", "TTS tokens")
     if not (tts_dir / "espeak-ng-data").is_dir():
-        raise FileNotFoundError(f"Piper espeak data not found: {tts_dir / 'espeak-ng-data'}")
+        raise FileNotFoundError(f"TTS espeak data not found: {tts_dir / 'espeak-ng-data'}")
+    if (tts_dir / "voices.bin").is_file():
+        for filename in ("lexicon-us-en.txt", "lexicon-zh.txt"):
+            _require_file(tts_dir / filename, f"Kokoro TTS asset {filename}")

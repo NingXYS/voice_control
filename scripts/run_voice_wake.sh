@@ -53,8 +53,17 @@ VOICE_WAKE_VENV_DIR="${VOICE_WAKE_VENV_DIR:-${REPO_ROOT}/.venv_online}"
     export PARAFORMER_MODEL_DIR="${PARAFORMER_MODEL_DIR:-$HOME/model/sherpa-onnx-paraformer-zh-2023-09-14}"
     export WAKE_MODEL_DIR="${WAKE_MODEL_DIR:-$HOME/model/voice_models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20}"
     export VAD_MODEL_PATH="${VAD_MODEL_PATH:-$HOME/model/voice_models/vad/silero_vad.onnx}"
-    export PIPER_MODEL_DIR="${PIPER_MODEL_DIR:-${TTS_MODEL_DIR:-$HOME/model/lyz/src/voice_control/scripts/vits-piper-zh_CN-huayan-medium}}"
-    export TTS_MODEL_DIR="${TTS_MODEL_DIR:-${PIPER_MODEL_DIR}}"
+    export TTS_MODEL_DIR="${TTS_MODEL_DIR:-${PIPER_MODEL_DIR:-${REPO_ROOT}/tts/kokoro-multi-lang-v1_0}}"
+    export PIPER_MODEL_DIR="${PIPER_MODEL_DIR:-${TTS_MODEL_DIR}}"
+    if [ -z "${TTS_MODEL_FILE:-}" ]; then
+        if [ -f "${TTS_MODEL_DIR}/model.onnx" ]; then
+            export TTS_MODEL_FILE="model.onnx"
+        else
+            export TTS_MODEL_FILE="zh_CN-huayan-medium.onnx"
+        fi
+    fi
+    export TTS_SPEAKER_ID="${TTS_SPEAKER_ID:-47}"
+    export TTS_SPEED="${TTS_SPEED:-1.0}"
     export DIFY_BASE_URL="${DIFY_BASE_URL:-http://localhost:80}"
     export DIFY_INPUT_KEY="${DIFY_INPUT_KEY:-text}"
     export DIFY_OUTPUT_KEY="${DIFY_OUTPUT_KEY:-result}"
@@ -142,7 +151,7 @@ for lib in libs:
     fi
 
     for file in \
-        "${TTS_MODEL_DIR}/zh_CN-huayan-medium.onnx" \
+        "${TTS_MODEL_DIR}/${TTS_MODEL_FILE}" \
         "${TTS_MODEL_DIR}/tokens.txt"; do
         if [ ! -f "$file" ]; then
             echo "Check failed: TTS model file missing at $file" >&2
@@ -152,6 +161,14 @@ for lib in libs:
     if [ ! -d "${TTS_MODEL_DIR}/espeak-ng-data" ]; then
         echo "Check failed: TTS espeak data missing at ${TTS_MODEL_DIR}/espeak-ng-data" >&2
         exit 1
+    fi
+    if [ -f "${TTS_MODEL_DIR}/voices.bin" ]; then
+        for file in voices.bin lexicon-us-en.txt lexicon-zh.txt; do
+            if [ ! -f "${TTS_MODEL_DIR}/${file}" ]; then
+                echo "Check failed: Kokoro TTS file missing at ${TTS_MODEL_DIR}/${file}" >&2
+                exit 1
+            fi
+        done
     fi
 
     if [ "${WAKE_DETECTOR_MODE}" = "kws" ]; then
