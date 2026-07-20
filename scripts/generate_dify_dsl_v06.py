@@ -19,20 +19,23 @@ def main(user_text: str) -> dict:
     angles = re.findall(rf'{number_token}(?:度|弧度)', text)
     has_home = any(keyword in text for keyword in ('回零', '归零', '零位'))
     has_status = '状态' in text or ('查询' in text and '位置' in text)
-    is_simple = bool(arms) and (
+    single_action_patterns = (
+        rf'(?:左臂|右臂)(?:向)?[上下左右前后](?:抬|降|移动|走)?{number_token}(?:毫米|厘米|米)',
+        rf'(?:左臂|右臂)关节[1-6](?:反转)?(?:旋转)?{number_token}(?:度|弧度)',
+        r'(?:左臂|右臂)(?:回零位?|归零|零位)',
+        r'(?:查询)?(?:左臂|右臂)(?:状态|位置)',
+    )
+    is_single_action = any(re.fullmatch(pattern, text) for pattern in single_action_patterns)
+    is_complete_action = bool(arms) and (
         bool(directions and distances)
         or bool(joints and angles)
         or has_home
         or has_status
     )
-    is_composite = (
-        len(arms) > 1
-        or len(directions) > 1
-        or len(joints) > 1
-        or any(keyword in text for keyword in ('然后', '同时', '并且', '接着', '再把', '再将'))
-    )
-    if is_simple:
-        return {'intent': 'control_action' if is_composite else 'local_action'}
+    if is_single_action:
+        return {'intent': 'local_action'}
+    if is_complete_action:
+        return {'intent': 'control_action'}
     if any(keyword in text for keyword in ('有什么限制', '支持哪些关节', '移动多远', '坐标系', '怎么下达指令', '指令格式', '指令要求', '机械臂可以', '抓取', '拿东西', '放东西', '能旋转', '可以旋转')):
         return {'intent': 'robot_knowledge'}
     if any(keyword in text for keyword in ('你是谁', '你叫什么', '你是什么', '介绍', '你能做什么', '你会做什么', '你会干什么', '你能干什么', '功能', '你好', '您好', '谢谢', '感谢', '辛苦了', '唱歌', '唱首歌', '唱一首', '跳舞', '天气', '气温', '下雨', '联网', '上网', '在线检索')):
@@ -104,8 +107,19 @@ def _parse_number(value: str) -> float | None:
     fraction = ''.join(fraction_digits)
     return float(f'{integer}.{fraction}')
 
+def _is_single_action(text: str) -> bool:
+    patterns = (
+        rf'(?:左臂|右臂)(?:向)?[上下左右前后](?:抬|降|移动|走)?{_NUMBER_TOKEN}(?:毫米|厘米|米)',
+        rf'(?:左臂|右臂)关节[1-6](?:反转)?(?:旋转)?{_NUMBER_TOKEN}(?:度|弧度)',
+        r'(?:左臂|右臂)(?:回零位?|归零|零位)',
+        r'(?:查询)?(?:左臂|右臂)(?:状态|位置)',
+    )
+    return any(re.fullmatch(pattern, text) for pattern in patterns)
+
 def main(user_text: str) -> dict:
     text = re.sub(r'[\\s，。！？；：,.!?;:]+', '', user_text or '')
+    if not _is_single_action(text):
+        return {'result': json.dumps({'reply': '请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。'}, ensure_ascii=False)}
     arm_match = re.search(r'左臂|左手|右臂|右手', text)
     if arm_match is None:
         return {'result': json.dumps({'reply': '请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。'}, ensure_ascii=False)}

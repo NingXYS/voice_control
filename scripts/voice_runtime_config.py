@@ -51,6 +51,7 @@ def _configured_bool(env_name: str, default: bool = False) -> bool:
 
 SAMPLE_RATE = 16000
 AUDIO_DEVICE = os.environ.get("AUDIO_DEVICE", "default")
+APLAY_DEVICE = os.environ.get("APLAY_DEVICE", "default").strip() or "default"
 CAPTURE_SAMPLE_RATE = int(os.environ.get("AUDIO_CAPTURE_SAMPLE_RATE", str(SAMPLE_RATE)))
 CAPTURE_CHANNELS = int(os.environ.get("AUDIO_CAPTURE_CHANNELS", "1"))
 AUDIO_FRONTEND_MODE = os.environ.get("VOICE_AUDIO_FRONTEND", "passthrough").strip().lower()

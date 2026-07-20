@@ -268,6 +268,35 @@ class OnlineBackendTests(unittest.TestCase):
 
 
 class TtsModelSelectionTests(unittest.TestCase):
+    def test_tts_uses_configured_aplay_device(self):
+        fake_audio = types.SimpleNamespace(
+            samples=np.array([0.0, 0.1], dtype=np.float32),
+            sample_rate=44100,
+        )
+        fake_tts = types.SimpleNamespace(
+            generate=mock.Mock(return_value=fake_audio),
+        )
+        with (
+            mock.patch.object(voice_tts, "_tts", fake_tts),
+            mock.patch.dict(
+                os.environ,
+                {"APLAY_DEVICE": "plughw:Generic_1,0"},
+                clear=False,
+            ),
+            mock.patch.object(
+                voice_tts.subprocess,
+                "run",
+                return_value=mock.Mock(returncode=0),
+            ) as run,
+        ):
+            self.assertTrue(voice_tts.tts_speak("好的"))
+
+        command = run.call_args.args[0]
+        self.assertEqual(
+            command[:4],
+            ["aplay", "-q", "-D", "plughw:Generic_1,0"],
+        )
+
     def test_kokoro_assets_select_kokoro_configuration(self):
         config = types.SimpleNamespace
         fake_module = types.SimpleNamespace(

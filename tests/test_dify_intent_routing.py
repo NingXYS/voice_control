@@ -37,6 +37,8 @@ class DifyIntentRoutingTests(unittest.TestCase):
             ("左臂向上抬十五厘米", "local_action"),
             ("左臂关节1旋转三十度", "local_action"),
             ("右臂向前5厘米然后左臂向上10厘米", "control_action"),
+            ("你能做什么右臂向上5厘米", "control_action"),
+            ("请先说明坐标系再让左臂向上二十厘米", "control_action"),
             ("左臂向下", "ambiguous_control"),
             ("机器人的坐标系怎么定义", "robot_knowledge"),
             ("讲一个历史故事", "complex_fallback"),
@@ -182,6 +184,21 @@ class DifyIntentRoutingTests(unittest.TestCase):
             if case["case_id"] == "case_local_action"
         )
         self.assertEqual(local_case["conditions"][0]["value"], "local_action")
+
+    def test_local_action_parser_rejects_mixed_text(self):
+        scope = {}
+        exec(self.nodes["local_action_parse"]["data"]["code"], scope)
+
+        for user_text in (
+            "你能做什么右臂向上5厘米",
+            "请先说明坐标系再让左臂向上二十厘米",
+        ):
+            with self.subTest(user_text=user_text):
+                output = scope["main"](user_text)
+                self.assertEqual(
+                    json.loads(output["result"]),
+                    {"reply": "请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。"},
+                )
 
     def test_final_json_cleanup_strips_model_think_block(self):
         scope = {}

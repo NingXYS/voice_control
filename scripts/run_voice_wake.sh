@@ -68,6 +68,7 @@ VOICE_WAKE_VENV_DIR="${VOICE_WAKE_VENV_DIR:-${REPO_ROOT}/.venv_online}"
     export DIFY_INPUT_KEY="${DIFY_INPUT_KEY:-text}"
     export DIFY_OUTPUT_KEY="${DIFY_OUTPUT_KEY:-result}"
     export AUDIO_DEVICE="${AUDIO_DEVICE:-default}"
+    export APLAY_DEVICE="${APLAY_DEVICE:-default}"
     export WAKE_DETECTOR_MODE="${WAKE_DETECTOR_MODE:-kws}"
 
     if [ -z "${DIFY_API_KEY:-}" ]; then
