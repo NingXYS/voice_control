@@ -27,6 +27,31 @@ import voice_wake_entry
 
 
 class WakeEntryImportTests(unittest.TestCase):
+    def test_audio_session_inserts_capture_format_adapter(self):
+        source = mock.Mock()
+        adapter = mock.Mock()
+        frontend_session = mock.Mock()
+        with (
+            mock.patch.object(voice_wake_entry, "PersistentAudioSession", return_value=source) as source_factory,
+            mock.patch.object(voice_wake_entry, "CaptureFormatAdapter", return_value=adapter) as adapter_factory,
+            mock.patch.object(voice_wake_entry, "FrontendAudioSession", return_value=frontend_session) as session_factory,
+        ):
+            result = voice_wake_entry._build_audio_session()
+
+        source_factory.assert_called_once_with(
+            voice_wake_entry.AUDIO_DEVICE,
+            voice_wake_entry.CAPTURE_SAMPLE_RATE,
+            voice_wake_entry.AUDIO_CHUNK_MS,
+            voice_wake_entry.CAPTURE_CHANNELS,
+        )
+        adapter_factory.assert_called_once()
+        self.assertIs(adapter_factory.call_args.args[0], source)
+        self.assertEqual(adapter_factory.call_args.args[1].sample_rate, 16000)
+        self.assertEqual(adapter_factory.call_args.args[1].channels, 1)
+        self.assertEqual(adapter_factory.call_args.args[2], voice_wake_entry.AUDIO_CHUNK_MS)
+        self.assertIs(session_factory.call_args.args[0], adapter)
+        self.assertIs(result, frontend_session)
+
     def test_module_import_does_not_import_pipeline_or_pynput(self):
         env = os.environ.copy()
         env.pop("DISPLAY", None)

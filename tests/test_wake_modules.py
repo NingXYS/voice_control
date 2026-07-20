@@ -49,6 +49,19 @@ class AudioSessionTests(unittest.TestCase):
         session.close()
         process.kill.assert_called_once()
 
+    def test_multichannel_pcm_conversion_preserves_frames(self):
+        session = PersistentAudioSession(sample_rate=16000, chunk_ms=20, channels=2)
+        pcm = np.tile(np.array([-32768, 32767], dtype="<i2"), 320)
+        process = mock.Mock(stdout=FakeStdout(pcm.tobytes()))
+        process.poll.return_value = None
+        session._process = process
+
+        samples = session.read_chunk()
+
+        self.assertEqual(samples.shape, (320, 2))
+        self.assertAlmostEqual(float(samples[0, 0]), -1.0)
+        self.assertAlmostEqual(float(samples[0, 1]), 32767 / 32768)
+
 
 class FakeAudio:
     def __init__(self, chunks):

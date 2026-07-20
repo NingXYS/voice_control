@@ -51,6 +51,8 @@ def _configured_bool(env_name: str, default: bool = False) -> bool:
 
 SAMPLE_RATE = 16000
 AUDIO_DEVICE = os.environ.get("AUDIO_DEVICE", "default")
+CAPTURE_SAMPLE_RATE = int(os.environ.get("AUDIO_CAPTURE_SAMPLE_RATE", str(SAMPLE_RATE)))
+CAPTURE_CHANNELS = int(os.environ.get("AUDIO_CAPTURE_CHANNELS", "1"))
 AUDIO_FRONTEND_MODE = os.environ.get("VOICE_AUDIO_FRONTEND", "passthrough").strip().lower()
 AUDIO_FRONTEND_TARGET_RMS = float(os.environ.get("VOICE_AUDIO_FRONTEND_TARGET_RMS", "0.05"))
 AUDIO_FRONTEND_MAX_GAIN = float(os.environ.get("VOICE_AUDIO_FRONTEND_MAX_GAIN", "2.0"))
@@ -140,6 +142,10 @@ def validate_runtime_config() -> None:
         raise ValueError("VOICE_AUDIO_FRONTEND_TARGET_RMS must be between 0 and 1")
     if AUDIO_FRONTEND_MAX_GAIN < 1.0 or not math.isfinite(AUDIO_FRONTEND_MAX_GAIN):
         raise ValueError("VOICE_AUDIO_FRONTEND_MAX_GAIN must be finite and at least 1")
+    if CAPTURE_SAMPLE_RATE <= 0:
+        raise ValueError("AUDIO_CAPTURE_SAMPLE_RATE must be positive")
+    if CAPTURE_CHANNELS <= 0:
+        raise ValueError("AUDIO_CAPTURE_CHANNELS must be positive")
 
     for name, value in (
         ("KWS_NUM_THREADS", KWS_NUM_THREADS),

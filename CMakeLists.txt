@@ -37,6 +37,7 @@ install(FILES
   scripts/voice_command_vad.py
   scripts/voice_asr_wake_word.py
   scripts/voice_audio_session.py
+  scripts/voice_capture_adapter.py
   scripts/voice_audio_frontend.py
   scripts/voice_prompt_tone.py
   scripts/voice_wake_runtime.py

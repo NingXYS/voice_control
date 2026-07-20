@@ -6,11 +6,12 @@ import numpy as np
 
 
 class PersistentAudioSession:
-    def __init__(self, device="default", sample_rate=16000, chunk_ms=100):
+    def __init__(self, device="default", sample_rate=16000, chunk_ms=100, channels=1):
         self.device = device
         self.sample_rate = sample_rate
+        self.channels = channels
         self.chunk_samples = sample_rate * chunk_ms // 1000
-        self.chunk_bytes = self.chunk_samples * 2
+        self.chunk_bytes = self.chunk_samples * channels * 2
         self._process = None
 
     def open(self) -> None:
@@ -36,7 +37,10 @@ class PersistentAudioSession:
                 code = self._process.poll()
                 raise RuntimeError(f"arecord stopped unexpectedly (exit={code})")
             data.extend(part)
-        return np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768.0
+        samples = np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768.0
+        if self.channels == 1:
+            return samples
+        return samples.reshape(-1, self.channels)
 
     def discard_buffered(self) -> int:
         """Drain PCM already buffered in the arecord pipe without blocking.
