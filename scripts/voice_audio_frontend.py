@@ -8,6 +8,7 @@ or acoustic echo canceller.
 """
 from __future__ import annotations
 
+from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -84,7 +85,7 @@ class BasicAudioFrontend(AudioFrontend):
         return np.clip(conditioned * self._gain, -1.0, 1.0).astype(np.float32, copy=False)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class DebugAudioConfig:
     enabled: bool = False
     directory: str = "debug_audio"
@@ -98,8 +99,14 @@ class _WavPairWriter:
         raw_dir.mkdir(parents=True, exist_ok=True)
         frontend_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        self._raw = self._open(raw_dir / f"{stamp}.wav", sample_rate)
-        self._frontend = self._open(frontend_dir / f"{stamp}.wav", sample_rate)
+        with ExitStack() as cleanup:
+            raw = self._open(raw_dir / f"{stamp}.wav", sample_rate)
+            cleanup.callback(raw.close)
+            frontend = self._open(frontend_dir / f"{stamp}.wav", sample_rate)
+            cleanup.callback(frontend.close)
+            self._raw = raw
+            self._frontend = frontend
+            cleanup.pop_all()
 
     @staticmethod
     def _open(path: Path, sample_rate: int):
@@ -111,16 +118,18 @@ class _WavPairWriter:
 
     @staticmethod
     def _pcm16(samples: np.ndarray) -> bytes:
-        audio = np.clip(np.asarray(samples, dtype=np.float32), -1.0, 1.0)
-        return (audio * 32767.0).astype("<i2").tobytes()
+        audio = np.asarray(samples, dtype=np.float32)
+        scaled = np.rint(audio * 32768.0)
+        return np.clip(scaled, -32768.0, 32767.0).astype("<i2").tobytes()
 
     def write(self, raw: np.ndarray, processed: np.ndarray) -> None:
         self._raw.writeframesraw(self._pcm16(raw))
         self._frontend.writeframesraw(self._pcm16(processed))
 
     def close(self) -> None:
-        self._raw.close()
-        self._frontend.close()
+        with ExitStack() as cleanup:
+            cleanup.callback(self._frontend.close)
+            cleanup.callback(self._raw.close)
 
 
 class FrontendAudioSession:
@@ -134,12 +143,22 @@ class FrontendAudioSession:
         self.chunk_samples = int(source.chunk_samples)
         self.debug = debug or DebugAudioConfig()
         self._debug_writer = None
+        self._opened = False
 
     def open(self) -> None:
-        self.source.open()
-        self.frontend.reset()
-        if self.debug.enabled:
-            self._debug_writer = _WavPairWriter(self.debug.directory, self.sample_rate)
+        if self._opened:
+            return
+        with ExitStack() as cleanup:
+            self.source.open()
+            cleanup.callback(self.source.close)
+            self.frontend.reset()
+            if self.debug.enabled:
+                self._debug_writer = _WavPairWriter(
+                    self.debug.directory,
+                    self.sample_rate,
+                )
+            self._opened = True
+            cleanup.pop_all()
 
     def read_chunk(self) -> np.ndarray:
         raw = self.source.read_chunk()
@@ -153,15 +172,23 @@ class FrontendAudioSession:
 
     def discard_buffered(self) -> int:
         discard = getattr(self.source, "discard_buffered", None)
-        return int(discard() or 0) if callable(discard) else 0
+        discarded = int(discard() or 0) if callable(discard) else 0
+        if discarded > 0:
+            self.frontend.reset()
+        return discarded
 
     def close(self) -> None:
+        if not self._opened:
+            return
         try:
             if self._debug_writer is not None:
                 self._debug_writer.close()
                 self._debug_writer = None
         finally:
-            self.source.close()
+            try:
+                self.source.close()
+            finally:
+                self._opened = False
 
 
 def create_audio_frontend(mode: str, target_rms: float = 0.05,

@@ -11,6 +11,17 @@ import voice_runtime_config
 
 
 class VoiceRuntimeConfigTests(unittest.TestCase):
+    def test_debug_audio_flag_rejects_unknown_value(self):
+        with mock.patch.dict(os.environ, {"VOICE_DEBUG_AUDIO": "sometimes"}):
+            with self.assertRaisesRegex(ValueError, "VOICE_DEBUG_AUDIO"):
+                voice_runtime_config._configured_bool("VOICE_DEBUG_AUDIO")
+
+    def test_debug_audio_empty_value_uses_default(self):
+        with mock.patch.dict(os.environ, {"VOICE_DEBUG_AUDIO": ""}):
+            self.assertFalse(
+                voice_runtime_config._configured_bool("VOICE_DEBUG_AUDIO"),
+            )
+
     def test_post_tts_guard_rejects_non_finite_duration(self):
         for value in (float("inf"), float("nan")):
             with self.subTest(value=value):

@@ -5,6 +5,18 @@ import os
 from pathlib import Path
 
 
+class InvalidEnvironmentValueError(ValueError):
+    env_name: str
+    expected: str
+
+    def __init__(self, env_name: str, expected: str):
+        self.env_name = env_name
+        self.expected = expected
+
+    def __str__(self) -> str:
+        return f"{self.env_name} must be {self.expected}"
+
+
 def _configured_path(env_name: str, *candidates: str) -> str:
     configured = os.environ.get(env_name, "").strip()
     if configured:
@@ -25,12 +37,24 @@ def _configured_alias(primary: str, alias: str, *candidates: str) -> str:
     return _configured_path("", *candidates)
 
 
+def _configured_bool(env_name: str, default: bool = False) -> bool:
+    raw = os.environ.get(env_name)
+    if raw is None or not raw.strip():
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise InvalidEnvironmentValueError(env_name, "a boolean value")
+
+
 SAMPLE_RATE = 16000
 AUDIO_DEVICE = os.environ.get("AUDIO_DEVICE", "default")
 AUDIO_FRONTEND_MODE = os.environ.get("VOICE_AUDIO_FRONTEND", "passthrough").strip().lower()
 AUDIO_FRONTEND_TARGET_RMS = float(os.environ.get("VOICE_AUDIO_FRONTEND_TARGET_RMS", "0.05"))
 AUDIO_FRONTEND_MAX_GAIN = float(os.environ.get("VOICE_AUDIO_FRONTEND_MAX_GAIN", "2.0"))
-VOICE_DEBUG_AUDIO = os.environ.get("VOICE_DEBUG_AUDIO", "0").strip().lower() in {"1", "true", "yes", "on"}
+VOICE_DEBUG_AUDIO = _configured_bool("VOICE_DEBUG_AUDIO")
 VOICE_DEBUG_AUDIO_DIR = os.environ.get("VOICE_DEBUG_AUDIO_DIR", "debug_audio")
 PARAFORMER_MODEL_DIR = _configured_path(
     "PARAFORMER_MODEL_DIR",

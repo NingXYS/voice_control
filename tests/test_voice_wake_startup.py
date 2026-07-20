@@ -142,6 +142,7 @@ class VoiceWakeStartupTests(unittest.TestCase):
         self.assertIn('WAKE_DETECTOR_MODE:-kws', content)
         self.assertIn('cmp -s "${REPO_ROOT}/scripts/${file}"', content)
         self.assertIn("voice_audio_session.py", content)
+        self.assertIn("voice_audio_frontend.py", content)
         
         # Must only start voice_wake_entry.py (and not robot_controller)
         self.assertIn("voice_wake_entry.py", content)

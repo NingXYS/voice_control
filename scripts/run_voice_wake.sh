@@ -110,6 +110,7 @@ for lib in libs:
         voice_runtime_config.py \
         voice_wake_runtime.py \
         voice_audio_session.py \
+        voice_audio_frontend.py \
         voice_wake_word.py \
         voice_command_vad.py \
         voice_asr_backend.py \
