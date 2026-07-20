@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
-TTS 共享模块 — 基于 sherpa_onnx + piper VITS 的语音合成与播放
-模型：zh_CN-huayan-medium（中文女声"华言"，22kHz）
+TTS 共享模块 — 基于 sherpa_onnx + Piper/VITS 的离线语音合成与播放。
+
+默认继续使用 zh_CN-huayan-medium，并支持通过环境变量切换本地模型文件、
+说话人 ID 和语速，无需修改业务调用链。
 """
 import os
 import subprocess
@@ -23,6 +25,30 @@ _tts = None  # sherpa_onnx.OfflineTts 实例
 _lock = threading.Lock()  # 合成/播放互斥，避免并发覆盖
 
 
+def _model_file():
+    return os.environ.get("TTS_MODEL_FILE", "zh_CN-huayan-medium.onnx")
+
+
+def _speaker_id():
+    try:
+        return int(os.environ.get("TTS_SPEAKER_ID", "0"))
+    except ValueError:
+        print("⚠️ TTS_SPEAKER_ID 必须是整数，回退到 0")
+        return 0
+
+
+def _speed():
+    try:
+        value = float(os.environ.get("TTS_SPEED", "1.0"))
+    except ValueError:
+        print("⚠️ TTS_SPEED 必须是数字，回退到 1.0")
+        return 1.0
+    if value <= 0:
+        print("⚠️ TTS_SPEED 必须大于 0，回退到 1.0")
+        return 1.0
+    return value
+
+
 def tts_init(model_dir=None):
     """初始化 TTS 引擎，加载 ONNX 模型和 espeak 音素化数据。返回是否成功。"""
     global _tts
@@ -31,7 +57,7 @@ def tts_init(model_dir=None):
         return True  # 已初始化
 
     path = model_dir or os.environ.get("PIPER_MODEL_DIR") or os.environ.get("TTS_MODEL_DIR") or _MODEL_DIR
-    model_file = os.path.join(path, "zh_CN-huayan-medium.onnx")
+    model_file = os.path.join(path, _model_file())
     tokens_file = os.path.join(path, "tokens.txt")
     data_dir = os.path.join(path, "espeak-ng-data")
 
@@ -55,7 +81,10 @@ def tts_init(model_dir=None):
             ),
         )
         _tts = sherpa_onnx.OfflineTts(config)
-        print(f"✅ TTS initialized: {path}")
+        print(
+            "✅ TTS initialized: "
+            f"model={model_file}, speaker={_speaker_id()}, speed={_speed()}"
+        )
         return True
     except Exception as exc:
         print(f"⚠️ TTS initialization failed: {exc}")
@@ -74,7 +103,11 @@ def tts_speak(text):
             import numpy as np
             import soundfile as sf
 
-            audio = _tts.generate(text, sid=0, speed=1.0)
+            audio = _tts.generate(
+                text,
+                sid=_speaker_id(),
+                speed=_speed(),
+            )
             if audio is None or len(audio.samples) == 0:
                 return False
 
