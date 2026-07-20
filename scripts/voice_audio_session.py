@@ -5,22 +5,57 @@ import subprocess
 import numpy as np
 
 
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return bool(default)
+    return value.strip().lower() in _TRUE_VALUES
+
+
+def resolve_alsa_capture_device(device: str, use_alsa_plug: bool = False) -> str:
+    """Resolve an ALSA PCM device without changing the model-side audio contract.
+
+    When enabled for a direct ``hw:`` device, ``plughw:`` lets ALSA adapt the
+    microphone's native sample format/rate/channel layout to the 16 kHz mono
+    S16_LE stream already expected by the existing runtime.
+    """
+    normalized = str(device or "default").strip() or "default"
+    if use_alsa_plug and normalized.startswith("hw:"):
+        return "plughw:" + normalized[3:]
+    return normalized
+
+
 class PersistentAudioSession:
-    def __init__(self, device="default", sample_rate=16000, chunk_ms=100):
+    def __init__(
+        self,
+        device="default",
+        sample_rate=16000,
+        chunk_ms=100,
+        use_alsa_plug=None,
+    ):
         self.device = device
+        if use_alsa_plug is None:
+            use_alsa_plug = _env_flag("AUDIO_DEVICE_AUTO_PLUG", False)
+        self.capture_device = resolve_alsa_capture_device(device, bool(use_alsa_plug))
         self.sample_rate = sample_rate
         self.chunk_samples = sample_rate * chunk_ms // 1000
         self.chunk_bytes = self.chunk_samples * 2
         self._process = None
 
+    def _build_arecord_command(self):
+        return [
+            "arecord", "-q", "-D", self.capture_device, "-f", "S16_LE", "-c", "1",
+            "-r", str(self.sample_rate), "-t", "raw",
+        ]
+
     def open(self) -> None:
         if self._process is not None:
             return
         self._process = subprocess.Popen(
-            [
-                "arecord", "-q", "-D", self.device, "-f", "S16_LE", "-c", "1",
-                "-r", str(self.sample_rate), "-t", "raw",
-            ],
+            self._build_arecord_command(),
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             bufsize=0,
