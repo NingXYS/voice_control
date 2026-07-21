@@ -5,6 +5,10 @@ import os
 from pathlib import Path
 
 
+_MODULE_DIR = Path(__file__).resolve().parent
+_SOURCE_ROOT = _MODULE_DIR.parent
+
+
 class InvalidEnvironmentValueError(ValueError):
     env_name: str
     expected: str
@@ -37,6 +41,15 @@ def _configured_alias(primary: str, alias: str, *candidates: str) -> str:
     return _configured_path("", *candidates)
 
 
+def _project_asset(*relative_parts: str) -> str:
+    relative_path = Path(*relative_parts)
+    return _configured_path(
+        "",
+        str(_SOURCE_ROOT / relative_path),
+        str(_MODULE_DIR / relative_path),
+    )
+
+
 def _configured_bool(env_name: str, default: bool = False) -> bool:
     raw = os.environ.get(env_name)
     if raw is None or not raw.strip():
@@ -61,16 +74,14 @@ VOICE_DEBUG_AUDIO = _configured_bool("VOICE_DEBUG_AUDIO")
 VOICE_DEBUG_AUDIO_DIR = os.environ.get("VOICE_DEBUG_AUDIO_DIR", "debug_audio")
 PARAFORMER_MODEL_DIR = _configured_path(
     "PARAFORMER_MODEL_DIR",
-    "/home/ning/model/sherpa-onnx-paraformer-zh-2023-09-14",
-    "/opt/voice-control/models/paraformer",
+    _project_asset("models", "sherpa-onnx-paraformer-zh-2023-09-14"),
 )
 WAKE_WORD = os.environ.get("WAKE_WORD", "小西小西")
 # Dedicated KWS is substantially less prone to fuzzy-ASR false alarms.
 WAKE_DETECTOR_MODE = os.environ.get("WAKE_DETECTOR_MODE", "kws").strip().lower()
 WAKE_MODEL_DIR = _configured_path(
     "WAKE_MODEL_DIR",
-    "/home/ning/model/voice_models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20",
-    "/opt/voice-control/models/kws",
+    _project_asset("models", "sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20"),
 )
 WAKE_ASR_WINDOW_SEC = float(os.environ.get("WAKE_ASR_WINDOW_SEC", "2.5"))
 WAKE_ASR_CHECK_INTERVAL_SEC = float(
@@ -86,8 +97,7 @@ KWS_KEYWORDS_THRESHOLD = float(os.environ.get("KWS_KEYWORDS_THRESHOLD", "0.35"))
 
 VAD_MODEL_PATH = _configured_path(
     "VAD_MODEL_PATH",
-    "/home/ning/model/voice_models/vad/silero_vad.onnx",
-    "/opt/voice-control/models/vad/silero_vad.onnx",
+    _project_asset("models", "vad", "silero_vad.onnx"),
 )
 VAD_THRESHOLD = float(os.environ.get("VAD_THRESHOLD", "0.60"))
 VAD_SILENCE_DURATION_SEC = float(os.environ.get("VAD_SILENCE_DURATION_SEC", "1.0"))
@@ -112,10 +122,7 @@ ASR_MAX_GAIN = float(os.environ.get("ASR_MAX_GAIN", "3.0"))
 PIPER_MODEL_DIR = _configured_alias(
     "PIPER_MODEL_DIR",
     "TTS_MODEL_DIR",
-    str(Path(__file__).resolve().parent.parent / "tts/kokoro-multi-lang-v1_0"),
-    "/home/ning/model/lyz/src/voice_control/scripts/vits-piper-zh_CN-huayan-medium",
-    "/home/ning/model/voice_models/vits-piper-zh_CN-huayan-medium",
-    str(Path(__file__).resolve().parent / "vits-piper-zh_CN-huayan-medium"),
+    _project_asset("models", "tts", "kokoro-multi-lang-v1_0"),
 )
 TTS_MODEL_DIR = PIPER_MODEL_DIR
 TTS_MODEL_FILE = os.environ.get("TTS_MODEL_FILE", "").strip()

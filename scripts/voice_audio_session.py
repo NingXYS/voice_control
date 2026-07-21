@@ -7,25 +7,67 @@ import numpy as np
 
 class PersistentAudioSession:
     def __init__(self, device="default", sample_rate=16000, chunk_ms=100, channels=1):
+        if sample_rate <= 0:
+            raise ValueError("sample_rate must be positive")
+        if chunk_ms <= 0:
+            raise ValueError("chunk_ms must be positive")
+        if channels <= 0:
+            raise ValueError("channels must be positive")
         self.device = device
-        self.sample_rate = sample_rate
-        self.channels = channels
-        self.chunk_samples = sample_rate * chunk_ms // 1000
-        self.chunk_bytes = self.chunk_samples * channels * 2
+        self.sample_rate = int(sample_rate)
+        self.channels = int(channels)
+        self.chunk_samples = self.sample_rate * int(chunk_ms) // 1000
+        if self.chunk_samples <= 0:
+            raise ValueError("chunk_ms is shorter than one sample at sample_rate")
+        self.chunk_bytes = self.chunk_samples * self.channels * 2
         self._process = None
+
+    def _arecord_command(self) -> list[str]:
+        """Build the arecord argv for the configured hardware format."""
+        return [
+            "arecord",
+            "-q",
+            "-D",
+            self.device,
+            "-f",
+            "S16_LE",
+            "-c",
+            str(self.channels),
+            "-r",
+            str(self.sample_rate),
+            "-t",
+            "raw",
+        ]
+
+    def _stderr_text(self, process: subprocess.Popen | None) -> str:
+        if process is None or process.stderr is None:
+            return ""
+        try:
+            err = process.stderr.read() or b""
+        except (OSError, ValueError):
+            return ""
+        return err.decode("utf-8", errors="replace").strip()
 
     def open(self) -> None:
         if self._process is not None:
             return
-        self._process = subprocess.Popen(
-            [
-                "arecord", "-q", "-D", self.device, "-f", "S16_LE", "-c", "1",
-                "-r", str(self.sample_rate), "-t", "raw",
-            ],
+        process = subprocess.Popen(
+            self._arecord_command(),
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             bufsize=0,
         )
+        # Fail fast when ALSA already rejected the device/format. Delayed failures
+        # (busy device, late plug-path errors) still surface in read_chunk() with stderr.
+        code = process.poll()
+        if code is not None:
+            detail = self._stderr_text(process)
+            raise RuntimeError(
+                f"arecord failed to open device={self.device!r} "
+                f"rate={self.sample_rate} channels={self.channels}"
+                + (f": {detail}" if detail else f" (exit={code})")
+            )
+        self._process = process
 
     def read_chunk(self) -> np.ndarray:
         if self._process is None or self._process.stdout is None:
@@ -35,7 +77,11 @@ class PersistentAudioSession:
             part = self._process.stdout.read(self.chunk_bytes - len(data))
             if not part:
                 code = self._process.poll()
-                raise RuntimeError(f"arecord stopped unexpectedly (exit={code})")
+                detail = self._stderr_text(self._process)
+                message = f"arecord stopped unexpectedly (exit={code})"
+                if detail:
+                    message = f"{message}: {detail}"
+                raise RuntimeError(message)
             data.extend(part)
         samples = np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768.0
         if self.channels == 1:
@@ -88,3 +134,5 @@ class PersistentAudioSession:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=2)
+        # Drain stderr so a quiet arecord pipe cannot fill if warnings appeared.
+        self._stderr_text(process)

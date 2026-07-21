@@ -84,6 +84,9 @@ class VoiceWakeStartupTests(unittest.TestCase):
         self.assertIn("find_package(ament_cmake REQUIRED)", content)
         self.assertIn("install(PROGRAMS", content)
         self.assertIn("install(FILES", content)
+        self.assertIn('set(MODEL_ASSET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/models")', content)
+        self.assertIn('DESTINATION lib/${PROJECT_NAME}/models', content)
+        self.assertNotIn('set(TTS_ASSET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tts")', content)
         self.assertIn("ament_package()", content)
 
         # 3. controller specific packages and targets must be inside the if block
@@ -137,7 +140,11 @@ class VoiceWakeStartupTests(unittest.TestCase):
         self.assertIn("install_online", content)
         self.assertIn("voice_control/lib/voice_control/voice_wake_entry.py", content)
         self.assertIn("TTS_MODEL_DIR", content)
-        self.assertIn('${REPO_ROOT}/tts/kokoro-multi-lang-v1_0', content)
+        self.assertIn('${REPO_ROOT}/models/tts/kokoro-multi-lang-v1_0', content)
+        self.assertIn('${REPO_ROOT}/models/sherpa-onnx-paraformer-zh-2023-09-14', content)
+        self.assertIn('${REPO_ROOT}/models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20', content)
+        self.assertIn('${REPO_ROOT}/models/vad/silero_vad.onnx', content)
+        self.assertNotIn('$HOME/model/', content)
         self.assertIn('export TTS_MODEL_FILE="model.onnx"', content)
         self.assertIn('TTS_SPEAKER_ID:-47', content)
         self.assertIn('TTS_SPEED:-1.0', content)

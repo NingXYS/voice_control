@@ -10,15 +10,9 @@ import subprocess
 import tempfile
 import threading
 
-_MODEL_DIR = os.environ.get(
-    "PIPER_MODEL_DIR",
-    os.environ.get(
-        "TTS_MODEL_DIR",
-        os.path.expanduser(
-            "~/model/lyz/src/voice_control_online/tts/kokoro-multi-lang-v1_0"
-        ),
-    ),
-)
+from voice_runtime_config import PIPER_MODEL_DIR
+
+_MODEL_DIR = PIPER_MODEL_DIR
 _TARGET_SR = 44100  # 重采样目标采样率（22kHz 部分声卡不支持，统一升到 44.1kHz）
 
 

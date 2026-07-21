@@ -62,6 +62,36 @@ class AudioSessionTests(unittest.TestCase):
         self.assertAlmostEqual(float(samples[0, 0]), -1.0)
         self.assertAlmostEqual(float(samples[0, 1]), 32767 / 32768)
 
+    def test_arecord_command_uses_configured_channels_and_rate(self):
+        session = PersistentAudioSession(
+            device="hw:3,0",
+            sample_rate=48000,
+            chunk_ms=100,
+            channels=2,
+        )
+        command = session._arecord_command()
+        self.assertEqual(command[command.index("-D") + 1], "hw:3,0")
+        self.assertEqual(command[command.index("-c") + 1], "2")
+        self.assertEqual(command[command.index("-r") + 1], "48000")
+        self.assertEqual(session.chunk_bytes, 48000 * 100 // 1000 * 2 * 2)
+
+    def test_open_passes_channel_count_to_arecord(self):
+        session = PersistentAudioSession(
+            device="hw:3,0",
+            sample_rate=48000,
+            chunk_ms=100,
+            channels=2,
+        )
+        process = mock.Mock()
+        process.poll.return_value = None
+        process.stdout = mock.Mock()
+        process.stderr = mock.Mock()
+        with mock.patch("subprocess.Popen", return_value=process) as popen:
+            session.open()
+        args = popen.call_args.args[0]
+        self.assertEqual(args[args.index("-c") + 1], "2")
+        self.assertEqual(args[args.index("-r") + 1], "48000")
+
 
 class FakeAudio:
     def __init__(self, chunks):

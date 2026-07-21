@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from pathlib import Path
 from unittest import mock
 
 
@@ -11,6 +12,22 @@ import voice_runtime_config
 
 
 class VoiceRuntimeConfigTests(unittest.TestCase):
+    def test_default_model_assets_are_inside_project(self):
+        project_root = Path(ROOT).resolve()
+        model_paths = (
+            voice_runtime_config.PARAFORMER_MODEL_DIR,
+            voice_runtime_config.WAKE_MODEL_DIR,
+            voice_runtime_config.VAD_MODEL_PATH,
+            voice_runtime_config.PIPER_MODEL_DIR,
+        )
+
+        for model_path in model_paths:
+            with self.subTest(model_path=model_path):
+                self.assertTrue(
+                    Path(model_path).resolve().is_relative_to(project_root),
+                    model_path,
+                )
+
     def test_debug_audio_flag_rejects_unknown_value(self):
         with mock.patch.dict(os.environ, {"VOICE_DEBUG_AUDIO": "sometimes"}):
             with self.assertRaisesRegex(ValueError, "VOICE_DEBUG_AUDIO"):

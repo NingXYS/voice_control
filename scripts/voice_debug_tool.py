@@ -24,6 +24,7 @@ from voice_llm_client import (
     check_simple_action_command,  # Phase 3: 本地动作解析器
 )
 import voice_tts
+from voice_runtime_config import PARAFORMER_MODEL_DIR
 
 from latency_metrics import LatencyTracker, latency_logger  # Phase 0: 耗时追踪
 
@@ -34,7 +35,6 @@ os.environ['OMP_NUM_THREADS'] = '1'
 warnings.filterwarnings("ignore")
 
 # ==================== 模型配置 ====================
-PARAFORMER_MODEL_DIR = "/home/ning/model/sherpa-onnx-paraformer-zh-2023-09-14"
 SAMPLE_RATE = 16000
 AUDIO_FILE = "/tmp/voice_input.wav"
 AUDIO_DEVICE = "default"

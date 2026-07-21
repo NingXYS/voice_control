@@ -63,3 +63,6 @@ scripts/vits-piper-zh_CN-huayan-medium/
 .gitignore
 
 tts/
+
+voice_online/
+models/

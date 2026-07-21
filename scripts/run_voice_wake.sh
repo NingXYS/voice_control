@@ -50,10 +50,10 @@ VOICE_WAKE_VENV_DIR="${VOICE_WAKE_VENV_DIR:-${REPO_ROOT}/.venv_online}"
     source /opt/ros/humble/setup.bash
     source "${ONLINE_INSTALL_ROOT}/setup.bash"
 
-    export PARAFORMER_MODEL_DIR="${PARAFORMER_MODEL_DIR:-$HOME/model/sherpa-onnx-paraformer-zh-2023-09-14}"
-    export WAKE_MODEL_DIR="${WAKE_MODEL_DIR:-$HOME/model/voice_models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20}"
-    export VAD_MODEL_PATH="${VAD_MODEL_PATH:-$HOME/model/voice_models/vad/silero_vad.onnx}"
-    export TTS_MODEL_DIR="${TTS_MODEL_DIR:-${PIPER_MODEL_DIR:-${REPO_ROOT}/tts/kokoro-multi-lang-v1_0}}"
+    export PARAFORMER_MODEL_DIR="${PARAFORMER_MODEL_DIR:-${REPO_ROOT}/models/sherpa-onnx-paraformer-zh-2023-09-14}"
+    export WAKE_MODEL_DIR="${WAKE_MODEL_DIR:-${REPO_ROOT}/models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20}"
+    export VAD_MODEL_PATH="${VAD_MODEL_PATH:-${REPO_ROOT}/models/vad/silero_vad.onnx}"
+    export TTS_MODEL_DIR="${TTS_MODEL_DIR:-${PIPER_MODEL_DIR:-${REPO_ROOT}/models/tts/kokoro-multi-lang-v1_0}}"
     export PIPER_MODEL_DIR="${PIPER_MODEL_DIR:-${TTS_MODEL_DIR}}"
     if [ -z "${TTS_MODEL_FILE:-}" ]; then
         if [ -f "${TTS_MODEL_DIR}/model.onnx" ]; then
@@ -69,6 +69,10 @@ VOICE_WAKE_VENV_DIR="${VOICE_WAKE_VENV_DIR:-${REPO_ROOT}/.venv_online}"
     export DIFY_OUTPUT_KEY="${DIFY_OUTPUT_KEY:-result}"
     export AUDIO_DEVICE="${AUDIO_DEVICE:-default}"
     export APLAY_DEVICE="${APLAY_DEVICE:-default}"
+    # Hardware capture format (before CaptureFormatAdapter → 16 kHz mono).
+    # UGREEN MIC-CM581 example: hw:3,0 / 48000 / 2
+    export AUDIO_CAPTURE_SAMPLE_RATE="${AUDIO_CAPTURE_SAMPLE_RATE:-16000}"
+    export AUDIO_CAPTURE_CHANNELS="${AUDIO_CAPTURE_CHANNELS:-1}"
     export WAKE_DETECTOR_MODE="${WAKE_DETECTOR_MODE:-kws}"
 
     if [ -z "${DIFY_API_KEY:-}" ]; then
@@ -186,6 +190,19 @@ for lib in libs:
         echo "Check failed: 'arecord' command not found" >&2
         exit 1
     fi
+
+    if ! [[ "${AUDIO_CAPTURE_SAMPLE_RATE}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "Check failed: AUDIO_CAPTURE_SAMPLE_RATE must be a positive integer (got ${AUDIO_CAPTURE_SAMPLE_RATE})" >&2
+        exit 1
+    fi
+    if ! [[ "${AUDIO_CAPTURE_CHANNELS}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "Check failed: AUDIO_CAPTURE_CHANNELS must be a positive integer (got ${AUDIO_CAPTURE_CHANNELS})" >&2
+        exit 1
+    fi
+
+    echo "Capture config: AUDIO_DEVICE=${AUDIO_DEVICE} AUDIO_CAPTURE_SAMPLE_RATE=${AUDIO_CAPTURE_SAMPLE_RATE} AUDIO_CAPTURE_CHANNELS=${AUDIO_CAPTURE_CHANNELS}"
+    echo "Tip: for UGREEN CM581 use AUDIO_DEVICE=hw:N,0 AUDIO_CAPTURE_SAMPLE_RATE=48000 AUDIO_CAPTURE_CHANNELS=2"
+    echo "     smoke test: python3 scripts/voice_capture_smoke.py --probe-only"
 
     echo "All checks passed successfully."
 

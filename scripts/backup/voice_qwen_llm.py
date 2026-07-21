@@ -7,6 +7,7 @@ sys.path.insert(0, '/opt/ros/humble/lib/python3.10/site-packages')
 sys.path.insert(0, '/opt/ros/humble/local/lib/python3.10/dist-packages')
 
 import os
+from pathlib import Path
 import warnings
 import subprocess
 import threading
@@ -208,7 +209,10 @@ asr_model = None
 llama = None
 
 # Paraformer 模型路径
-PARAFORMER_MODEL_DIR = "/mnt/ssd/voice_control/models/sherpa-onnx/sherpa-onnx-paraformer-zh-2023-09-14"
+PARAFORMER_MODEL_DIR = os.environ.get(
+    "PARAFORMER_MODEL_DIR",
+    str(Path(__file__).resolve().parents[2] / "models/sherpa-onnx-paraformer-zh-2023-09-14"),
+)
 
 def load_models():
     global asr_model, llama

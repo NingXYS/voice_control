@@ -28,6 +28,7 @@ install(PROGRAMS
   scripts/voice_tts_node.py
   scripts/build_wake_keyword.py
   scripts/kws_sweep.py
+  scripts/voice_capture_smoke.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -63,15 +64,15 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/knowledge_base")
   )
 endif()
 
-set(PIPER_ASSET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/scripts/vits-piper-zh_CN-huayan-medium")
-if(EXISTS "${PIPER_ASSET_DIR}")
+set(MODEL_ASSET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/models")
+if(EXISTS "${MODEL_ASSET_DIR}")
   install(
-    DIRECTORY "${PIPER_ASSET_DIR}"
-    DESTINATION lib/${PROJECT_NAME}
+    DIRECTORY "${MODEL_ASSET_DIR}/"
+    DESTINATION lib/${PROJECT_NAME}/models
     PATTERN ".git" EXCLUDE
   )
 else()
-  message(STATUS "Piper model assets are external; set PIPER_MODEL_DIR at runtime")
+  message(FATAL_ERROR "Required model assets are missing: ${MODEL_ASSET_DIR}")
 endif()
 
 ament_package()
