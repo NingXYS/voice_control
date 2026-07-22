@@ -22,6 +22,27 @@ LOCAL_REPLY_RULES = [
         "reply": "我可以控制左右两条机械臂，支持关节旋转和空间移动。"
     },
     {
+        "keywords": [
+            "你有几条手臂", "有几条手臂", "几条手臂", "几个手臂", "几只手臂",
+            "多少条手臂", "有几个手臂", "有几只手臂", "机械臂有几个手臂",
+        ],
+        "reply": "我有左右两条手臂，是双臂机械臂。",
+    },
+    {
+        "keywords": [
+            "你有几个关节", "有几个关节", "几个关节", "多少个关节",
+            "每只手臂有几个关节", "每条手臂有几个关节", "一共几个关节",
+        ],
+        "reply": "左右两条手臂，各六个关节，一共十二个关节。",
+    },
+    {
+        "keywords": [
+            "你有几个自由度", "有几个自由度", "几个自由度", "多少自由度",
+            "自由度是多少", "几自由度",
+        ],
+        "reply": "每条手臂六个自由度，左右双臂各六个关节。",
+    },
+    {
         "keywords": ["左臂可以怎么动", "右臂可以怎么动", "你的左手可以怎么活动", "左臂怎么动", "右臂怎么动", "左手怎么活动"],
         "reply": "我可以控制左臂或右臂进行空间移动和关节旋转。"
     },
@@ -58,6 +79,12 @@ _CSV_RULES_CACHE = None
 # 若继续使用子串匹配，知识库中的“右臂”会吞掉所有包含右臂的控制指令。
 _EXACT_MATCH_ONLY_PHRASES = frozenset({"左臂", "右臂", "左手", "右手"})
 
+# 极短关键词（≤2 字）只允许整句匹配，避免环境闲聊误触发。
+_SHORT_EXACT_PHRASE_LEN = 2
+
+# 短语作为子串命中时，允许的前后缀总长度（如「请问」「我的设备」）。
+# 过长的环境人声（夹带关键词）会被拒绝。
+_MAX_MATCH_EXTRA_CHARS = 12
 
 def normalize_text(text: str) -> str:
     """
@@ -80,12 +107,40 @@ def normalize_text(text: str) -> str:
     return normalized.lower()
 
 
-def _collapse_repeated_prefix(text: str) -> str:
-    for width in range(1, min(4, len(text) // 2) + 1):
-        prefix = text[:width]
-        if text.startswith(prefix + prefix):
-            return prefix + text[2 * width:]
-    return text
+def collapse_repeated_prefix(text: str) -> str:
+    """Fold duplicated ASR onsets: 你有你有…→你有…, 左臂左臂…→左臂…, 左左臂…→左臂…
+
+    Prefer longer prefixes first so 「左臂」wins over single 「左」.
+    Repeat until stable for triple-ish stutters.
+    """
+    if not isinstance(text, str) or not text:
+        return text if isinstance(text, str) else ""
+    out = text
+    changed = True
+    while changed and out:
+        changed = False
+        max_width = min(6, len(out) // 2)
+        for width in range(max_width, 0, -1):
+            prefix = out[:width]
+            if out.startswith(prefix + prefix):
+                out = prefix + out[2 * width :]
+                changed = True
+                break
+    return out
+
+
+# Back-compat alias used by older call sites / tests.
+_collapse_repeated_prefix = collapse_repeated_prefix
+
+
+def repair_asr_text(text: str) -> str:
+    """Light ASR cleanup for duplicated onsets from VAD/pre-roll overlap."""
+    if not isinstance(text, str):
+        return ""
+    stripped = text.strip()
+    if not stripped:
+        return ""
+    return collapse_repeated_prefix(stripped)
 
 
 def is_safe_reply_payload(value: object) -> bool:
@@ -203,6 +258,33 @@ def _extract_and_normalize_phrases(rule: dict) -> list[str]:
     return [p for p in phrases if p]
 
 
+def _phrase_matches_candidate(phrase: str, candidate: str) -> bool:
+    """判断规范化短语是否与候选输入匹配。
+
+    - 手臂名等短词：仅整句相等。
+    - 其它：双向包含，但候选相对短语的多余字符受上限约束，
+      避免「介绍一下你吗能接一个人…」这类环境人声命中知识库。
+    - 极短关键词（≤2 字）使用更紧的多余字符上限。
+    """
+    if not phrase or not candidate:
+        return False
+    if phrase in _EXACT_MATCH_ONLY_PHRASES or candidate in _EXACT_MATCH_ONLY_PHRASES:
+        return candidate == phrase
+    if phrase == candidate:
+        return True
+    max_extra = (
+        min(_MAX_MATCH_EXTRA_CHARS, 6)
+        if len(phrase) <= _SHORT_EXACT_PHRASE_LEN
+        else _MAX_MATCH_EXTRA_CHARS
+    )
+    if phrase in candidate:
+        return (len(candidate) - len(phrase)) <= max_extra
+    if candidate in phrase:
+        # ASR 截断首字时，允许用更长标准问句兜住较短识别结果。
+        return (len(phrase) - len(candidate)) <= max_extra
+    return False
+
+
 def match_local_reply(text: str, rules: list[dict[str, object]] | None = None) -> dict[str, str] | None:
     """
     本地固定 reply 匹配。
@@ -210,7 +292,7 @@ def match_local_reply(text: str, rules: list[dict[str, object]] | None = None) -
     - 若输入为空，返回 None。
     - 若传入 rules，只使用传入规则；否则组合 LOCAL_REPLY_RULES 和 get_csv_reply_rules()。
     - “左臂/右臂/左手/右手”这类孤立手臂短语在匹配任一侧出现时，只允许整句匹配。
-    - 其他短语保持原有双向包含匹配策略。
+    - 其它短语使用受长度约束的双向包含，避免环境人声误命中。
     - 不得返回 action JSON，不得生成动作字段。
     """
     if not isinstance(text, str):
@@ -239,14 +321,9 @@ def match_local_reply(text: str, rules: list[dict[str, object]] | None = None) -
 
             phrases = _extract_and_normalize_phrases(rule)
             for phrase in phrases:
-                if phrase in _EXACT_MATCH_ONLY_PHRASES or candidate in _EXACT_MATCH_ONLY_PHRASES:
-                    matched = candidate == phrase
-                else:
-                    matched = (phrase in candidate) or (candidate in phrase)
-                if matched:
+                if _phrase_matches_candidate(phrase, candidate):
                     return {"reply": reply}
     return None
-
 
 def match_fixed_reply(text: str) -> dict[str, str] | None:
     """

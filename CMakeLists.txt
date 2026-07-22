@@ -28,6 +28,7 @@ install(PROGRAMS
   scripts/voice_tts_node.py
   scripts/build_wake_keyword.py
   scripts/kws_sweep.py
+  scripts/eval_kws.py
   scripts/voice_capture_smoke.py
   DESTINATION lib/${PROJECT_NAME}
 )

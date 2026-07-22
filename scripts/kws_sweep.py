@@ -147,6 +147,7 @@ def _evaluate(model_dir: Path, keyword_tokens: str, positives: list[Path], negat
             false_hits += hits
 
     recall = positive_hits / len(positives) if positives else 0.0
+    frr = 1.0 - recall
     far_per_hour = false_hits / negative_hours if negative_hours > 0 else 0.0
     return {
         "score": score,
@@ -154,6 +155,7 @@ def _evaluate(model_dir: Path, keyword_tokens: str, positives: list[Path], negat
         "positive_total": len(positives),
         "positive_hits": positive_hits,
         "wake_recall": recall,
+        "wake_frr": frr,
         "negative_total": len(negatives),
         "false_hits": false_hits,
         "negative_hours": negative_hours,

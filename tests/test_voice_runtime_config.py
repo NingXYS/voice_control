@@ -62,3 +62,19 @@ class VoiceRuntimeConfigTests(unittest.TestCase):
                 with mock.patch.object(voice_runtime_config, name, 0):
                     with self.assertRaisesRegex(ValueError, name):
                         voice_runtime_config.validate_runtime_config()
+
+    def test_audio_frontend_accepts_ns_mode(self):
+        with (
+            mock.patch.object(voice_runtime_config, "AUDIO_FRONTEND_MODE", "ns"),
+            mock.patch.object(voice_runtime_config, "_require_file"),
+        ):
+            voice_runtime_config.validate_runtime_config()
+
+    def test_ns_strength_must_be_non_negative(self):
+        with (
+            mock.patch.object(voice_runtime_config, "AUDIO_FRONTEND_MODE", "ns"),
+            mock.patch.object(voice_runtime_config, "AUDIO_FRONTEND_NS_STRENGTH", -1.0),
+            mock.patch.object(voice_runtime_config, "_require_file"),
+        ):
+            with self.assertRaisesRegex(ValueError, "VOICE_AUDIO_NS_STRENGTH"):
+                voice_runtime_config.validate_runtime_config()

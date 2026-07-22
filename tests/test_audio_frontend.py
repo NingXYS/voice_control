@@ -14,6 +14,7 @@ from voice_audio_frontend import (
     BasicAudioFrontend,
     DebugAudioConfig,
     FrontendAudioSession,
+    NoiseSuppressingAudioFrontend,
     PassthroughAudioFrontend,
     create_audio_frontend,
 )
@@ -59,8 +60,61 @@ class AudioFrontendTests(unittest.TestCase):
     def test_factory_rejects_unknown_mode(self):
         self.assertIsInstance(create_audio_frontend("passthrough"), PassthroughAudioFrontend)
         self.assertIsInstance(create_audio_frontend("basic"), BasicAudioFrontend)
+        self.assertIsInstance(create_audio_frontend("ns"), NoiseSuppressingAudioFrontend)
         with self.assertRaises(ValueError):
             create_audio_frontend("unknown")
+
+    def test_ns_preserves_chunk_shape_and_bounds(self):
+        rng = np.random.default_rng(0)
+        samples = (0.05 * rng.standard_normal(1600)).astype(np.float32)
+        frontend = NoiseSuppressingAudioFrontend(strength=1.0)
+        out = frontend.process(samples, 16000)
+        self.assertEqual(out.shape, samples.shape)
+        self.assertEqual(out.dtype, np.float32)
+        self.assertLessEqual(float(np.max(np.abs(out))), 1.0)
+
+    def test_ns_reduces_stationary_noise_energy(self):
+        rng = np.random.default_rng(1)
+        noise = (0.06 * rng.standard_normal(16000)).astype(np.float32)
+        frontend = NoiseSuppressingAudioFrontend(
+            strength=1.5,
+            min_gain=0.05,
+            noise_update=0.85,
+        )
+        # Warm-up + measure second half so noise PSD has converged.
+        processed = []
+        for index in range(0, noise.size, 1600):
+            chunk = noise[index : index + 1600]
+            processed.append(frontend.process(chunk, 16000))
+        out = np.concatenate(processed)
+        # Discard first 200 ms (algorithmic latency / warmup).
+        in_tail = noise[3200:]
+        out_tail = out[3200:]
+        in_rms = float(np.sqrt(np.mean(np.square(in_tail))))
+        out_rms = float(np.sqrt(np.mean(np.square(out_tail))))
+        self.assertLess(out_rms, in_rms * 0.75)
+
+    def test_ns_keeps_loud_tone_above_noise_floor(self):
+        rng = np.random.default_rng(2)
+        t = np.arange(16000, dtype=np.float32) / 16000.0
+        tone = (0.35 * np.sin(2.0 * np.pi * 300.0 * t)).astype(np.float32)
+        noise = (0.03 * rng.standard_normal(16000)).astype(np.float32)
+        mixed = tone + noise
+        frontend = NoiseSuppressingAudioFrontend(strength=1.0)
+        processed = []
+        for index in range(0, mixed.size, 1600):
+            processed.append(frontend.process(mixed[index : index + 1600], 16000))
+        out = np.concatenate(processed)
+        # Tone region should remain clearly above residual noise energy.
+        self.assertGreater(float(np.max(np.abs(out[4000:12000]))), 0.12)
+
+    def test_ns_reset_clears_state(self):
+        frontend = NoiseSuppressingAudioFrontend()
+        chunk = np.full(1600, 0.02, dtype=np.float32)
+        frontend.process(chunk, 16000)
+        frontend.reset()
+        self.assertIsNone(frontend._noise_psd)
+        self.assertEqual(frontend._out_buf.size, 0)
 
     def test_session_forwards_discard_and_close(self):
         class Source:

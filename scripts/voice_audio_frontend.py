@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Pluggable microphone audio front-end and transparent session wrapper.
 
-P1a deliberately keeps ``passthrough`` as the default production mode. The
-optional ``basic`` mode only performs conservative signal conditioning (DC
-blocking + slowly-smoothed RMS level control); it is not a full noise suppressor
-or acoustic echo canceller.
+Production default remains ``passthrough`` for clean A/B testing.
+
+Modes:
+* ``passthrough`` — no conditioning
+* ``basic`` — DC block + bounded RMS level control (not a noise suppressor)
+* ``ns`` — streaming spectral noise suppression (P1.1, NS-only, no AEC)
+
+``ns`` sits on the shared capture path so KWS / VAD / ASR all see denoised audio.
 """
 from __future__ import annotations
 
@@ -83,6 +87,178 @@ class BasicAudioFrontend(AudioFrontend):
             desired_gain = min(self.target_rms / rms, self.max_gain)
         self._gain = self.smoothing * self._gain + (1.0 - self.smoothing) * desired_gain
         return np.clip(conditioned * self._gain, -1.0, 1.0).astype(np.float32, copy=False)
+
+
+class NoiseSuppressingAudioFrontend(AudioFrontend):
+    """Streaming spectral noise suppressor (NS only — not AEC / not AGC).
+
+    Pipeline per hop (default 20 ms frame / 10 ms hop at 16 kHz):
+
+    1. STFT with periodic Hann window and 50% overlap-add
+    2. Recursive noise PSD estimate on low-energy frames
+    3. Wiener spectral gain with floor ``min_gain``
+    4. iSTFT + OLA, emitting exactly as many samples as received
+
+    Tuned for exhibition near-talk: AC / fan / distant chatter floors, while
+    keeping wake-word onsets usable. Strength maps to the Wiener noise weight.
+    """
+
+    def __init__(
+        self,
+        strength: float = 1.0,
+        min_gain: float = 0.08,
+        noise_update: float = 0.90,
+        speech_update: float = 0.998,
+        noise_margin: float = 1.8,
+        frame_ms: float = 20.0,
+        hop_ms: float = 10.0,
+    ) -> None:
+        if strength < 0.0 or not np.isfinite(strength):
+            raise ValueError("ns strength must be finite and non-negative")
+        if not 0.0 < min_gain <= 1.0:
+            raise ValueError("ns min_gain must be in (0, 1]")
+        if not 0.0 < noise_update < 1.0:
+            raise ValueError("ns noise_update must be in (0, 1)")
+        if not 0.0 < speech_update < 1.0:
+            raise ValueError("ns speech_update must be in (0, 1)")
+        if noise_margin < 1.0:
+            raise ValueError("ns noise_margin must be >= 1")
+        if frame_ms <= 0.0 or hop_ms <= 0.0 or hop_ms > frame_ms:
+            raise ValueError("ns frame_ms/hop_ms must satisfy 0 < hop_ms <= frame_ms")
+
+        self.strength = float(strength)
+        self.min_gain = float(min_gain)
+        self.noise_update = float(noise_update)
+        self.speech_update = float(speech_update)
+        self.noise_margin = float(noise_margin)
+        self.frame_ms = float(frame_ms)
+        self.hop_ms = float(hop_ms)
+
+        self._sample_rate: int | None = None
+        self._frame_size = 0
+        self._hop = 0
+        self._window = np.empty(0, dtype=np.float32)
+        self._in_buf = np.empty(0, dtype=np.float32)
+        self._out_buf = np.empty(0, dtype=np.float32)
+        self._ola = np.empty(0, dtype=np.float32)
+        self._noise_psd: np.ndarray | None = None
+        self._noise_power = 0.0
+        self._warmup_frames = 0
+
+    def reset(self) -> None:
+        self._sample_rate = None
+        self._frame_size = 0
+        self._hop = 0
+        self._window = np.empty(0, dtype=np.float32)
+        self._in_buf = np.empty(0, dtype=np.float32)
+        self._out_buf = np.empty(0, dtype=np.float32)
+        self._ola = np.empty(0, dtype=np.float32)
+        self._noise_psd = None
+        self._noise_power = 0.0
+        self._warmup_frames = 0
+
+    def _configure(self, sample_rate: int) -> None:
+        rate = int(sample_rate)
+        if rate <= 0:
+            raise ValueError("sample_rate must be positive")
+        if self._sample_rate == rate and self._frame_size > 0:
+            return
+        self._sample_rate = rate
+        frame_size = max(2, int(round(rate * self.frame_ms / 1000.0)))
+        # Prefer even sizes so rfft/irfft round-trip is clean.
+        if frame_size % 2:
+            frame_size += 1
+        hop = max(1, int(round(rate * self.hop_ms / 1000.0)))
+        hop = min(hop, frame_size)
+        # Periodic Hann → COLA with 50% overlap.
+        n = np.arange(frame_size, dtype=np.float64)
+        window = 0.5 - 0.5 * np.cos(2.0 * np.pi * n / frame_size)
+        self._frame_size = frame_size
+        self._hop = hop
+        self._window = window.astype(np.float32)
+        self._in_buf = np.empty(0, dtype=np.float32)
+        self._out_buf = np.empty(0, dtype=np.float32)
+        self._ola = np.zeros(frame_size, dtype=np.float32)
+        self._noise_psd = None
+        self._noise_power = 0.0
+        self._warmup_frames = 0
+
+    def _process_frame(self, frame: np.ndarray) -> None:
+        windowed = frame * self._window
+        spectrum = np.fft.rfft(windowed)
+        power = np.square(np.abs(spectrum)).astype(np.float64)
+        frame_power = float(np.mean(power))
+
+        if self._noise_psd is None:
+            self._noise_psd = power.copy()
+            self._noise_power = max(frame_power, 1e-12)
+            self._warmup_frames = 1
+        else:
+            # Warm-start from the first frames, then adapt quickly only when the
+            # frame looks like the noise floor so speech onsets are not learned
+            # into the estimate.
+            quiet = frame_power <= self._noise_power * self.noise_margin
+            if self._warmup_frames < 8:
+                alpha = self.noise_update
+                self._warmup_frames += 1
+            elif quiet:
+                alpha = self.noise_update
+            else:
+                alpha = self.speech_update
+            self._noise_psd = alpha * self._noise_psd + (1.0 - alpha) * power
+            self._noise_power = float(np.mean(self._noise_psd))
+
+        eps = 1e-10
+        # Wiener gain: speech_psd / (speech_psd + strength * noise_psd).
+        # strength > 1 subtracts more aggressively (exhibition floors).
+        post_snr = power / (self._noise_psd + eps)
+        gain = post_snr / (post_snr + self.strength + eps)
+        gain = np.maximum(gain, self.min_gain).astype(np.float64)
+        enhanced = spectrum * gain
+        restored = np.fft.irfft(enhanced, n=self._frame_size).astype(np.float32)
+        restored *= self._window
+
+        self._ola += restored
+        hop_out = self._ola[: self._hop].copy()
+        self._ola[:-self._hop] = self._ola[self._hop :]
+        self._ola[-self._hop :] = 0.0
+        if self._out_buf.size:
+            self._out_buf = np.concatenate((self._out_buf, hop_out))
+        else:
+            self._out_buf = hop_out
+
+    def process(self, samples: np.ndarray, sample_rate: int) -> np.ndarray:
+        audio = np.asarray(samples, dtype=np.float32)
+        if audio.ndim != 1:
+            raise ValueError("audio frontend expects mono samples")
+        if audio.size == 0:
+            return audio
+
+        self._configure(sample_rate)
+        if self._in_buf.size:
+            self._in_buf = np.concatenate((self._in_buf, audio))
+        else:
+            self._in_buf = audio.copy()
+
+        while self._in_buf.size >= self._frame_size:
+            frame = self._in_buf[: self._frame_size]
+            self._process_frame(frame)
+            self._in_buf = self._in_buf[self._hop :]
+
+        needed = audio.size
+        if self._out_buf.size >= needed:
+            out = self._out_buf[:needed].copy()
+            self._out_buf = self._out_buf[needed:]
+        else:
+            # Start-up latency / incomplete hop: pad trailing zeros so callers
+            # always receive a shape-preserving chunk for KWS/VAD.
+            pad = needed - self._out_buf.size
+            out = np.concatenate(
+                (self._out_buf, np.zeros(pad, dtype=np.float32)),
+            )
+            self._out_buf = np.empty(0, dtype=np.float32)
+
+        return np.clip(out, -1.0, 1.0).astype(np.float32, copy=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,11 +367,25 @@ class FrontendAudioSession:
                 self._opened = False
 
 
-def create_audio_frontend(mode: str, target_rms: float = 0.05,
-                          max_gain: float = 2.0) -> AudioFrontend:
+def create_audio_frontend(
+    mode: str,
+    target_rms: float = 0.05,
+    max_gain: float = 2.0,
+    ns_strength: float = 1.0,
+    ns_min_gain: float = 0.08,
+    ns_noise_update: float = 0.90,
+    ns_noise_margin: float = 1.8,
+) -> AudioFrontend:
     normalized = str(mode).strip().lower()
     if normalized == "passthrough":
         return PassthroughAudioFrontend()
     if normalized == "basic":
         return BasicAudioFrontend(target_rms=target_rms, max_gain=max_gain)
+    if normalized == "ns":
+        return NoiseSuppressingAudioFrontend(
+            strength=ns_strength,
+            min_gain=ns_min_gain,
+            noise_update=ns_noise_update,
+            noise_margin=ns_noise_margin,
+        )
     raise ValueError(f"unsupported audio frontend mode: {mode}")

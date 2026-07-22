@@ -14,6 +14,9 @@ Examples:
 
   # Only list cards and recommended env
   python3 scripts/voice_capture_smoke.py --probe-only
+
+  # Release PulseAudio/GNOME hold on UGREEN, then capture with hw: exclusive access
+  python3 scripts/voice_capture_smoke.py --free-device --seconds 5
 """
 from __future__ import annotations
 
@@ -22,6 +25,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import wave
 from dataclasses import dataclass
 from pathlib import Path
@@ -174,6 +178,99 @@ def resolve_capture_settings(args: argparse.Namespace) -> tuple[str, int, int]:
             print("No UGREEN-like capture card found; using configured defaults.", flush=True)
 
     return device, int(sample_rate), int(channels)
+
+
+def _pactl(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["pactl", *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+
+def list_pulse_ugreen_cards() -> list[str]:
+    """Return PulseAudio card names that look like the UGREEN USB mic."""
+    completed = _pactl("list", "short", "cards")
+    cards: list[str] = []
+    for line in (completed.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        name = parts[1]
+        blob = name.lower()
+        if "ugreen" in blob or "mic-cm581" in blob or "jinaudio_ugreen" in blob:
+            cards.append(name)
+    return cards
+
+
+def free_device_for_exclusive_capture(device: str | None = None) -> list[str]:
+    """Release desktop Pulse holds so ``hw:N,0`` can open exclusively.
+
+    Typical offender: GNOME Settings input peak meter keeping the UGREEN source
+    RUNNING under PulseAudio. Setting the USB card profile to ``off`` drops the
+    ALSA capture node.
+
+    Returns human-readable actions taken.
+    """
+    actions: list[str] = []
+    if not shutil_which("pactl"):
+        actions.append("pactl not found; cannot free PulseAudio holds automatically")
+        return actions
+
+    # Suspend sources that map to this ALSA device when possible.
+    card_index = None
+    if device:
+        match = re.search(r"hw:(\d+)", device)
+        if match:
+            card_index = match.group(1)
+
+    sources = _pactl("list", "short", "sources")
+    for line in (sources.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        name = parts[1]
+        low = name.lower()
+        if not (
+            "ugreen" in low
+            or "mic-cm581" in low
+            or "jinaudio_ugreen" in low
+            or (card_index is not None and f"card{card_index}" in low)
+        ):
+            continue
+        # Prefer real capture sources over .monitor
+        if name.endswith(".monitor"):
+            continue
+        result = _pactl("suspend-source", name, "1")
+        if result.returncode == 0:
+            actions.append(f"suspended source {name}")
+        else:
+            detail = (result.stderr or result.stdout or "").strip()
+            actions.append(f"suspend-source {name} failed: {detail or result.returncode}")
+
+    for card in list_pulse_ugreen_cards():
+        result = _pactl("set-card-profile", card, "off")
+        if result.returncode == 0:
+            actions.append(f"set-card-profile {card} off")
+        else:
+            detail = (result.stderr or result.stdout or "").strip()
+            actions.append(
+                f"set-card-profile {card} off failed: {detail or result.returncode}"
+            )
+
+    if not actions:
+        actions.append("no UGREEN PulseAudio card/source found to free")
+    # Give Pulse a moment to release the ALSA node.
+    time.sleep(0.25)
+    return actions
+
+
+def shutil_which(command: str) -> str | None:
+    from shutil import which
+
+    return which(command)
 
 
 def print_probe() -> int:
@@ -426,6 +523,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not write WAV output.",
     )
+    parser.add_argument(
+        "--free-device",
+        action="store_true",
+        help=(
+            "Before capture, release PulseAudio/GNOME holds on the UGREEN USB mic "
+            "(set card profile off) so hw:N,0 can open exclusively."
+        ),
+    )
     return parser
 
 
@@ -438,6 +543,12 @@ def main(argv: list[str] | None = None) -> int:
 
     device, capture_rate, capture_channels = resolve_capture_settings(args)
     out_dir = None if args.no_out else args.out
+
+    if args.free_device:
+        print("Freeing desktop holds on capture device...", flush=True)
+        for action in free_device_for_exclusive_capture(device):
+            print(f"  - {action}", flush=True)
+
     try:
         return run_smoke(
             device=device,
@@ -449,9 +560,46 @@ def main(argv: list[str] | None = None) -> int:
         )
     except Exception as exc:  # noqa: BLE001 - CLI boundary
         print(f"FAIL: {exc}", file=sys.stderr, flush=True)
+        busy = "忙" in str(exc) or "busy" in str(exc).lower()
+        # One automatic recovery attempt when the exclusive device is held.
+        if busy and not args.free_device:
+            print(
+                "Device busy — retrying after --free-device style Pulse release...",
+                flush=True,
+            )
+            for action in free_device_for_exclusive_capture(device):
+                print(f"  - {action}", flush=True)
+            try:
+                return run_smoke(
+                    device=device,
+                    capture_rate=capture_rate,
+                    capture_channels=capture_channels,
+                    seconds=args.seconds,
+                    chunk_ms=args.chunk_ms,
+                    out_dir=out_dir,
+                )
+            except Exception as retry_exc:  # noqa: BLE001
+                print(f"FAIL after free-device retry: {retry_exc}", file=sys.stderr, flush=True)
+                exc = retry_exc
+                busy = "忙" in str(exc) or "busy" in str(exc).lower()
+
+        print("Hints:", file=sys.stderr, flush=True)
+        if busy:
+            print(
+                "  - Device busy: GNOME Settings peak meter / PulseAudio often holds UGREEN.\n"
+                "    Close GNOME Settings, then either:\n"
+                "      python3 scripts/voice_capture_smoke.py --free-device --seconds 5\n"
+                "    or:\n"
+                "      pasuspender -- env AUDIO_DEVICE=hw:3,0 \\\n"
+                "        AUDIO_CAPTURE_SAMPLE_RATE=48000 AUDIO_CAPTURE_CHANNELS=2 \\\n"
+                "        python3 scripts/voice_capture_smoke.py --seconds 5\n"
+                "    Manual release:\n"
+                "      pactl set-card-profile "
+                "alsa_card.usb-JinAudio_UGREEN_USB_MIC-CM581_202508010032-00 off",
+                file=sys.stderr,
+                flush=True,
+            )
         print(
-            "Hints:\n"
-            "  - If device busy: stop PulseAudio capture or use another app exclusivity fix.\n"
             "  - UGREEN CM581 native formats are 44100/48000/96000, stereo (not 16k mono).\n"
             "  - Prefer: AUDIO_DEVICE=hw:N,0 AUDIO_CAPTURE_SAMPLE_RATE=48000 "
             "AUDIO_CAPTURE_CHANNELS=2\n"

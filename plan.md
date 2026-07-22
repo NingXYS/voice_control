@@ -36,10 +36,10 @@ VOICE_ENABLE_ROBOT_COMMAND=0
 
 ### 3.1 推荐复制方式
 
-在源机执行复制。复制前设置源目录和 Jetson 的 SSH 地址；不要使用 `--delete`，避免误删 Jetson 上已有文件。
+在源机执行复制。迁移时复制当前目录已经准备好的 `voice_online/` 打包目录，不要直接把整个开发仓库复制到 Jetson。复制前设置 Jetson 的 SSH 地址；不要使用 `--delete`，避免误删 Jetson 上已有文件。
 
 ```bash
-SOURCE_ROOT=/home/ning/model/lyz/src/voice_control_online
+SOURCE_ROOT=/home/ning/model/lyz/src/voice_control_online/voice_online
 TARGET_ROOT=/opt/voice_control_online
 JETSON_HOST=<jetson用户名>@<jetson地址>
 
@@ -77,6 +77,8 @@ scripts/voice_space_wake.py
 scripts/voice_tts_node.py
 scripts/build_wake_keyword.py
 scripts/kws_sweep.py
+scripts/eval_kws.py
+scripts/voice_capture_smoke.py
 scripts/voice_runtime_config.py
 scripts/voice_wake_word.py
 scripts/voice_command_vad.py
@@ -101,6 +103,14 @@ scripts/latency_metrics.py
 ```
 
 其中 `voice_qwen_llm.py` 虽然不是本在线入口的活动入口，但当前 `CMakeLists.txt` 仍将它列为安装文件。为避免构建时缺文件，按上表复制；不得使用它启动运行时。
+
+以下运行配置和设备诊断文件也必须复制：
+
+```text
+scripts/env.ugreen.example
+```
+
+`CMakeLists.txt` 当前还会安装 `eval_kws.py` 和 `voice_capture_smoke.py`；如果漏掉这两个文件，overlay 构建或后续 KWS/麦克风验收会与源码不一致。
 
 ### 3.3 必须完整复制的模型资产
 
@@ -147,7 +157,19 @@ models/
 
 KWS 当前唤醒词为 `小西小西`，由 `models/.../keywords.txt` 和 `WAKE_WORD` 配置共同决定。不要把 KWS 目录误认为 ASR 目录，也不要因为没有单独找到另一个“唤醒文件”而删除该目录。
 
-### 3.4 Dify 导入文件
+### 3.4 KWS 评估数据和验收测试
+
+为了让 Jetson 上的自动化 AI 能执行当前新增的 KWS 和采集验收，以下内容也必须同步：
+
+```text
+datasets/wake/
+kws_eval_office_defaults.csv
+tests/
+```
+
+`datasets/wake/` 是当前项目已有的唤醒正例/负例数据集，约 2.1 MB、31 个文件；它用于 `scripts/eval_kws.py` 的离线比较，不是运行时模型。`kws_eval_office_defaults.csv` 是已有结果基线，不能当作 Jetson 当前硬件的新验收结果，AI 必须在 Jetson 重新执行评估并另存结果。
+
+### 3.5 Dify 导入文件
 
 复制以下文件到 Jetson 或 Dify 管理机，实际导入 Dify 的文件是：
 
@@ -163,7 +185,7 @@ scripts/generate_dify_dsl_v06.py
 
 在 Dify 中导入并发布 `voice_ros2_dify_v06.yml`。Workflow 输入变量必须是 `text`，最终输出变量必须是 `result`。YAML 中的 LLM 节点 provider/model 为空或待绑定状态，必须在 Dify UI 中配置一个可从 Dify 服务器访问的远程/云端模型并发布 Workflow。
 
-### 3.5 不需要复制或安装的内容
+### 3.6 不需要复制或安装的内容
 
 以下内容不属于本次在线版最小迁移集：
 
@@ -175,6 +197,8 @@ scripts/generate_dify_dsl_v06.py
 项目源机的 __pycache__/
 项目源机的 .git/
 scripts/backup/
+debug_audio_capture_smoke/
+运行过程中生成的 `kws_eval_results.csv`
 本包内的 src/robot_controller.cpp（当前构建明确关闭）
 Ollama
 llama.cpp
@@ -223,14 +247,17 @@ sudo apt install -y \
   git \
   curl \
   alsa-utils \
+  pulseaudio-utils \
   libsndfile1
 ```
 
-`alsa-utils` 必须提供 `arecord` 和 `aplay`：
+`alsa-utils` 必须提供 `arecord` 和 `aplay`；`pulseaudio-utils` 提供 UGREEN 麦克风被桌面 PulseAudio/GNOME 占用时所需的 `pactl`、`pasuspender`：
 
 ```bash
 command -v arecord
 command -v aplay
+command -v pactl
+command -v pasuspender
 arecord -l
 aplay -l
 ```
@@ -297,10 +324,37 @@ DIFY_OUTPUT_KEY=result
 DIFY_TIMEOUT_SEC=60
 AUDIO_DEVICE=default
 APLAY_DEVICE=default
+AUDIO_CAPTURE_SAMPLE_RATE=16000
+AUDIO_CAPTURE_CHANNELS=1
 WAKE_DETECTOR_MODE=kws
 WAKE_WORD=小西小西
 VOICE_ENABLE_ROBOT_COMMAND=0
 ```
+
+当前新增音频处理配置：
+
+```text
+VOICE_AUDIO_FRONTEND=passthrough|basic|ns
+VOICE_AUDIO_NS_STRENGTH=1.0
+VOICE_AUDIO_NS_MIN_GAIN=0.08
+VOICE_AUDIO_NS_NOISE_UPDATE=0.90
+VOICE_AUDIO_NS_NOISE_MARGIN=1.8
+VOICE_COMMAND_VAD_GATE=segment|frame|off
+SPEECH_MIN_RMS=0.003
+SPEECH_MIN_SNR_DB=2.0
+```
+
+生产默认仍是 `VOICE_AUDIO_FRONTEND=passthrough`，用于和 `basic`、`ns` 做可重复 A/B 对比；`ns` 是频谱降噪，不是 AEC，也不会消除机械臂扬声器回声。`VOICE_COMMAND_VAD_GATE=segment` 是当前默认值，它先让 Silero VAD 看到真实音频，再对完整片段做 RMS/SNR 质量门控，避免吞掉指令首音节。除非 KWS/ASR 验收有证据要求，否则不要自动切换生产默认值。
+
+UGREEN MIC-CM581 如果在 Jetson 上出现，优先使用仓库中的配置示例：
+
+```bash
+cd /opt/voice_control_online
+source scripts/env.ugreen.example
+python3 scripts/voice_capture_smoke.py --probe-only
+```
+
+该设备通常需要硬件采集格式 `48000 Hz / 2 channels`，再由 `CaptureFormatAdapter` 转换为运行时使用的 16 kHz 单声道。卡号可能因重新插拔变化，不能永久假设 `hw:3,0`。
 
 当前 `run_voice_wake.sh` 不自动读取这个文件。交互式启动前必须执行：
 
@@ -359,7 +413,15 @@ test -f package.xml
 test -f requirements/voice-wake.txt
 test -f scripts/run_voice_wake.sh
 test -f scripts/setup_voice_wake.sh
+test -f scripts/env.ugreen.example
+test -f scripts/eval_kws.py
+test -f scripts/voice_capture_smoke.py
 test -f knowledge_base/robot_knowledge.csv
+test -f scripts/voice_ros2_dify_v06.yml
+test -d datasets/wake/positive
+test -d datasets/wake/negative
+test -f kws_eval_office_defaults.csv
+test -d tests
 test -f models/sherpa-onnx-paraformer-zh-2023-09-14/model.int8.onnx
 test -f models/sherpa-onnx-paraformer-zh-2023-09-14/tokens.txt
 test -f models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20/encoder.onnx
@@ -378,8 +440,8 @@ test -d models/tts/kokoro-multi-lang-v1_0/dict
 通过条件：所有 `test` 命令退出码为 0，且 `find models -type f` 的数量和源机清单一致。必须在源机生成清单，并把清单本身复制到 Jetson 后校验；不要只校验 Jetson 自己生成的清单：
 
 ```bash
-# 源机执行：生成以项目根目录为基准的清单
-cd /home/ning/model/lyz/src/voice_control_online
+# 源机执行：对待复制的 voice_online 打包目录生成清单
+cd /home/ning/model/lyz/src/voice_control_online/voice_online
 find models -type f -print0 | sort -z | xargs -0 sha256sum > /tmp/voice_control_online.models.sha256
 scp /tmp/voice_control_online.models.sha256 <jetson用户名>@<jetson地址>:/tmp/voice_control_online.models.sha256
 
@@ -437,7 +499,7 @@ for m in (numpy, soundfile, sherpa_onnx, pypinyin, requests):
 
 ### 任务 4：执行静态测试、overlay 新鲜度和启动预检
 
-引用：`tests/test_voice_runtime_config.py`、`tests/test_voice_wake_startup.py`、`tests/test_wake_modules.py`、`tests/test_online_voice_phase1.py`、`tests/test_wake_entry_regressions.py`、`scripts/run_voice_wake.sh`。
+引用：`tests/test_voice_runtime_config.py`、`tests/test_voice_wake_startup.py`、`tests/test_wake_modules.py`、`tests/test_online_voice_phase1.py`、`tests/test_wake_entry_regressions.py`、`tests/test_capture_smoke.py`、`tests/test_eval_kws.py`、`scripts/run_voice_wake.sh`、`scripts/eval_kws.py`、`scripts/voice_capture_smoke.py`。
 
 执行：
 
@@ -450,14 +512,17 @@ PYTHONPATH="$PWD/scripts" .venv_online/bin/python -m py_compile \
   scripts/voice_wake_word.py scripts/voice_command_vad.py \
   scripts/voice_asr_backend.py scripts/voice_text_pipeline.py \
   scripts/voice_dialogue_backend.py scripts/voice_local_knowledge.py \
-  scripts/voice_tts.py scripts/voice_tts_backend.py
+  scripts/voice_tts.py scripts/voice_tts_backend.py \
+  scripts/eval_kws.py scripts/voice_capture_smoke.py
 
 PYTHONPATH="$PWD/scripts" .venv_online/bin/python -m unittest \
   tests.test_voice_runtime_config \
   tests.test_voice_wake_startup \
   tests.test_wake_modules \
   tests.test_online_voice_phase1 \
-  tests.test_wake_entry_regressions
+  tests.test_wake_entry_regressions \
+  tests.test_capture_smoke \
+  tests.test_eval_kws
 ```
 
 然后注入真实 Dify Key 执行：
@@ -470,11 +535,11 @@ cd /opt/voice_control_online
 bash scripts/run_voice_wake.sh --check
 ```
 
-通过条件：测试退出码为 0；`--check` 输出 `All checks passed successfully.`；没有 stale overlay、模型缺失、Python 污染路径或 `arecord` 缺失。
+通过条件：测试退出码为 0；`--check` 输出 `All checks passed successfully.`；没有 stale overlay、模型缺失、Python 污染路径或 `arecord` 缺失；启动预检同时打印硬件采样率/通道数和 `VOICE_AUDIO_FRONTEND`。
 
 ### 任务 5：验证音频设备
 
-引用：`scripts/run_voice_wake.sh`、`scripts/voice_runtime_config.py`。
+引用：`scripts/run_voice_wake.sh`、`scripts/voice_runtime_config.py`、`scripts/voice_capture_smoke.py`、`scripts/env.ugreen.example`。
 
 先列设备：
 
@@ -485,7 +550,27 @@ aplay -l
 aplay -L
 ```
 
-使用实际设备做五秒录放回环。默认设备可用时：
+优先使用当前新增的采集冒烟工具，因为它会经过与生产一致的 `CaptureFormatAdapter`，并检查有效音量和削波：
+
+```bash
+cd /opt/voice_control_online
+source /etc/voice_control_online.env
+python3 scripts/voice_capture_smoke.py --probe-only
+python3 scripts/voice_capture_smoke.py --free-device --seconds 5 \
+  --out migration_acceptance/capture_smoke
+```
+
+如果检测到 UGREEN MIC-CM581，使用其实际卡号和原生格式；卡号发生变化时以 `--probe-only` 输出为准：
+
+```bash
+source scripts/env.ugreen.example
+python3 scripts/voice_capture_smoke.py --free-device --seconds 5 \
+  --out migration_acceptance/capture_smoke_ugreen
+```
+
+该工具应输出 `PASS: capture adapter path produced valid 16 kHz mono audio.`。如果没有该设备，使用实际设备参数执行同一工具，不要强行套用 `hw:3,0`。
+
+默认设备可用时，也可以做原始 ALSA 录放回环：
 
 ```bash
 arecord -D default -f S16_LE -r 16000 -c 1 -d 5 /tmp/voice_control_online_mic.wav
@@ -493,6 +578,29 @@ aplay -D default /tmp/voice_control_online_mic.wav
 ```
 
 如果默认设备不可用，必须把实际设备名写入 `/etc/voice_control_online.env` 的 `AUDIO_DEVICE` 和 `APLAY_DEVICE`，然后重复回环测试。通过条件：录音成功、播放成功、能听到录音内容；失败时记录 `arecord -l/-L` 和 `aplay -l/-L`，不能修改模型采样率来掩盖设备问题。
+
+### 任务 5A：执行当前 KWS 离线评估
+
+引用：`datasets/wake/`、`scripts/eval_kws.py`、`scripts/kws_sweep.py`、`kws_eval_office_defaults.csv`。
+
+在 Jetson 本机执行当前项目随包提供的数据集评估，结果不能覆盖已有基线：
+
+```bash
+cd /opt/voice_control_online
+mkdir -p migration_acceptance
+PYTHONPATH="$PWD/scripts" .venv_online/bin/python scripts/eval_kws.py \
+  --dataset-root datasets/wake \
+  --frontends passthrough,ns \
+  --scores 1.0,1.5,2.0,2.5,3.0 \
+  --thresholds 0.15,0.20,0.25,0.30,0.35,0.40 \
+  --recommend-max-far 0.5 \
+  --output migration_acceptance/kws_eval_jetson.csv \
+  | tee migration_acceptance/kws_eval_jetson.log
+```
+
+通过条件：命令退出码为 0，CSV 结果存在并包含 `wake_recall`、`wake_frr`、`false_wake_per_hour`、`mean_trigger_sec` 和 `p95_trigger_sec` 字段。AI 必须报告是否找到满足 FAR/h 预算的推荐配置；如果没有推荐配置，不能擅自调整阈值或把基线 CSV 当成当前硬件结果，应标记为需要新增真实机械臂麦克风数据。
+
+该离线评估只验证随包 WAV 数据集，不替代真实 Jetson 麦克风验收。`VOICE_AUDIO_FRONTEND=ns` 的结果只能作为 A/B 证据，不能未经比较就改成生产默认值。
 
 ### 任务 6：验证 Dify Workflow 在线请求
 
@@ -529,7 +637,8 @@ bash scripts/run_voice_wake.sh
 3. 再说“查询左臂状态”或其他安全查询指令。
 4. 观察日志出现识别输入和处理输出。
 5. 确认 Dify 返回结果进入 TTS，日志出现 `TTS initialized` 或 `TTS warmup done`，并听到语音。
-6. 另开终端确认没有启动本包机器人控制器：
+6. 记录启动日志中的 `Audio frontend` 和 `Command VAD gate`，确认它们与当前环境文件一致；默认应为 `passthrough` 和 `segment`。
+7. 另开终端确认没有启动本包机器人控制器：
 
 ```bash
 pgrep -af 'robot_controller|voice_wake_entry.py'
@@ -578,8 +687,11 @@ bash scripts/run_voice_wake.sh
 - ASR、KWS、VAD、TTS 模型和所有辅助资产 SHA-256 一致。
 - `scripts/run_voice_wake.sh --check` 输出成功。
 - 音频录制和播放成功。
+- `voice_capture_smoke.py` 能通过生产采集适配器生成有效的 16 kHz 单声道音频；如果使用 UGREEN，已完成 PulseAudio 占用释放或明确记录设备不可用原因。
+- `eval_kws.py` 已在随包数据集上生成 Jetson 评估 CSV，报告 recall、FRR、FAR/h 和触发延迟；不能用旧基线冒充新结果。
 - Dify Workflow 请求成功，存在 `data.outputs.result`。
 - 无动作模式下可以完成唤醒、ASR、Dify、TTS 端到端链路。
+- 当前新增的 `ns` 和 `segment` 配置已通过单元测试；生产默认没有未经证据自动改成 `ns` 或 `frame`。
 - 无 Ollama、无 GGUF、无源机绝对模型路径依赖。
 
 ### 任一项失败都不能宣称迁移完成
@@ -605,6 +717,9 @@ ${TARGET_ROOT}/migration_acceptance/build.log
 ${TARGET_ROOT}/migration_acceptance/unit-tests.log
 ${TARGET_ROOT}/migration_acceptance/launcher-check.log
 ${TARGET_ROOT}/migration_acceptance/audio-devices.txt
+${TARGET_ROOT}/migration_acceptance/capture_smoke.log
+${TARGET_ROOT}/migration_acceptance/kws_eval_jetson.csv
+${TARGET_ROOT}/migration_acceptance/kws_eval_jetson.log
 ${TARGET_ROOT}/migration_acceptance/dify-response-redacted.json
 ${TARGET_ROOT}/migration_acceptance/voice-e2e.log
 ${TARGET_ROOT}/migration_acceptance/acceptance-summary.md
@@ -624,12 +739,20 @@ scripts/voice_dialogue_backend.py
 scripts/voice_wake_entry.py
 scripts/voice_wake_runtime.py
 scripts/voice_tts.py
+scripts/voice_audio_frontend.py
+scripts/voice_command_vad.py
+scripts/voice_capture_smoke.py
+scripts/eval_kws.py
+scripts/env.ugreen.example
 CMakeLists.txt
 package.xml
 requirements/voice-wake.txt
 scripts/voice_ros2_dify_v06.yml
 knowledge_base/robot_knowledge.csv
 models/
+datasets/wake/
+kws_eval_office_defaults.csv
+tests/
 ```
 
 本次范围不包括修改程序代码、不包括迁移 Dify 数据库、不包括安装 Ollama、不包括编译本包 C++ 机械臂控制器、不包括真实动作安全验证。真实动作必须在无动作端到端验收通过后由机械臂负责人单独授权。

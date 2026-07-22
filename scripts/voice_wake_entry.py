@@ -21,9 +21,14 @@ from voice_runtime_config import (
     CAPTURE_SAMPLE_RATE,
     AUDIO_FRONTEND_MAX_GAIN,
     AUDIO_FRONTEND_MODE,
+    AUDIO_FRONTEND_NS_MIN_GAIN,
+    AUDIO_FRONTEND_NS_NOISE_MARGIN,
+    AUDIO_FRONTEND_NS_NOISE_UPDATE,
+    AUDIO_FRONTEND_NS_STRENGTH,
     AUDIO_FRONTEND_TARGET_RMS,
     COMMAND_MAX_DURATION_SEC,
     COMMAND_START_TIMEOUT_SEC,
+    COMMAND_VAD_GATE,
     KWS_NUM_THREADS,
     POST_TTS_GUARD_DURATION_SEC,
     PROMPT_GUARD_DURATION_SEC,
@@ -95,6 +100,10 @@ def _build_audio_session():
         AUDIO_FRONTEND_MODE,
         target_rms=AUDIO_FRONTEND_TARGET_RMS,
         max_gain=AUDIO_FRONTEND_MAX_GAIN,
+        ns_strength=AUDIO_FRONTEND_NS_STRENGTH,
+        ns_min_gain=AUDIO_FRONTEND_NS_MIN_GAIN,
+        ns_noise_update=AUDIO_FRONTEND_NS_NOISE_UPDATE,
+        ns_noise_margin=AUDIO_FRONTEND_NS_NOISE_MARGIN,
     )
     return FrontendAudioSession(
         capture,
@@ -116,11 +125,27 @@ def main():
         if not container.dialogue_backend.configured:
             print("⚠️ DIFY_API_KEY is not configured; Dify requests will be skipped")
 
+        if AUDIO_FRONTEND_MODE == "ns":
+            frontend_detail = (
+                f"strength={AUDIO_FRONTEND_NS_STRENGTH}, "
+                f"min_gain={AUDIO_FRONTEND_NS_MIN_GAIN}, "
+                f"noise_update={AUDIO_FRONTEND_NS_NOISE_UPDATE}, "
+                f"noise_margin={AUDIO_FRONTEND_NS_NOISE_MARGIN}"
+            )
+        else:
+            frontend_detail = (
+                f"target_rms={AUDIO_FRONTEND_TARGET_RMS}, "
+                f"max_gain={AUDIO_FRONTEND_MAX_GAIN}"
+            )
         print(
             "🎚️ Audio frontend: "
             f"{AUDIO_FRONTEND_MODE} "
-            f"(target_rms={AUDIO_FRONTEND_TARGET_RMS}, max_gain={AUDIO_FRONTEND_MAX_GAIN}, "
-            f"debug_audio={VOICE_DEBUG_AUDIO})",
+            f"({frontend_detail}, debug_audio={VOICE_DEBUG_AUDIO})",
+            flush=True,
+        )
+        print(
+            f"🎛️ Command VAD gate: {COMMAND_VAD_GATE} "
+            f"(segment=keep onsets; frame=legacy hard-zero)",
             flush=True,
         )
         runtime = WakeWordRuntime(

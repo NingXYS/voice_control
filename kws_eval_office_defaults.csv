@@ -1,0 +1,3 @@
+frontend,score,threshold,positive_total,positive_hits,wake_recall,wake_frr,negative_total,false_hits,negative_hours,false_wake_per_hour,mean_trigger_sec,p95_trigger_sec,positive_runtime_sec,negative_runtime_sec,condition_recall,condition_far_per_hour
+passthrough,1.5,0.35,11,10,0.9090909090909091,0.09090909090909094,8,0,0.008888888888888889,0.0,2.7,3.0,0.3546472409980197,0.4713162090010883,close_10cm=1.000;close_30cm=0.875,conversation=0.000
+ns,1.5,0.35,11,9,0.8181818181818182,0.18181818181818177,8,0,0.008888888888888889,0.0,2.6666666666666665,3.0,0.37170074300411216,0.46589153700006136,close_10cm=1.000;close_30cm=0.750,conversation=0.000

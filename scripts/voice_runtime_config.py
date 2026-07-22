@@ -70,6 +70,15 @@ CAPTURE_CHANNELS = int(os.environ.get("AUDIO_CAPTURE_CHANNELS", "1"))
 AUDIO_FRONTEND_MODE = os.environ.get("VOICE_AUDIO_FRONTEND", "passthrough").strip().lower()
 AUDIO_FRONTEND_TARGET_RMS = float(os.environ.get("VOICE_AUDIO_FRONTEND_TARGET_RMS", "0.05"))
 AUDIO_FRONTEND_MAX_GAIN = float(os.environ.get("VOICE_AUDIO_FRONTEND_MAX_GAIN", "2.0"))
+# P1.1 spectral NS knobs (only used when VOICE_AUDIO_FRONTEND=ns).
+AUDIO_FRONTEND_NS_STRENGTH = float(os.environ.get("VOICE_AUDIO_NS_STRENGTH", "1.0"))
+AUDIO_FRONTEND_NS_MIN_GAIN = float(os.environ.get("VOICE_AUDIO_NS_MIN_GAIN", "0.08"))
+AUDIO_FRONTEND_NS_NOISE_UPDATE = float(
+    os.environ.get("VOICE_AUDIO_NS_NOISE_UPDATE", "0.90")
+)
+AUDIO_FRONTEND_NS_NOISE_MARGIN = float(
+    os.environ.get("VOICE_AUDIO_NS_NOISE_MARGIN", "1.8")
+)
 VOICE_DEBUG_AUDIO = _configured_bool("VOICE_DEBUG_AUDIO")
 VOICE_DEBUG_AUDIO_DIR = os.environ.get("VOICE_DEBUG_AUDIO_DIR", "debug_audio")
 PARAFORMER_MODEL_DIR = _configured_path(
@@ -99,14 +108,24 @@ VAD_MODEL_PATH = _configured_path(
     "VAD_MODEL_PATH",
     _project_asset("models", "vad", "silero_vad.onnx"),
 )
-VAD_THRESHOLD = float(os.environ.get("VAD_THRESHOLD", "0.60"))
+# Slightly lower than 0.60 so soft first syllables (e.g. 左/你) start speech sooner.
+VAD_THRESHOLD = float(os.environ.get("VAD_THRESHOLD", "0.50"))
 VAD_SILENCE_DURATION_SEC = float(os.environ.get("VAD_SILENCE_DURATION_SEC", "1.0"))
-VAD_MIN_SPEECH_DURATION_SEC = float(os.environ.get("VAD_MIN_SPEECH_DURATION_SEC", "0.30"))
+VAD_MIN_SPEECH_DURATION_SEC = float(os.environ.get("VAD_MIN_SPEECH_DURATION_SEC", "0.25"))
+# Default 0: Silero segments already include onset; prepending caused "你有你有/左臂左臂".
+# Set >0 only when A/B proves first-char loss without it (e.g. 0.20–0.28).
+VAD_PRE_ROLL_SEC = float(os.environ.get("VAD_PRE_ROLL_SEC", "0.0"))
 
 COMMAND_START_TIMEOUT_SEC = float(os.environ.get("COMMAND_START_TIMEOUT_SEC", "4.0"))
 COMMAND_MAX_DURATION_SEC = float(os.environ.get("COMMAND_MAX_DURATION_SEC", "15.0"))
-SPEECH_MIN_RMS = float(os.environ.get("SPEECH_MIN_RMS", "0.006"))
-SPEECH_MIN_SNR_DB = float(os.environ.get("SPEECH_MIN_SNR_DB", "4.0"))
+# Segment-level quality gate after Silero (P1.3). Defaults are softer than the
+# old frame hard-zero path so quiet near-talk commands keep their first syllable.
+SPEECH_MIN_RMS = float(os.environ.get("SPEECH_MIN_RMS", "0.003"))
+SPEECH_MIN_SNR_DB = float(os.environ.get("SPEECH_MIN_SNR_DB", "2.0"))
+# segment = quality-check completed utterances (default)
+# frame   = legacy hard-zero of low-energy frames before VAD
+# off     = no RMS/SNR gate (Silero only)
+COMMAND_VAD_GATE = os.environ.get("VOICE_COMMAND_VAD_GATE", "segment").strip().lower()
 
 VOICE_SESSION_TIMEOUT_SEC = float(os.environ.get("VOICE_SESSION_TIMEOUT_SEC", "60"))
 WAKE_COOLDOWN_SEC = float(os.environ.get("WAKE_COOLDOWN_SEC", "1.5"))
@@ -144,12 +163,22 @@ def validate_runtime_config() -> None:
         raise ValueError("WAKE_WORD must not be empty")
     if WAKE_DETECTOR_MODE not in {"asr", "kws"}:
         raise ValueError("WAKE_DETECTOR_MODE must be asr or kws")
-    if AUDIO_FRONTEND_MODE not in {"passthrough", "basic"}:
-        raise ValueError("VOICE_AUDIO_FRONTEND must be passthrough or basic")
+    if AUDIO_FRONTEND_MODE not in {"passthrough", "basic", "ns"}:
+        raise ValueError("VOICE_AUDIO_FRONTEND must be passthrough, basic, or ns")
     if not 0.0 < AUDIO_FRONTEND_TARGET_RMS <= 1.0:
         raise ValueError("VOICE_AUDIO_FRONTEND_TARGET_RMS must be between 0 and 1")
     if AUDIO_FRONTEND_MAX_GAIN < 1.0 or not math.isfinite(AUDIO_FRONTEND_MAX_GAIN):
         raise ValueError("VOICE_AUDIO_FRONTEND_MAX_GAIN must be finite and at least 1")
+    if AUDIO_FRONTEND_NS_STRENGTH < 0.0 or not math.isfinite(AUDIO_FRONTEND_NS_STRENGTH):
+        raise ValueError("VOICE_AUDIO_NS_STRENGTH must be finite and non-negative")
+    if not 0.0 < AUDIO_FRONTEND_NS_MIN_GAIN <= 1.0:
+        raise ValueError("VOICE_AUDIO_NS_MIN_GAIN must be between 0 and 1 (exclusive of 0)")
+    if not 0.0 < AUDIO_FRONTEND_NS_NOISE_UPDATE < 1.0:
+        raise ValueError("VOICE_AUDIO_NS_NOISE_UPDATE must be between 0 and 1")
+    if AUDIO_FRONTEND_NS_NOISE_MARGIN < 1.0 or not math.isfinite(
+        AUDIO_FRONTEND_NS_NOISE_MARGIN
+    ):
+        raise ValueError("VOICE_AUDIO_NS_NOISE_MARGIN must be finite and >= 1")
     if CAPTURE_SAMPLE_RATE <= 0:
         raise ValueError("AUDIO_CAPTURE_SAMPLE_RATE must be positive")
     if CAPTURE_CHANNELS <= 0:
@@ -173,6 +202,7 @@ def validate_runtime_config() -> None:
         ("COMMAND_MAX_DURATION_SEC", COMMAND_MAX_DURATION_SEC),
         ("VAD_SILENCE_DURATION_SEC", VAD_SILENCE_DURATION_SEC),
         ("VAD_MIN_SPEECH_DURATION_SEC", VAD_MIN_SPEECH_DURATION_SEC),
+        ("VAD_PRE_ROLL_SEC", VAD_PRE_ROLL_SEC),
         ("WAKE_COOLDOWN_SEC", WAKE_COOLDOWN_SEC),
         ("PROMPT_GUARD_DURATION_SEC", PROMPT_GUARD_DURATION_SEC),
         ("POST_TTS_GUARD_DURATION_SEC", POST_TTS_GUARD_DURATION_SEC),
@@ -181,7 +211,8 @@ def validate_runtime_config() -> None:
     ):
         if not math.isfinite(value) or value < 0:
             raise ValueError(f"{name} must be finite and non-negative")
-
+    if VAD_PRE_ROLL_SEC > 1.0:
+        raise ValueError("VAD_PRE_ROLL_SEC must be <= 1.0")
     if WAKE_ASR_WINDOW_SEC <= 0 or WAKE_ASR_CHECK_INTERVAL_SEC <= 0:
         raise ValueError("wake ASR timing values must be positive")
     if not 0.0 <= WAKE_MATCH_THRESHOLD <= 1.0:
@@ -190,6 +221,8 @@ def validate_runtime_config() -> None:
         raise ValueError("VAD_THRESHOLD must be between 0 and 1")
     if not 0.0 <= SPEECH_MIN_RMS <= 1.0:
         raise ValueError("SPEECH_MIN_RMS must be between 0 and 1")
+    if COMMAND_VAD_GATE not in {"segment", "frame", "off"}:
+        raise ValueError("VOICE_COMMAND_VAD_GATE must be segment, frame, or off")
     if not 0.0 < ASR_TARGET_RMS <= 1.0:
         raise ValueError("ASR_TARGET_RMS must be between 0 and 1")
     if ASR_MAX_GAIN < 1.0:

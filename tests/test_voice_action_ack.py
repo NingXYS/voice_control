@@ -74,7 +74,8 @@ class VoiceActionAcknowledgementTests(unittest.TestCase):
         self.assertEqual(result, commands)
         self.assertEqual(spoken, [])
 
-    def test_does_not_acknowledge_when_robot_execution_is_disabled(self):
+    def test_still_acknowledges_when_robot_execution_is_disabled(self):
+        """执行未启用时仍播报确认，终端可看到解析结果且语音反馈一致。"""
         spoken = []
         commands = [
             {
@@ -95,7 +96,7 @@ class VoiceActionAcknowledgementTests(unittest.TestCase):
         )
 
         self.assertEqual(result, commands)
-        self.assertEqual(spoken, [])
+        self.assertEqual(spoken, [voice_text_pipeline.ACTION_EXECUTION_REPLY])
 
 
 if __name__ == "__main__":

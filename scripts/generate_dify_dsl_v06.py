@@ -36,7 +36,12 @@ def main(user_text: str) -> dict:
         return {'intent': 'local_action'}
     if is_complete_action:
         return {'intent': 'control_action'}
-    if any(keyword in text for keyword in ('有什么限制', '支持哪些关节', '移动多远', '坐标系', '怎么下达指令', '指令格式', '指令要求', '机械臂可以', '抓取', '拿东西', '放东西', '能旋转', '可以旋转')):
+    if any(keyword in text for keyword in (
+        '有什么限制', '支持哪些关节', '移动多远', '坐标系', '怎么下达指令', '指令格式', '指令要求',
+        '机械臂可以', '抓取', '拿东西', '放东西', '能旋转', '可以旋转',
+        '几条手臂', '几个手臂', '几只手臂', '多少条手臂', '几个关节', '多少个关节',
+        '几个自由度', '多少自由度', '自由度', '有几条手臂', '有几个关节', '有几个自由度',
+    )):
         return {'intent': 'robot_knowledge'}
     if any(keyword in text for keyword in ('你是谁', '你叫什么', '你是什么', '介绍', '你能做什么', '你会做什么', '你会干什么', '你能干什么', '功能', '你好', '您好', '谢谢', '感谢', '辛苦了', '唱歌', '唱首歌', '唱一首', '跳舞', '天气', '气温', '下雨', '联网', '上网', '在线检索')):
         return {'intent': 'fixed_reply'}
@@ -55,6 +60,12 @@ def main(user_text: str) -> dict:
         reply = '我无法查询天气。我可以帮助控制左右两条机械臂。'
     elif any(keyword in text for keyword in ('联网', '上网', '在线检索')):
         reply = '我不能联网检索。我可以帮助控制左右两条机械臂。'
+    elif any(keyword in text for keyword in ('几条手臂', '几个手臂', '几只手臂', '多少条手臂', '有几条手臂', '有几个手臂')):
+        reply = '我有左右两条手臂，是双臂机械臂。'
+    elif any(keyword in text for keyword in ('几个关节', '多少个关节', '有几个关节', '一共几个关节')):
+        reply = '左右两条手臂，各六个关节，一共十二个关节。'
+    elif any(keyword in text for keyword in ('几个自由度', '多少自由度', '有几个自由度', '自由度')):
+        reply = '每条手臂六个自由度，左右双臂各六个关节。'
     elif any(keyword in text for keyword in ('你能做什么', '你会做什么', '你会干什么', '你能干什么', '你有什么功能', '你支持哪些指令', '你能控制什么', '你支持哪些动作', '功能')):
         reply = '我可以控制左右两条机械臂，支持关节旋转和空间移动。'
     elif any(keyword in text for keyword in ('你是谁', '你叫什么', '你是什么', '介绍一下自己', '介绍自己', '介绍一下你', '自我介绍', '介绍你')):
@@ -64,7 +75,6 @@ def main(user_text: str) -> dict:
     else:
         reply = '你好！我是机械臂控制助手，请问有什么可以帮您？'
     return {'result': json.dumps({'reply': reply}, ensure_ascii=False)}"""
-
 LOCAL_ACTION_CODE = """import json
 import math
 import re

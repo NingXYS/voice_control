@@ -724,10 +724,58 @@ class LocalReplyCommandTests(unittest.TestCase):
             "能不能联网",
             "谢谢",
             "早上好",
+            "你有几条手臂",
+            "有几条手臂",
+            "我的设备你有几条手臂",
+            "你有几个关节",
+            "有几个关节",
+            "你有几个自由度",
+            "有几个自由度",
         ]
         for text in texts:
             with self.subTest(text=text):
                 self._assert_reply_only(text)
+
+    def test_ambient_chatter_does_not_hit_local_knowledge(self):
+        """环境人声夹带关键词时不应命中本地知识库。"""
+        texts = [
+            "你能介绍一下你吗能接一个人你还打一嘴",
+            "你会干什么就只能当个什么三号位家人看看可能还有扭泳的",
+        ]
+        for text in texts:
+            with self.subTest(text=text):
+                self.assertIsNone(check_local_reply_command(text))
+
+    def test_duplicated_onset_asr_still_hits_local_reply(self):
+        """ASR 首字重复时应折叠后命中本地问答/动作路径。"""
+        import voice_local_knowledge as local_knowledge
+        from voice_text_pipeline import process_text
+
+        self.assertEqual(
+            local_knowledge.repair_asr_text("你有你有几个关节"),
+            "你有几个关节",
+        )
+        self.assertEqual(
+            local_knowledge.repair_asr_text("左臂左臂向下二十厘米"),
+            "左臂向下二十厘米",
+        )
+        self.assertEqual(
+            local_knowledge.repair_asr_text("左左臂向下二十厘米"),
+            "左臂向下二十厘米",
+        )
+        self._assert_reply_only("你有你有几个关节")
+        self._assert_reply_only("你有你有几个自由度")
+
+        class DialogueMustNotRun:
+            def run(self, _text):
+                raise AssertionError("repaired local Q&A must not call dialogue")
+
+        result = process_text(
+            "你有你有几个关节",
+            dialogue=DialogueMustNotRun(),
+        )
+        self.assertIsNotNone(result)
+        self.assertIn("关节", result[0]["reply"])
 
     def test_explicit_action_commands_miss_local_reply_and_parse_as_actions(self):
         """明确动作指令不被本地 reply 吞掉，仍由动作解析器命中。"""

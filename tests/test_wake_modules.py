@@ -461,12 +461,13 @@ class CommandVadDetectorApiTests(unittest.TestCase):
             detector.accept_audio(np.array([1.0, 0.0], dtype=np.float32))
 
         self.assertTrue(detector.speech_started)
-        self.assertEqual(detector._vad.config.silero_vad.threshold, 0.6)
+        self.assertEqual(detector._vad.config.silero_vad.threshold, 0.5)
         segment = detector.pop_segment()
         self.assertIsNotNone(segment)
         np.testing.assert_allclose(segment, np.array([0.1, 0.2], dtype=np.float32))
 
-    def test_filters_quiet_audio_before_vad(self):
+    def test_segment_gate_forwards_quiet_onset_to_vad(self):
+        """P1.3: weak frames must reach Silero (no pre-VAD hard zero)."""
         class FakeVad:
             def __init__(self, config, buffer_size_in_seconds=60):
                 self.accepted = []
@@ -496,13 +497,193 @@ class CommandVadDetectorApiTests(unittest.TestCase):
             SileroVadModelConfig=FakeSileroVadModelConfig,
             VoiceActivityDetector=FakeVad,
         )
-        with mock.patch.dict(sys.modules, {"sherpa_onnx": fake_module}, clear=False):
+        with (
+            mock.patch.object(voice_command_vad, "COMMAND_VAD_GATE", "segment"),
+            mock.patch.dict(sys.modules, {"sherpa_onnx": fake_module}, clear=False),
+        ):
+            detector = voice_command_vad.CommandVadDetector("/tmp/vad.onnx", 0.25, 0.9)
+            quiet = np.full(1600, 0.001, dtype=np.float32)
+            louder = np.full(1600, 0.02, dtype=np.float32)
+            detector.accept_audio(quiet)
+            detector.accept_audio(louder)
+
+        np.testing.assert_allclose(detector._vad.accepted[0], quiet)
+        np.testing.assert_allclose(detector._vad.accepted[1], louder)
+
+    def test_pre_roll_is_prepended_when_speech_starts_after_quiet_frames(self):
+        """P1.4: recover weak first syllable via onset pre-roll."""
+        class FakeSpeech:
+            def __init__(self, samples):
+                self.samples = samples
+
+        class FakeVad:
+            def __init__(self, config, buffer_size_in_seconds=60):
+                self._segments = []
+                self._speech = False
+
+            def accept_waveform(self, samples):
+                audio = np.asarray(samples, dtype=np.float32)
+                rms = float(np.sqrt(np.mean(np.square(audio))))
+                if rms >= 0.01:
+                    self._speech = True
+                    # Silero-like segment that misses the preceding quiet onset.
+                    self._segments.append(FakeSpeech(audio.copy()))
+
+            def empty(self):
+                return not self._segments
+
+            @property
+            def front(self):
+                return self._segments[0]
+
+            def pop(self):
+                self._segments.pop(0)
+
+            def is_speech_detected(self):
+                return self._speech
+
+            def reset(self):
+                self._segments = []
+                self._speech = False
+
+        class FakeSileroVadModelConfig:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        class FakeVadModelConfig:
+            def __init__(self):
+                self.silero_vad = None
+
+        fake_module = types.SimpleNamespace(
+            VadModelConfig=FakeVadModelConfig,
+            SileroVadModelConfig=FakeSileroVadModelConfig,
+            VoiceActivityDetector=FakeVad,
+        )
+        with (
+            mock.patch.object(voice_command_vad, "COMMAND_VAD_GATE", "segment"),
+            mock.patch.object(voice_command_vad, "VAD_PRE_ROLL_SEC", 0.1),
+            mock.patch.object(voice_command_vad, "SPEECH_MIN_RMS", 0.001),
+            mock.patch.object(voice_command_vad, "SPEECH_MIN_SNR_DB", 0.0),
+            mock.patch.dict(sys.modules, {"sherpa_onnx": fake_module}, clear=False),
+        ):
+            detector = voice_command_vad.CommandVadDetector("/tmp/vad.onnx", 0.25, 0.9)
+            quiet = np.full(800, 0.002, dtype=np.float32)
+            speech = np.full(800, 0.05, dtype=np.float32)
+            detector.accept_audio(quiet)
+            detector.accept_audio(speech)
+            segment = detector.pop_segment()
+
+        self.assertIsNotNone(segment)
+        # Quiet onset should appear before the stronger speech frames.
+        self.assertGreaterEqual(segment.size, quiet.size + speech.size)
+        np.testing.assert_allclose(segment[: quiet.size], quiet)
+        np.testing.assert_allclose(segment[-speech.size :], speech)
+    def test_frame_gate_still_hard_zeros_quiet_frames(self):
+        class FakeVad:
+            def __init__(self, config, buffer_size_in_seconds=60):
+                self.accepted = []
+
+            def accept_waveform(self, samples):
+                self.accepted.append(np.asarray(samples, dtype=np.float32).copy())
+
+            def empty(self):
+                return True
+
+            def is_speech_detected(self):
+                return False
+
+            def reset(self):
+                self.accepted.clear()
+
+        class FakeSileroVadModelConfig:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        class FakeVadModelConfig:
+            def __init__(self):
+                self.silero_vad = None
+
+        fake_module = types.SimpleNamespace(
+            VadModelConfig=FakeVadModelConfig,
+            SileroVadModelConfig=FakeSileroVadModelConfig,
+            VoiceActivityDetector=FakeVad,
+        )
+        with (
+            mock.patch.object(voice_command_vad, "COMMAND_VAD_GATE", "frame"),
+            mock.patch.dict(sys.modules, {"sherpa_onnx": fake_module}, clear=False),
+        ):
             detector = voice_command_vad.CommandVadDetector("/tmp/vad.onnx", 0.25, 0.9)
             detector.accept_audio(np.full(1600, 0.001, dtype=np.float32))
             detector.accept_audio(np.full(1600, 0.02, dtype=np.float32))
 
         np.testing.assert_allclose(detector._vad.accepted[0], 0.0)
         np.testing.assert_allclose(detector._vad.accepted[1], 0.02)
+
+    def test_segment_gate_drops_noise_only_completed_segments(self):
+        class FakeSpeech:
+            def __init__(self, samples):
+                self.samples = samples
+
+        class FakeVad:
+            def __init__(self, config, buffer_size_in_seconds=60):
+                self._segments = []
+                self._speech = False
+
+            def accept_waveform(self, samples):
+                audio = np.asarray(samples, dtype=np.float32)
+                # Emit a tiny noise segment when energy is very low.
+                if float(np.sqrt(np.mean(np.square(audio)))) < 0.002:
+                    self._segments.append(FakeSpeech(audio.copy()))
+                else:
+                    self._segments.append(FakeSpeech(audio.copy()))
+                    self._speech = True
+
+            def empty(self):
+                return not self._segments
+
+            @property
+            def front(self):
+                return self._segments[0]
+
+            def pop(self):
+                self._segments.pop(0)
+
+            def is_speech_detected(self):
+                return self._speech
+
+            def reset(self):
+                self._segments = []
+                self._speech = False
+
+        class FakeSileroVadModelConfig:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        class FakeVadModelConfig:
+            def __init__(self):
+                self.silero_vad = None
+
+        fake_module = types.SimpleNamespace(
+            VadModelConfig=FakeVadModelConfig,
+            SileroVadModelConfig=FakeSileroVadModelConfig,
+            VoiceActivityDetector=FakeVad,
+        )
+        with (
+            mock.patch.object(voice_command_vad, "COMMAND_VAD_GATE", "segment"),
+            mock.patch.object(voice_command_vad, "SPEECH_MIN_RMS", 0.01),
+            mock.patch.object(voice_command_vad, "SPEECH_MIN_SNR_DB", 10.0),
+            mock.patch.dict(sys.modules, {"sherpa_onnx": fake_module}, clear=False),
+        ):
+            detector = voice_command_vad.CommandVadDetector("/tmp/vad.onnx", 0.25, 0.9)
+            # Noise-only segment should be dropped by segment quality gate.
+            detector.accept_audio(np.full(1600, 0.0005, dtype=np.float32))
+            self.assertIsNone(detector.pop_segment())
+            # Louder speech-like segment should be kept (may include pre-roll).
+            detector.accept_audio(np.full(1600, 0.05, dtype=np.float32))
+            kept = detector.pop_segment()
+            self.assertIsNotNone(kept)
+            self.assertGreaterEqual(kept.size, 1600)
+            np.testing.assert_allclose(kept[-1600:], 0.05)
 
 
 class AsrWakeWordDetectorApiTests(unittest.TestCase):

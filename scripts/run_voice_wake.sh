@@ -200,9 +200,12 @@ for lib in libs:
         exit 1
     fi
 
+    export VOICE_AUDIO_FRONTEND="${VOICE_AUDIO_FRONTEND:-passthrough}"
     echo "Capture config: AUDIO_DEVICE=${AUDIO_DEVICE} AUDIO_CAPTURE_SAMPLE_RATE=${AUDIO_CAPTURE_SAMPLE_RATE} AUDIO_CAPTURE_CHANNELS=${AUDIO_CAPTURE_CHANNELS}"
+    echo "Audio frontend: VOICE_AUDIO_FRONTEND=${VOICE_AUDIO_FRONTEND}"
     echo "Tip: for UGREEN CM581 use AUDIO_DEVICE=hw:N,0 AUDIO_CAPTURE_SAMPLE_RATE=48000 AUDIO_CAPTURE_CHANNELS=2"
-    echo "     smoke test: python3 scripts/voice_capture_smoke.py --probe-only"
+    echo "     smoke test: python3 scripts/voice_capture_smoke.py --free-device --seconds 5"
+    echo "     NS A/B: VOICE_AUDIO_FRONTEND=passthrough|basic|ns"
 
     echo "All checks passed successfully."
 

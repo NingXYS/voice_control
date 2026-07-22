@@ -5,6 +5,12 @@ import time
 
 import numpy as np
 
+try:
+    from voice_local_knowledge import repair_asr_text
+except ImportError:  # pragma: no cover - optional when module path differs
+    def repair_asr_text(text: str) -> str:
+        return text.strip() if isinstance(text, str) else ""
+
 
 class VoiceState(Enum):
     WAITING_WAKE_WORD = auto()
@@ -142,7 +148,19 @@ class WakeWordRuntime:
                 self.state = VoiceState.PROCESSING
                 try:
                     text = self.asr_callback(audio, self.sample_rate)
-                    print(f"🗣️ 识别输入: {text or '<未识别>'}", flush=True)
+                    if text:
+                        repaired = repair_asr_text(text)
+                        if repaired and repaired != text.strip():
+                            print(
+                                f"🗣️ 识别输入: {repaired}（已折叠重复首字: {text}）",
+                                flush=True,
+                            )
+                            text = repaired
+                        else:
+                            text = repaired or text
+                            print(f"🗣️ 识别输入: {text or '<未识别>'}", flush=True)
+                    else:
+                        print("🗣️ 识别输入: <未识别>", flush=True)
                     if text:
                         result = self.process_callback(text, self._reply_speaker)
                         print(

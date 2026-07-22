@@ -35,6 +35,45 @@ class OnlineVoicePhase1Tests(unittest.TestCase):
         )
         speaker.assert_called_once_with(result[0]["reply"])
 
+    def test_hardware_qa_hits_local_knowledge(self):
+        speaker = mock.Mock()
+
+        class DialogueMustNotRun:
+            def run(self, _text):
+                raise AssertionError("hardware Q&A must bypass Dify")
+
+        for text, needle in (
+            ("你有几个自由度", "自由度"),
+            ("你有几个关节", "关节"),
+            ("有几条手臂", "手臂"),
+        ):
+            with self.subTest(text=text):
+                speaker.reset_mock()
+                result = voice_text_pipeline.process_text(
+                    text,
+                    speaker=speaker,
+                    dialogue=DialogueMustNotRun(),
+                )
+                self.assertIsNotNone(result)
+                self.assertIn("reply", result[0])
+                self.assertIn(needle, result[0]["reply"])
+
+    def test_ambient_long_chatter_is_rejected_without_dify(self):
+        speaker = mock.Mock()
+
+        class DialogueMustNotRun:
+            def run(self, _text):
+                raise AssertionError("ambient chatter must not call Dify")
+
+        result = voice_text_pipeline.process_text(
+            "你会干什么就只能当个什么三号位家人看看可能还有扭泳的",
+            speaker=speaker,
+            dialogue=DialogueMustNotRun(),
+        )
+        self.assertIsNotNone(result)
+        self.assertIn("reply", result[0])
+        self.assertIn("听清", result[0]["reply"])
+
     def test_local_route_preserves_action_text_for_dialogue(self):
 
         class Executor:

@@ -643,8 +643,10 @@ def check_local_reply_command(text, tracker=None):
         return None
 
     # 3c. 混合意图过滤：含有手臂/运动词，并且含有任意回复/问答类的特征词时，作为混合意图安全 miss
-    arm_motion_words = ["左臂", "右臂", "左手", "右手", "关节", "向上", "向下", "向前", "向后", "向左", "向右"]
-    if any(word in text for word in arm_motion_words):
+    # 注意：纯硬件问答（几个关节/几条手臂/自由度）不含动作方向，应继续走本地 fixed reply。
+    arm_motion_words = ["左臂", "右臂", "左手", "右手", "向上", "向下", "向前", "向后", "向左", "向右"]
+    hardware_qa_words = ["几个关节", "几条手臂", "几个手臂", "几只手臂", "几个自由度", "自由度", "多少个关节", "多少条手臂"]
+    if any(word in text for word in arm_motion_words) and not any(w in text for w in hardware_qa_words):
         reply_characteristic_words = [
             "你是谁", "你叫什么", "介绍", "功能", "支持", "指令", "限制", "联网", "谢谢",
             "感谢", "早上好", "做什么", "能做什么", "干什么", "能干什么"
@@ -653,7 +655,6 @@ def check_local_reply_command(text, tracker=None):
             if tracker:
                 tracker.mark("local_reply_parser_end")
             return None
-
     # 4. 调用 voice_local_knowledge.match_fixed_reply 获取本地固定/CSV 匹配
     res = match_fixed_reply(text)
     if res is not None:

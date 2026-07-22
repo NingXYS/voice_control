@@ -41,6 +41,9 @@ class DifyIntentRoutingTests(unittest.TestCase):
             ("请先说明坐标系再让左臂向上二十厘米", "control_action"),
             ("左臂向下", "ambiguous_control"),
             ("机器人的坐标系怎么定义", "robot_knowledge"),
+            ("你有几个关节", "robot_knowledge"),
+            ("你有几个自由度", "robot_knowledge"),
+            ("有几条手臂", "robot_knowledge"),
             ("讲一个历史故事", "complex_fallback"),
         ):
             with self.subTest(user_text=user_text):
