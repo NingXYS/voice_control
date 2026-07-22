@@ -112,9 +112,10 @@ VAD_MODEL_PATH = _configured_path(
 VAD_THRESHOLD = float(os.environ.get("VAD_THRESHOLD", "0.50"))
 VAD_SILENCE_DURATION_SEC = float(os.environ.get("VAD_SILENCE_DURATION_SEC", "1.0"))
 VAD_MIN_SPEECH_DURATION_SEC = float(os.environ.get("VAD_MIN_SPEECH_DURATION_SEC", "0.25"))
-# Default 0: Silero segments already include onset; prepending caused "你有你有/左臂左臂".
-# Set >0 only when A/B proves first-char loss without it (e.g. 0.20–0.28).
-VAD_PRE_ROLL_SEC = float(os.environ.get("VAD_PRE_ROLL_SEC", "0.0"))
+# Prepend a short ring of audio before Silero marks speech. Helps quiet first
+# syllables (左/你). Dedup in CommandVadDetector + repair_asr_text collapses
+# accidental 「左臂左臂」/「你有你有」. 0 disables. Typical useful range 0.12–0.28.
+VAD_PRE_ROLL_SEC = float(os.environ.get("VAD_PRE_ROLL_SEC", "0.18"))
 
 COMMAND_START_TIMEOUT_SEC = float(os.environ.get("COMMAND_START_TIMEOUT_SEC", "4.0"))
 COMMAND_MAX_DURATION_SEC = float(os.environ.get("COMMAND_MAX_DURATION_SEC", "15.0"))
@@ -128,7 +129,10 @@ SPEECH_MIN_SNR_DB = float(os.environ.get("SPEECH_MIN_SNR_DB", "2.0"))
 COMMAND_VAD_GATE = os.environ.get("VOICE_COMMAND_VAD_GATE", "segment").strip().lower()
 
 VOICE_SESSION_TIMEOUT_SEC = float(os.environ.get("VOICE_SESSION_TIMEOUT_SEC", "60"))
-WAKE_COOLDOWN_SEC = float(os.environ.get("WAKE_COOLDOWN_SEC", "1.5"))
+# Short anti double-wake after a turn. Combined with POST_TTS_GUARD this is the
+# blackout before the next "小西小西" is accepted. Was 1.5s and felt like "dead"
+# if the user re-woke immediately after TTS.
+WAKE_COOLDOWN_SEC = float(os.environ.get("WAKE_COOLDOWN_SEC", "0.6"))
 PROMPT_GUARD_DURATION_SEC = float(os.environ.get("PROMPT_GUARD_DURATION_SEC", "0.25"))
 POST_TTS_GUARD_DURATION_SEC = float(
     os.environ.get("POST_TTS_GUARD_DURATION_SEC", "0.45")

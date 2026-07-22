@@ -4,10 +4,10 @@ P1.3: do **not** hard-zero low-energy frames before Silero VAD. Quiet onsets
 (e.g. the first syllable of a command spoken softly) were being wiped, so ASR
 saw truncated phrases like ``臂向下二十厘`` instead of ``左臂向下二十厘米``.
 
-P1.4 pre-roll is **off by default** (VAD_PRE_ROLL_SEC=0). Enabling it can
-duplicate onsets that Silero already keeps, producing ASR like
-「你有你有几个关节」/「左臂左臂向下…」. Prefer lower VAD_THRESHOLD and
-text-level collapse_repeated_prefix instead.
+P1.4 pre-roll defaults to ~180 ms (VAD_PRE_ROLL_SEC=0.18) so quiet first
+syllables (左/你) are kept. Overlap with Silero is de-duplicated in
+``_with_pre_roll``; residual ASR doubles are folded by ``repair_asr_text``.
+Set VAD_PRE_ROLL_SEC=0 to disable.
 
 Pipeline:
 

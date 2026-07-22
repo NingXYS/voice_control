@@ -112,12 +112,60 @@ class LocalActionParserTests(unittest.TestCase):
             "左臂关节1旋转30度然后你是谁",
             "你是什么机器人然后右臂向上5厘米",
             "先介绍一下自己再左臂向前5厘米",
-            "请左臂向上10厘米",
         ]
 
         for text in cases:
             with self.subTest(text=text):
                 self.assertIsNone(check_simple_action_command(text))
+
+    def test_polite_and_spoken_variants_hit_local_action(self):
+        """口语/礼貌前缀与单位变体应命中本地动作解析。"""
+        cases = {
+            "请左臂向上10厘米": {
+                "action": "move_cartesian",
+                "arm": "left",
+                "x": 0,
+                "y": 0,
+                "z": 0.1,
+                "relative": True,
+            },
+            "把你的右臂向后三十厘米": {
+                "action": "move_cartesian",
+                "arm": "right",
+                "x": 0,
+                "y": -0.3,
+                "z": 0,
+                "relative": True,
+            },
+            "左手向后十厘米": {
+                "action": "move_cartesian",
+                "arm": "left",
+                "x": 0,
+                "y": -0.1,
+                "z": 0,
+                "relative": True,
+            },
+            "右臂向上一米": {
+                "action": "move_cartesian",
+                "arm": "right",
+                "x": 0,
+                "y": 0,
+                "z": 1.0,
+                "relative": True,
+            },
+            "左臂向下二十厘": {
+                "action": "move_cartesian",
+                "arm": "left",
+                "x": 0,
+                "y": 0,
+                "z": -0.2,
+                "relative": True,
+            },
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                commands = check_simple_action_command(text)
+                self.assertEqual(commands, [expected])
 
     def test_misses_unsupported_or_ambiguous_commands(self):
         cases = [
@@ -736,6 +784,25 @@ class LocalReplyCommandTests(unittest.TestCase):
             with self.subTest(text=text):
                 self._assert_reply_only(text)
 
+    def test_multi_hardware_question_merges_local_replies(self):
+        """一句里问手臂+自由度时应合并两条知识库回答，而不是只答第一个。"""
+        import voice_local_knowledge as local_knowledge
+
+        text = "你有几个手臂几个自由度"
+        merged = local_knowledge.match_local_reply(text)
+        self.assertIsNotNone(merged)
+        reply = merged["reply"]
+        self.assertIn("手臂", reply)
+        self.assertIn("自由度", reply)
+        # Should not be arms-only (previous first-hit behavior).
+        self.assertNotEqual(reply, "我有左右两条手臂，是双臂机械臂。")
+
+        result = check_local_reply_command(text)
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 1)
+        self.assertIn("手臂", result[0]["reply"])
+        self.assertIn("自由度", result[0]["reply"])
+
     def test_ambient_chatter_does_not_hit_local_knowledge(self):
         """环境人声夹带关键词时不应命中本地知识库。"""
         texts = [
@@ -762,6 +829,14 @@ class LocalReplyCommandTests(unittest.TestCase):
         self.assertEqual(
             local_knowledge.repair_asr_text("左左臂向下二十厘米"),
             "左臂向下二十厘米",
+        )
+        self.assertEqual(
+            local_knowledge.repair_asr_text("你有几个自由度"),
+            "你有几个自由度",
+        )
+        self.assertEqual(
+            local_knowledge.repair_asr_text("应该是由度"),
+            "应该是自由度",
         )
         self._assert_reply_only("你有你有几个关节")
         self._assert_reply_only("你有你有几个自由度")

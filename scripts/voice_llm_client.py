@@ -208,13 +208,15 @@ _CHINESE_UNITS = {"十": 10, "百": 100, "千": 1000, "万": 10000}
 _NUMBER_TOKEN = r"(?:\d+(?:\.\d+)?|[零〇一二两三四五六七八九十百千万点]+)"
 
 # 单个动作片段的匹配模式
-# 笛卡尔：左臂/右臂 + 向?方向 + 可选动作词 + 数字/中文数字 + 厘米
+# 笛卡尔：左臂/右臂(+左手/右手 已在 repair 中归一) + 向/往?方向 + 可选动作词
+# + 数字 + 毫米|厘米|米
 _RE_CARTESIAN = re.compile(
     r'(左臂|右臂)'              # arm
-    r'向?([上下左右前后])'       # direction
-    r'(?:抬|降|移动|走)?'        # optional spoken action word
+    r'(?:向|往)?'               # optional 向/往
+    r'([上下左右前后])'         # direction
+    r'(?:抬|降|移动|移|走)?'    # optional spoken action word
     rf'({_NUMBER_TOKEN})'        # value (Arabic or Chinese number)
-    r'\s*厘米'
+    r'\s*(毫米|厘米|米)'         # distance unit
 )
 
 # 关节：左臂/右臂 + 关节数字 + (反转?)(旋转?) + 数字 + 度
@@ -228,6 +230,12 @@ _RE_JOINT = re.compile(
     r'\s*度'                   # unit
 )
 
+_DISTANCE_SCALE_M = {
+    "毫米": 0.001,
+    "厘米": 0.01,
+    "米": 1.0,
+}
+
 
 # ==================== 保守本地动作解析器 ====================
 def check_simple_action_command(text, tracker=None):
@@ -239,9 +247,10 @@ def check_simple_action_command(text, tracker=None):
     返回: list[dict] 如果命中；None 表示 MISS，需走 Dify/Ollama。
 
     支持的首批模板：
-    - 单动作：左臂向上10厘米 / 右臂向前5厘米
+    - 单动作：左臂向上10厘米 / 右臂向前5厘米 / 右臂向上一米
     - 关节：左臂关节1旋转30度 / 左臂关节3反转30度
     - 多动作：右臂向前5厘米左臂向上10厘米
+    - 口语：把你的右臂向后三十厘米（先经 repair_asr_text）
 
     不支持（返回 None）：
     - 省略臂、省略单位、省略数值
@@ -252,6 +261,9 @@ def check_simple_action_command(text, tracker=None):
     if tracker:
         tracker.mark("local_action_parser_start")
 
+    from voice_local_knowledge import repair_asr_text
+
+    text = repair_asr_text(text) if isinstance(text, str) else ""
     # 必须有明确的臂引用
     if "左臂" not in text and "右臂" not in text:
         if tracker:
@@ -342,10 +354,14 @@ def _parse_one_segment(seg):
         arm_raw = m.group(1)
         arm = "left" if arm_raw == "左臂" else "right"
         direction = m.group(2)
-        value_cm = _parse_number(m.group(3))
-        if value_cm is None:
+        value_raw = _parse_number(m.group(3))
+        unit = m.group(4)
+        if value_raw is None:
             return None
-        value_m = round(value_cm / 100.0, 6)
+        scale = _DISTANCE_SCALE_M.get(unit)
+        if scale is None:
+            return None
+        value_m = round(float(value_raw) * scale, 6)
 
         axis, sign = _CARTESIAN_MAP[direction]
         cmd = {

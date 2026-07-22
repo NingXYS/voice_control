@@ -44,6 +44,9 @@ class WakeWordRuntime:
         self._stop = False
         self._cooldown_until = 0.0
         self._post_tts_guard_until = 0.0
+        # After a turn ends we must re-drain capture + reset KWS once listening resumes.
+        # Otherwise TTS bleed buffered during cooldown can poison the first re-wake.
+        self._rearm_listen = False
 
     def request_stop(self):
         self._stop = True
@@ -57,6 +60,11 @@ class WakeWordRuntime:
         except Exception as exc:
             print(f"⚠️ Failed to discard stale capture audio: {exc}")
             return 0
+
+    def _reset_wake_detector(self) -> None:
+        reset_wake = getattr(self.wake_detector, "reset", None)
+        if callable(reset_wake):
+            reset_wake()
 
     def _reply_speaker(self, text):
         previous = self.state
@@ -81,26 +89,43 @@ class WakeWordRuntime:
             return bool(self.wake_detector.accept_audio(chunk))
 
     def _reset_turn(self) -> None:
-        reset_wake = getattr(self.wake_detector, "reset", None)
-        if callable(reset_wake):
-            reset_wake()
+        # Drain first, then reset KWS so the detector does not keep TTS-tainted state.
+        self._discard_stale_audio()
+        self._reset_wake_detector()
         self.vad.reset()
         self.state = VoiceState.WAITING_WAKE_WORD
         now = self.clock()
+        # Blackout window:
+        # - cooldown: avoid double-trigger on the same wake tail
+        # - post_tts_guard: ignore speaker tail after local playback
         self._cooldown_until = max(
             now + self.cooldown,
             self._post_tts_guard_until,
         )
         self._post_tts_guard_until = 0.0
+        self._rearm_listen = True
+
+    def _rearm_if_needed(self) -> None:
+        """When the listen blackout ends, flush residual PCM and start KWS clean."""
+        if not self._rearm_listen:
+            return
+        self._discard_stale_audio()
+        self._reset_wake_detector()
+        self._rearm_listen = False
 
     def run(self):
         self.audio.open()
         try:
             while not self._stop:
                 now = self.clock()
-                chunk = self.audio.read_chunk()
+                # During blackout keep draining the mic in real time without feeding KWS.
+                # Using a pre-read ``now`` keeps existing timing tests stable.
                 if now < self._cooldown_until:
+                    self.audio.read_chunk()
                     continue
+
+                self._rearm_if_needed()
+                chunk = self.audio.read_chunk()
                 if not self._accept_wake_audio(chunk):
                     continue
 

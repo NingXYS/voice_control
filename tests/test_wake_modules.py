@@ -203,6 +203,84 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(len(wake.accepted), 1)
         self.assertAlmostEqual(wake.accepted[0], 1.9)
 
+    def test_reset_turn_drains_audio_and_rearms_after_cooldown(self):
+        class Clock:
+            def __init__(self):
+                self.now = 10.0
+
+            def __call__(self):
+                return self.now
+
+        class Audio:
+            def __init__(self, clock):
+                self.clock = clock
+                self.discard_count = 0
+                self.reads = 0
+
+            def open(self):
+                pass
+
+            def read_chunk(self):
+                self.reads += 1
+                self.clock.now += 0.1
+                return np.zeros(1600, dtype=np.float32)
+
+            def discard_buffered(self):
+                self.discard_count += 1
+                return 32
+
+            def close(self):
+                pass
+
+        class Wake:
+            def __init__(self, runtime):
+                self.runtime = runtime
+                self.resets = 0
+                self.accepted = 0
+
+            def reset(self):
+                self.resets += 1
+
+            def accept_audio(self, _chunk, _sample_rate=16000):
+                self.accepted += 1
+                self.runtime.request_stop()
+                return True
+
+        clock = Clock()
+        audio = Audio(clock)
+        wake = Wake(runtime=None)
+        runtime = WakeWordRuntime(
+            audio,
+            wake,
+            mock.Mock(),
+            lambda *_: "",
+            lambda *_: None,
+            lambda: None,
+            1,
+            1,
+            cooldown=0.25,
+            prompt_guard=0,
+            post_tts_guard=0.0,
+            clock=clock,
+        )
+        wake.runtime = runtime
+
+        runtime._reset_turn()
+        self.assertGreaterEqual(audio.discard_count, 1)
+        self.assertGreaterEqual(wake.resets, 1)
+        self.assertTrue(runtime._rearm_listen)
+        self.assertGreater(runtime._cooldown_until, clock.now)
+
+        discards_before_listen = audio.discard_count
+        resets_before_listen = wake.resets
+        runtime.run()
+
+        # Leaving blackout must re-drain + reset once more before first KWS feed.
+        self.assertGreater(audio.discard_count, discards_before_listen)
+        self.assertGreater(wake.resets, resets_before_listen)
+        self.assertEqual(wake.accepted, 1)
+        self.assertFalse(runtime._rearm_listen)
+
     def test_single_turn_then_stop(self):
         chunks = [np.zeros(1600, dtype=np.float32) for _ in range(3)]
         audio = FakeAudio(chunks)

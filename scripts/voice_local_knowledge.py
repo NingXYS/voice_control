@@ -134,13 +134,39 @@ _collapse_repeated_prefix = collapse_repeated_prefix
 
 
 def repair_asr_text(text: str) -> str:
-    """Light ASR cleanup for duplicated onsets from VAD/pre-roll overlap."""
+    """ASR cleanup for wake/command path: onset doubles + spoken control phrases.
+
+    Keeps repairs conservative so free-form FAQ text is not over-normalized.
+    """
     if not isinstance(text, str):
         return ""
     stripped = text.strip()
     if not stripped:
         return ""
-    return collapse_repeated_prefix(stripped)
+    out = collapse_repeated_prefix(stripped)
+    # Spoken arm aliases → parser vocabulary.
+    out = out.replace("左手", "左臂").replace("右手", "右臂")
+    # Common ASR truncations / near-homophones (avoid rewriting 自由度 → 自自由度).
+    out = re.sub(r"(?<!自)由度", "自由度", out)
+    out = out.replace("游度", "自由度")
+    # Drop polite fillers so local action templates can fullmatch.
+    # Only strip a leading filler once; keep the rest of the utterance intact so
+    # mixed "动作+问答" still misses the conservative action parser.
+    out = re.sub(
+        r"^(?:把你的|请你|请|帮我|给我|麻烦你|麻烦)(?=左臂|右臂|左手|右手)",
+        "",
+        out,
+    )
+    # Motion distance: bare 「厘」 after a number is almost always 「厘米」.
+    out = re.sub(
+        r"([0-9零〇一二两三四五六七八九十百千]+)\s*厘(?!米)",
+        r"\1厘米",
+        out,
+    )
+    # Colloquial direction padding heard in field tests.
+    out = out.replace("向后里面", "向后").replace("向前里面", "向前")
+    out = out.replace("往后里面", "向后").replace("往前里面", "向前")
+    return out.strip()
 
 
 def is_safe_reply_payload(value: object) -> bool:
@@ -285,6 +311,65 @@ def _phrase_matches_candidate(phrase: str, candidate: str) -> bool:
     return False
 
 
+def _merge_reply_texts(replies: list[str]) -> str:
+    """Join multiple distinct FAQ answers into one spoken reply."""
+    parts: list[str] = []
+    for raw in replies:
+        text = raw.strip()
+        if not text:
+            continue
+        if text[-1] not in "。！？.!?":
+            text = text + "。"
+        parts.append(text)
+    return "".join(parts)
+
+
+def _collect_rule_hits(
+    candidate: str,
+    target_rules: list[dict[str, object]],
+) -> list[tuple[int, int, int, str]]:
+    """Return (start, end, phrase_len, reply) for each matching phrase span."""
+    hits: list[tuple[int, int, int, str]] = []
+    for rule in target_rules:
+        if not isinstance(rule, dict):
+            continue
+        reply = rule.get("reply")
+        if not isinstance(reply, str) or not reply.strip():
+            continue
+        cleaned = reply.strip()
+        for phrase in _extract_and_normalize_phrases(rule):
+            if not _phrase_matches_candidate(phrase, candidate):
+                continue
+            # Prefer concrete span of phrase inside candidate; reverse/truncated
+            # matches use the full candidate as the span.
+            idx = candidate.find(phrase)
+            if idx >= 0:
+                start, end = idx, idx + len(phrase)
+            else:
+                start, end = 0, len(candidate)
+            hits.append((start, end, len(phrase), cleaned))
+    return hits
+
+
+def _select_non_overlapping_replies(
+    hits: list[tuple[int, int, int, str]],
+) -> list[str]:
+    """Greedy longest-phrase wins; keep non-overlapping multi-intent answers."""
+    if not hits:
+        return []
+    ordered = sorted(hits, key=lambda item: (-item[2], item[0], item[1]))
+    selected: list[tuple[int, int, str]] = []
+    for start, end, _plen, reply in ordered:
+        if any(not (end <= s or start >= e) for s, e, _r in selected):
+            continue
+        # Same reply text from overlapping rules: keep one.
+        if any(reply == existing for _s, _e, existing in selected):
+            continue
+        selected.append((start, end, reply))
+    selected.sort(key=lambda item: item[0])
+    return [reply for _s, _e, reply in selected]
+
+
 def match_local_reply(text: str, rules: list[dict[str, object]] | None = None) -> dict[str, str] | None:
     """
     本地固定 reply 匹配。
@@ -293,6 +378,8 @@ def match_local_reply(text: str, rules: list[dict[str, object]] | None = None) -
     - 若传入 rules，只使用传入规则；否则组合 LOCAL_REPLY_RULES 和 get_csv_reply_rules()。
     - “左臂/右臂/左手/右手”这类孤立手臂短语在匹配任一侧出现时，只允许整句匹配。
     - 其它短语使用受长度约束的双向包含，避免环境人声误命中。
+    - 一句多问（如「几个手臂几个自由度」）按非重叠短语合并 reply。
+    - 同一问命中多条重叠规则时取更长短语，不拼多条。
     - 不得返回 action JSON，不得生成动作字段。
     """
     if not isinstance(text, str):
@@ -310,19 +397,15 @@ def match_local_reply(text: str, rules: list[dict[str, object]] | None = None) -
         target_rules = rules
     else:
         target_rules = LOCAL_REPLY_RULES + get_csv_reply_rules()
-        
-    for candidate in match_texts:
-        for rule in target_rules:
-            if not isinstance(rule, dict):
-                continue
-            reply = rule.get("reply")
-            if not isinstance(reply, str) or not reply.strip():
-                continue
 
-            phrases = _extract_and_normalize_phrases(rule)
-            for phrase in phrases:
-                if _phrase_matches_candidate(phrase, candidate):
-                    return {"reply": reply}
+    for candidate in match_texts:
+        hits = _collect_rule_hits(candidate, target_rules)
+        replies = _select_non_overlapping_replies(hits)
+        if not replies:
+            continue
+        if len(replies) == 1:
+            return {"reply": replies[0]}
+        return {"reply": _merge_reply_texts(replies)}
     return None
 
 def match_fixed_reply(text: str) -> dict[str, str] | None:

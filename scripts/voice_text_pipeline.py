@@ -7,7 +7,13 @@ from voice_llm_client import check_local_reply_command
 from voice_local_knowledge import normalize_text, repair_asr_text
 
 
-ACTION_EXECUTION_REPLY = "小西正在执行中"
+# Short default keeps TTS generate time down on weak devices; override if needed.
+import os as _os
+
+ACTION_EXECUTION_REPLY = _os.environ.get(
+    "VOICE_ACTION_ACK_TEXT",
+    "好的，正在执行",
+).strip() or "好的，正在执行"
 ACKNOWLEDGED_ACTIONS = {"move_cartesian", "move_joint", "home"}
 
 # 环境人声/闲聊常被 ASR 录成杂讯。非控制类只接受较短整句；更长文本须带控制特征。
