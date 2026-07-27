@@ -208,10 +208,12 @@ _CHINESE_UNITS = {"十": 10, "百": 100, "千": 1000, "万": 10000}
 _NUMBER_TOKEN = r"(?:\d+(?:\.\d+)?|[零〇一二两三四五六七八九十百千万点]+)"
 
 # 单个动作片段的匹配模式
-# 笛卡尔：左臂/右臂(+左手/右手 已在 repair 中归一) + 向/往?方向 + 可选动作词
-# + 数字 + 毫米|厘米|米
+# 笛卡尔：左臂/右臂(+左手/右手 已在 repair 中归一) + 可选「先」+ 向/往?方向
+# + 可选动作词 + 数字 + 毫米|厘米|米
+# 「右臂先向上移十厘米」
 _RE_CARTESIAN = re.compile(
     r'(左臂|右臂)'              # arm
+    r'(?:先)?'                 # optional spoken 「先」
     r'(?:向|往)?'               # optional 向/往
     r'([上下左右前后])'         # direction
     r'(?:抬|降|移动|移|走)?'    # optional spoken action word
@@ -219,16 +221,55 @@ _RE_CARTESIAN = re.compile(
     r'\s*(毫米|厘米|米)'         # distance unit
 )
 
-# 关节：左臂/右臂 + 关节数字 + (反转?)(旋转?) + 数字 + 度
+# 同臂多位置：首个带臂名，后续省略臂名。
+# 「右臂向下十厘米再向左十厘米」「右臂先向上移十厘米再向左移十厘米」
+_CART_DIR_BODY = (
+    r'(?:先)?'
+    r'(?:向|往)?'
+    r'([上下左右前后])'
+    r'(?:抬|降|移动|移|走)?'
+    rf'({_NUMBER_TOKEN})\s*(毫米|厘米|米)'
+)
+_RE_CARTESIAN_HEAD = re.compile(r'(左臂|右臂)' + _CART_DIR_BODY)
+_RE_CARTESIAN_CONT = re.compile(
+    r'(?:后|然后|再|接着|和|与|及|，|,)?' + _CART_DIR_BODY
+)
+
+# 关节：左臂/右臂 + 关节数字 + (反转?)(旋转|转动)? + 数字 + 度
 # 支持: "关节1旋转30度" / "关节3反转30度" / "关节1反转旋转30度"
+# 口语编号（第一关节 / 关节一）在 repair_asr_text → normalize_joint_refs 后变为 关节N。
+# 此处仍接受中文一位数字，避免绕过 repair 的调用点漏匹配。
 _RE_JOINT = re.compile(
     r'(左臂|右臂)'              # arm
-    r'关节(\d)'                # joint number
+    r'关节([1-6一二两三四五六])'  # joint 1-6 (Arabic or spoken Chinese)
     r'(反转)?'                 # reverse flag (optional)
-    r'(?:旋转)?'               # 旋转 (optional, "反转30度" 不需要此词)
+    r'(?:旋转|转动)?'          # 旋转/转动 (optional, "反转30度" 不需要此词)
     rf'({_NUMBER_TOKEN})'        # angle (Arabic or Chinese number)
     r'\s*度'                   # unit
 )
+
+# 同臂多关节：首个动作仍要求带臂名；后续可省略臂名，用连接词衔接。
+# 「左臂关节3旋转三十度后四关节旋转二十度五关节旋转六十度」
+_JOINT_ID_TOKEN = r'(?:关节([1-6一二两三四五六])|第([1-6一二两三四五六])个?关节|([1-6一二两三四五六])个?关节)'
+_RE_JOINT_HEAD = re.compile(
+    r'(左臂|右臂)'
+    + _JOINT_ID_TOKEN
+    + r'(反转)?'
+    + r'(?:旋转|转动)?'
+    + rf'({_NUMBER_TOKEN})\s*度'
+)
+_RE_JOINT_CONT = re.compile(
+    r'(?:后|然后|再|接着|和|与|及|，|,)?'
+    + _JOINT_ID_TOKEN
+    + r'(反转)?'
+    + r'(?:旋转|转动)?'
+    + rf'({_NUMBER_TOKEN})\s*度'
+)
+
+_JOINT_TOKEN_TO_INT = {
+    "1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6,
+    "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6,
+}
 
 _DISTANCE_SCALE_M = {
     "毫米": 0.001,
@@ -249,8 +290,11 @@ def check_simple_action_command(text, tracker=None):
     支持的首批模板：
     - 单动作：左臂向上10厘米 / 右臂向前5厘米 / 右臂向上一米
     - 关节：左臂关节1旋转30度 / 左臂关节3反转30度
+    - 口语关节：左臂第一关节旋转三十度 / 关节一 / 旋转左臂第一关节三十度
+    - 同臂多关节：左臂关节3旋转三十度后四关节旋转二十度五关节旋转六十度
+    - 同臂多位置：右臂向下十厘米再向左十厘米 / 右臂先向上移十厘米再向左移十厘米
     - 多动作：右臂向前5厘米左臂向上10厘米
-    - 口语：把你的右臂向后三十厘米（先经 repair_asr_text）
+    - 口语：把你的右臂向后三十厘米 / 拿你的左臂…（先经 repair_asr_text）
 
     不支持（返回 None）：
     - 省略臂、省略单位、省略数值
@@ -286,6 +330,15 @@ def check_simple_action_command(text, tracker=None):
 
     commands = []
     for seg in segments:
+        # 同臂多关节 / 多位置链：一个片段可产出多条 action
+        chain = _parse_joint_chain(seg)
+        if chain is not None:
+            commands.extend(chain)
+            continue
+        chain = _parse_cartesian_chain(seg)
+        if chain is not None:
+            commands.extend(chain)
+            continue
         cmd = _parse_one_segment(seg)
         if cmd is None:
             # 任一片段解析失败 → 整体 MISS，不冒险部分解析
@@ -323,6 +376,125 @@ def _split_arm_segments(text):
     return segments
 
 
+def _joint_token_from_groups(groups) -> int | None:
+    """Pick the first non-None joint id group and map to 1-6."""
+    for token in groups:
+        if token is None:
+            continue
+        joint = _JOINT_TOKEN_TO_INT.get(token)
+        if joint is not None and 1 <= joint <= 6:
+            return joint
+    return None
+
+
+def _joint_command(arm: str, joint: int, angle_deg: float, reverse: bool) -> dict:
+    value_rad = round(angle_deg * _math.pi / 180.0, 6)
+    if reverse:
+        value_rad = -value_rad
+    return {
+        "action": "move_joint",
+        "arm": arm,
+        "joint": joint,
+        "value": value_rad,
+        "type": "delta",
+    }
+
+
+def _cartesian_command(arm: str, direction: str, value_raw: float, unit: str) -> dict | None:
+    scale = _DISTANCE_SCALE_M.get(unit)
+    if scale is None:
+        return None
+    if direction not in _CARTESIAN_MAP:
+        return None
+    value_m = round(float(value_raw) * scale, 6)
+    axis, sign = _CARTESIAN_MAP[direction]
+    cmd = {
+        "action": "move_cartesian",
+        "arm": arm,
+        "x": 0,
+        "y": 0,
+        "z": 0,
+        "relative": True,
+    }
+    cmd[axis] = value_m * sign
+    return cmd
+
+
+def _parse_joint_chain(seg: str):
+    """Parse one or more same-arm joint moves from a single arm segment.
+
+    Returns list[dict] on full-span match; None if not a joint chain.
+    Single joint also returns a one-element list so callers can extend uniformly.
+    """
+    if not isinstance(seg, str) or not seg:
+        return None
+    m = _RE_JOINT_HEAD.match(seg)
+    if not m:
+        return None
+    arm = "left" if m.group(1) == "左臂" else "right"
+    # groups: 1=arm, 2/3/4=joint alts, 5=反转, 6=angle
+    joint = _joint_token_from_groups((m.group(2), m.group(3), m.group(4)))
+    if joint is None:
+        return None
+    angle_deg = _parse_number(m.group(6))
+    if angle_deg is None:
+        return None
+    reverse = m.group(5) is not None
+    commands = [_joint_command(arm, joint, angle_deg, reverse)]
+    pos = m.end()
+    while pos < len(seg):
+        m2 = _RE_JOINT_CONT.match(seg, pos)
+        if not m2:
+            # leftover non-joint text → not a clean joint chain
+            return None
+        joint = _joint_token_from_groups((m2.group(1), m2.group(2), m2.group(3)))
+        if joint is None:
+            return None
+        angle_deg = _parse_number(m2.group(5))
+        if angle_deg is None:
+            return None
+        reverse = m2.group(4) is not None
+        commands.append(_joint_command(arm, joint, angle_deg, reverse))
+        pos = m2.end()
+    return commands
+
+
+def _parse_cartesian_chain(seg: str):
+    """Parse one or more same-arm cartesian moves from a single arm segment.
+
+    Returns list[dict] on full-span match; None if not a cartesian chain.
+    """
+    if not isinstance(seg, str) or not seg:
+        return None
+    m = _RE_CARTESIAN_HEAD.match(seg)
+    if not m:
+        return None
+    arm = "left" if m.group(1) == "左臂" else "right"
+    # groups: 1=arm, 2=direction, 3=value, 4=unit
+    value_raw = _parse_number(m.group(3))
+    if value_raw is None:
+        return None
+    cmd = _cartesian_command(arm, m.group(2), value_raw, m.group(4))
+    if cmd is None:
+        return None
+    commands = [cmd]
+    pos = m.end()
+    while pos < len(seg):
+        m2 = _RE_CARTESIAN_CONT.match(seg, pos)
+        if not m2:
+            return None
+        # groups: 1=direction, 2=value, 3=unit
+        value_raw = _parse_number(m2.group(2))
+        if value_raw is None:
+            return None
+        cmd = _cartesian_command(arm, m2.group(1), value_raw, m2.group(3))
+        if cmd is None:
+            return None
+        commands.append(cmd)
+        pos = m2.end()
+    return commands
+
+
 def _parse_one_segment(seg):
     """解析单个动作片段，返回 dict 或 None。"""
     # 先试关节模式
@@ -330,50 +502,24 @@ def _parse_one_segment(seg):
     if m:
         arm_raw = m.group(1)
         arm = "left" if arm_raw == "左臂" else "right"
-        joint = int(m.group(2))
-        if joint < 1 or joint > 6:
+        joint = _JOINT_TOKEN_TO_INT.get(m.group(2))
+        if joint is None or joint < 1 or joint > 6:
             return None
         angle_deg = _parse_number(m.group(4))
         if angle_deg is None:
             return None
         reverse = m.group(3) is not None  # "反转" 存在
-        value_rad = round(angle_deg * _math.pi / 180.0, 6)
-        if reverse:
-            value_rad = -value_rad
-        return {
-            "action": "move_joint",
-            "arm": arm,
-            "joint": joint,
-            "value": value_rad,
-            "type": "delta",
-        }
+        return _joint_command(arm, joint, angle_deg, reverse)
 
     # 再试笛卡尔模式
     m = _RE_CARTESIAN.fullmatch(seg)
     if m:
         arm_raw = m.group(1)
         arm = "left" if arm_raw == "左臂" else "right"
-        direction = m.group(2)
         value_raw = _parse_number(m.group(3))
-        unit = m.group(4)
         if value_raw is None:
             return None
-        scale = _DISTANCE_SCALE_M.get(unit)
-        if scale is None:
-            return None
-        value_m = round(float(value_raw) * scale, 6)
-
-        axis, sign = _CARTESIAN_MAP[direction]
-        cmd = {
-            "action": "move_cartesian",
-            "arm": arm,
-            "x": 0,
-            "y": 0,
-            "z": 0,
-            "relative": True,
-        }
-        cmd[axis] = value_m * sign
-        return cmd
+        return _cartesian_command(arm, m.group(2), value_raw, m.group(4))
 
     return None
 
@@ -557,10 +703,20 @@ def _match_ambiguous_control_reply(text):
         return None
 
     # --- Step 4.3: 明确可执行动作模板 → miss ---
-    if _RE_CARTESIAN.search(text) or _RE_JOINT.search(text):
+    if (
+        _RE_CARTESIAN.search(text)
+        or _RE_CARTESIAN_HEAD.search(text)
+        or _RE_JOINT.search(text)
+        or _RE_JOINT_HEAD.search(text)
+    ):
         segments = _split_arm_segments(text)
         if segments and "".join(segments) == text:
-            if all(_parse_one_segment(seg) is not None for seg in segments):
+            if all(
+                _parse_joint_chain(seg) is not None
+                or _parse_cartesian_chain(seg) is not None
+                or _parse_one_segment(seg) is not None
+                for seg in segments
+            ):
                 return None
 
     # --- Step 5: 高频模糊控制输入 → 返回澄清回复 ---
@@ -590,8 +746,17 @@ def _match_ambiguous_control_reply(text):
         # 手臂 + 移动一下："右臂移动一下"
         if re.match(r'^(左臂|右臂)移动一下$', text):
             return LOCAL_CONTROL_CLARIFICATION_REPLY
-        # 手臂 + 关节N + 旋转（缺少角度）："左臂关节1旋转"
-        if re.match(r'^(左臂|右臂)关节\d旋转$', text):
+        # 手臂 + 关节N + 旋转（缺少角度）："左臂关节1旋转" / "左臂第一关节旋转"
+        if re.match(
+            r'^(左臂|右臂)(?:关节[1-6一二两三四五六]|第[1-6一二两三四五六]个?关节)(?:旋转|转动)?$',
+            text,
+        ):
+            return LOCAL_CONTROL_CLARIFICATION_REPLY
+        # 手臂 + 旋转/转动 + 角度（缺少关节编号）："左臂旋转三十度"
+        if re.match(
+            rf'^(左臂|右臂)(?:旋转|转动|反转)(?:旋转|转动)?{_NUMBER_TOKEN}度$',
+            text,
+        ):
             return LOCAL_CONTROL_CLARIFICATION_REPLY
         # 手臂 + 转一下："右臂转一下"
         if re.match(r'^(左臂|右臂)转一下$', text):

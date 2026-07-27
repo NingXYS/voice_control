@@ -1,0 +1,29 @@
+=== Task 5: Audio Device Verification ===
+Date: 2026-07-23
+
+Capture devices (arecord -l):
+- card 1: NVIDIA Jetson AGX Orin APE (20 devices)
+- card 2: AB13X USB Audio
+- card 4: UGREEN USB MIC-CM581 (SELECTED)
+
+Playback devices (aplay -l):
+- card 0: NVIDIA Jetson AGX Orin HDA (HDMI)
+- card 1: NVIDIA Jetson AGX Orin APE
+- card 2: AB13X USB Audio
+- card 3: SPEAKER (USB Audio)
+- card 4: UGREEN USB MIC-CM581
+
+Selected configuration:
+- AUDIO_DEVICE=hw:4,0
+- AUDIO_CAPTURE_SAMPLE_RATE=48000
+- AUDIO_CAPTURE_CHANNELS=2
+- APLAY_DEVICE=default
+
+Capture smoke test: PASS
+- Duration: 5.000s
+- Format: 16000 Hz mono float32
+- Peak: -24.7 dBFS (slightly low but valid)
+- Clip ratio: 0.00%
+- Output: migration_acceptance/capture_smoke/adapter_16k_mono.wav
+
+Status: PASS

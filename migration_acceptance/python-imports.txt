@@ -1,0 +1,19 @@
+=== Task 3: Python Dependencies and Build ===
+Date: 2026-07-23
+Venv: /mnt/ssd/voice_online/.venv_online (created with --system-site-packages)
+Python: /usr/bin/python3 (3.10.12)
+
+Installed packages:
+- numpy==2.2.6 -> .venv_online/lib/python3.10/site-packages/numpy
+- soundfile==0.14.0 -> .venv_online/lib/python3.10/site-packages/soundfile.py
+- sherpa-onnx==1.13.3 -> .venv_online/lib/python3.10/site-packages/sherpa_onnx
+- pypinyin==0.55.0 -> .venv_online/lib/python3.10/site-packages/pypinyin
+- requests==2.25.1 -> .venv_online/lib/python3.10/site-packages/requests
+- pynput==1.8.2
+
+Build: voice_control overlay built successfully
+- build_online/ exists
+- install_online/setup.bash exists
+- PYTHON_IMPORTS_OK (all from .venv_online, no miniconda/.local contamination)
+
+Status: PASS

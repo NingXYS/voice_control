@@ -9,8 +9,25 @@ WF_ID = str(uuid.uuid4())
 
 LOCAL_INTENT_CODE = """import re
 
+_JOINT_SPOKEN = {'一': '1', '二': '2', '两': '2', '三': '3', '四': '4', '五': '5', '六': '6',
+                 '1': '1', '2': '2', '3': '3', '4': '4', '5': '5', '6': '6'}
+
+def _normalize_joint_refs(text: str) -> str:
+    def _ord(m):
+        d = _JOINT_SPOKEN.get(m.group(1))
+        return f'关节{d}' if d else m.group(0)
+    text = re.sub(r'第([一二两三四五六1-6])个?关节', _ord, text)
+    text = re.sub(r'关节([一二两三四五六])', _ord, text)
+    return text
+
 def main(user_text: str) -> dict:
     text = re.sub(r'[\\s，。！？；：,.!?;:]+', '', user_text or '')
+    # Align with Python repair_asr_text: 往后/往前 → 向后/向前
+    text = re.sub(r'往([上下左右前后])', r'向\\1', text)
+    # Leading filler / rotate verb + spoken joint numbering (第一关节 → 关节1)
+    text = re.sub(r'^(?:把你的|将你的|拿你的|请你把|请你|请把|帮我|给我|麻烦你|麻烦|你的|请|把|将|拿)+(?=左臂|右臂|左手|右手)', '', text)
+    text = re.sub(r'^(?:请)?(?:旋转|转动)(?=左臂|右臂)', '', text)
+    text = _normalize_joint_refs(text)
     number_token = r'(?:-?\\d+(?:\\.\\d+)?|[零〇一二两三四五六七八九十百千万点]+)'
     arms = re.findall(r'左臂|右臂|左手|右手', text)
     directions = re.findall(r'向上|向下|向前|向后|向左|向右', text)
@@ -20,8 +37,8 @@ def main(user_text: str) -> dict:
     has_home = any(keyword in text for keyword in ('回零', '归零', '零位'))
     has_status = '状态' in text or ('查询' in text and '位置' in text)
     single_action_patterns = (
-        rf'(?:左臂|右臂)(?:向)?[上下左右前后](?:抬|降|移动|走)?{number_token}(?:毫米|厘米|米)',
-        rf'(?:左臂|右臂)关节[1-6](?:反转)?(?:旋转)?{number_token}(?:度|弧度)',
+        rf'(?:左臂|右臂)(?:向|往)?[上下左右前后](?:抬|降|移动|移|走)?{number_token}(?:毫米|厘米|米)',
+        rf'(?:左臂|右臂)关节[1-6](?:反转)?(?:旋转|转动)?{number_token}(?:度|弧度)',
         r'(?:左臂|右臂)(?:回零位?|归零|零位)',
         r'(?:查询)?(?:左臂|右臂)(?:状态|位置)',
     )
@@ -45,7 +62,7 @@ def main(user_text: str) -> dict:
         return {'intent': 'robot_knowledge'}
     if any(keyword in text for keyword in ('你是谁', '你叫什么', '你是什么', '介绍', '你能做什么', '你会做什么', '你会干什么', '你能干什么', '功能', '你好', '您好', '谢谢', '感谢', '辛苦了', '唱歌', '唱首歌', '唱一首', '跳舞', '天气', '气温', '下雨', '联网', '上网', '在线检索')):
         return {'intent': 'fixed_reply'}
-    if any(keyword in text for keyword in ('左臂', '右臂', '左手', '右手', '关节', '移动', '向上', '向下', '向前', '向后', '向左', '向右', '抬', '降', '旋转', '转动', '回零', '归零', '状态', '位置')):
+    if any(keyword in text for keyword in ('左臂', '右臂', '左手', '右手', '关节', '移动', '向上', '向下', '向前', '向后', '向左', '向右', '往后', '往前', '抬', '降', '旋转', '转动', '回零', '归零', '状态', '位置')):
         return {'intent': 'ambiguous_control'}
     return {'intent': 'complex_fallback'}"""
 
@@ -82,6 +99,16 @@ import re
 _NUMBER_TOKEN = r'(?:-?\\d+(?:\\.\\d+)?|[零〇一二两三四五六七八九十百千万点]+)'
 _CHINESE_DIGITS = {'零': 0, '〇': 0, '一': 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9}
 _CHINESE_UNITS = {'十': 10, '百': 100, '千': 1000, '万': 10000}
+_JOINT_SPOKEN = {'一': '1', '二': '2', '两': '2', '三': '3', '四': '4', '五': '5', '六': '6',
+                 '1': '1', '2': '2', '3': '3', '4': '4', '5': '5', '6': '6'}
+
+def _normalize_joint_refs(text: str) -> str:
+    def _ord(m):
+        d = _JOINT_SPOKEN.get(m.group(1))
+        return f'关节{d}' if d else m.group(0)
+    text = re.sub(r'第([一二两三四五六1-6])个?关节', _ord, text)
+    text = re.sub(r'关节([一二两三四五六])', _ord, text)
+    return text
 
 def _parse_number(value: str) -> float | None:
     try:
@@ -119,8 +146,8 @@ def _parse_number(value: str) -> float | None:
 
 def _is_single_action(text: str) -> bool:
     patterns = (
-        rf'(?:左臂|右臂)(?:向)?[上下左右前后](?:抬|降|移动|走)?{_NUMBER_TOKEN}(?:毫米|厘米|米)',
-        rf'(?:左臂|右臂)关节[1-6](?:反转)?(?:旋转)?{_NUMBER_TOKEN}(?:度|弧度)',
+        rf'(?:左臂|右臂)(?:向|往)?[上下左右前后](?:抬|降|移动|移|走)?{_NUMBER_TOKEN}(?:毫米|厘米|米)',
+        rf'(?:左臂|右臂)关节[1-6](?:反转)?(?:旋转|转动)?{_NUMBER_TOKEN}(?:度|弧度)',
         r'(?:左臂|右臂)(?:回零位?|归零|零位)',
         r'(?:查询)?(?:左臂|右臂)(?:状态|位置)',
     )
@@ -128,6 +155,10 @@ def _is_single_action(text: str) -> bool:
 
 def main(user_text: str) -> dict:
     text = re.sub(r'[\\s，。！？；：,.!?;:]+', '', user_text or '')
+    text = re.sub(r'往([上下左右前后])', r'向\\1', text)
+    text = re.sub(r'^(?:把你的|将你的|拿你的|请你把|请你|请把|帮我|给我|麻烦你|麻烦|你的|请|把|将|拿)+(?=左臂|右臂|左手|右手)', '', text)
+    text = re.sub(r'^(?:请)?(?:旋转|转动)(?=左臂|右臂)', '', text)
+    text = _normalize_joint_refs(text)
     if not _is_single_action(text):
         return {'result': json.dumps({'reply': '请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。'}, ensure_ascii=False)}
     arm_match = re.search(r'左臂|左手|右臂|右手', text)

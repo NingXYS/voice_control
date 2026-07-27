@@ -1,70 +1,38 @@
-# Python
+# 外部别人仓库，不上传
+dify/
+
+# Python 虚拟环境
 .venv_online/
+
+# Python缓存
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
+*.pyc
+
+# 编译产物
 build_online/
-install_online/
+
+# 日志
 log_online/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
 
-# Logs
-logs/
-*.log
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Temporary files
-*.tmp
-*.bak
-*.swp
-
-# Reference code (external case studies)
-reference/
-
-# AI local/private notes
-CLAUDE.local.md
-.ai/scratch/
-.ai/runs/*.local.md
-
-# AI temporary files
-.ai/tmp/
-.ai/cache/
-
-# Optional local Codex/Claude logs
-.codex-log/
-.claude-local/
-scripts/vits-piper-zh_CN-huayan-medium/
-.gitignore
-
-tts/
-
-voice_online/
+# 模型文件（如果需要上传模型，再单独处理）
 models/
 
+# 数据集
 datasets/
+
+# 调试文件
+debug_audio_capture_smoke/
+
+# 临时环境文件
+*.env
+
+# Claude临时配置
+.claude/
+
+install_online/
+logs/
+voice_control_online.env
+
+# Migration acceptance runtime outputs
+migration_acceptance/**/*.log
+migration_acceptance/**/*.wav

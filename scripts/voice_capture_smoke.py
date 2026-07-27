@@ -190,8 +190,25 @@ def _pactl(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def list_pulse_ugreen_cards() -> list[str]:
-    """Return PulseAudio card names that look like the UGREEN USB mic."""
+# Pulse/ALSA name fragments for USB mics we open exclusively (hw:...).
+_USB_MIC_NAME_MARKERS = (
+    "ugreen",
+    "mic-cm581",
+    "jinaudio_ugreen",
+    "c-media",
+    "usb_pnp_sound",
+    "pcm2902",
+    "pn_p_sound",
+)
+
+
+def _looks_like_usb_mic_name(name: str) -> bool:
+    low = name.lower().replace("-", "_")
+    return any(marker in low for marker in _USB_MIC_NAME_MARKERS)
+
+
+def list_pulse_usb_mic_cards() -> list[str]:
+    """Return PulseAudio card names that look like exclusive-capture USB mics."""
     completed = _pactl("list", "short", "cards")
     cards: list[str] = []
     for line in (completed.stdout or "").splitlines():
@@ -199,16 +216,43 @@ def list_pulse_ugreen_cards() -> list[str]:
         if len(parts) < 2:
             continue
         name = parts[1]
-        blob = name.lower()
-        if "ugreen" in blob or "mic-cm581" in blob or "jinaudio_ugreen" in blob:
+        if _looks_like_usb_mic_name(name):
             cards.append(name)
     return cards
 
 
-def free_device_for_exclusive_capture(device: str | None = None) -> list[str]:
-    """Release desktop Pulse holds so ``hw:N,0`` can open exclusively.
+def list_pulse_ugreen_cards() -> list[str]:
+    """Backward-compatible alias for list_pulse_usb_mic_cards()."""
+    return list_pulse_usb_mic_cards()
 
-    Typical offender: GNOME Settings input peak meter keeping the UGREEN source
+
+def _resolve_alsa_card_index(device: str | None) -> str | None:
+    """Parse hw:N or hw:CARD=Name into a numeric card index when possible."""
+    if not device:
+        return None
+    match = re.search(r"(?:hw|plughw):(\d+)", device)
+    if match:
+        return match.group(1)
+    match = re.search(r"(?:hw|plughw):CARD=([^,]+)", device, re.IGNORECASE)
+    if not match:
+        return None
+    card_id = match.group(1).strip()
+    cards_path = Path("/proc/asound/cards")
+    if not cards_path.exists():
+        return None
+    text = cards_path.read_text(encoding="utf-8", errors="replace")
+    # e.g. " 3 [Device         ]: USB-Audio - USB PnP Sound Device"
+    for line in text.splitlines():
+        m = re.match(r"\s*(\d+)\s+\[([^\]]+)\]", line)
+        if m and m.group(2).strip() == card_id:
+            return m.group(1)
+    return None
+
+
+def free_device_for_exclusive_capture(device: str | None = None) -> list[str]:
+    """Release desktop Pulse holds so ``hw:...`` can open exclusively.
+
+    Typical offender: GNOME Settings input peak meter keeping a USB mic source
     RUNNING under PulseAudio. Setting the USB card profile to ``off`` drops the
     ALSA capture node.
 
@@ -219,12 +263,7 @@ def free_device_for_exclusive_capture(device: str | None = None) -> list[str]:
         actions.append("pactl not found; cannot free PulseAudio holds automatically")
         return actions
 
-    # Suspend sources that map to this ALSA device when possible.
-    card_index = None
-    if device:
-        match = re.search(r"hw:(\d+)", device)
-        if match:
-            card_index = match.group(1)
+    card_index = _resolve_alsa_card_index(device)
 
     sources = _pactl("list", "short", "sources")
     for line in (sources.stdout or "").splitlines():
@@ -234,9 +273,7 @@ def free_device_for_exclusive_capture(device: str | None = None) -> list[str]:
         name = parts[1]
         low = name.lower()
         if not (
-            "ugreen" in low
-            or "mic-cm581" in low
-            or "jinaudio_ugreen" in low
+            _looks_like_usb_mic_name(name)
             or (card_index is not None and f"card{card_index}" in low)
         ):
             continue
@@ -250,7 +287,7 @@ def free_device_for_exclusive_capture(device: str | None = None) -> list[str]:
             detail = (result.stderr or result.stdout or "").strip()
             actions.append(f"suspend-source {name} failed: {detail or result.returncode}")
 
-    for card in list_pulse_ugreen_cards():
+    for card in list_pulse_usb_mic_cards():
         result = _pactl("set-card-profile", card, "off")
         if result.returncode == 0:
             actions.append(f"set-card-profile {card} off")
@@ -261,7 +298,7 @@ def free_device_for_exclusive_capture(device: str | None = None) -> list[str]:
             )
 
     if not actions:
-        actions.append("no UGREEN PulseAudio card/source found to free")
+        actions.append("no USB-mic PulseAudio card/source found to free")
     # Give Pulse a moment to release the ALSA node.
     time.sleep(0.25)
     return actions

@@ -48,6 +48,23 @@ class VoiceRuntimeContainer:
             initialize_executor = getattr(self.executor, "initialize", None)
             if callable(initialize_executor):
                 initialize_executor()
+        # Hide Kokoro cold start (~6s load+warmup) behind idle wake listening.
+        # speak() still blocks on initialize() if the user talks before ready.
+        tts = self.tts_backend
+        if tts is not None:
+            start_preload = getattr(tts, "start_preload", None)
+            if callable(start_preload):
+                start_preload()
+            else:
+                initialize_tts = getattr(tts, "initialize", None)
+                if callable(initialize_tts):
+                    import threading
+
+                    threading.Thread(
+                        target=initialize_tts,
+                        name="tts-preload",
+                        daemon=True,
+                    ).start()
 
     @property
     def wake_asr_model(self):

@@ -143,7 +143,9 @@ class WakeEntryImportTests(unittest.TestCase):
     def test_online_pipeline_rejects_partial_invalid_dify_batch(self):
         speaker = mock.Mock()
         response = [{"reply": "好的"}, {"action": "unknown"}]
-        with mock.patch.object(voice_text_pipeline, "run_dialogue", return_value=response):
+        # Disable thinking-ack so this test only asserts no dispatch speak on reject.
+        with mock.patch.dict(os.environ, {"VOICE_THINKING_ACK": "0"}, clear=False), \
+            mock.patch.object(voice_text_pipeline, "run_dialogue", return_value=response):
             self.assertIsNone(voice_text_pipeline.process_text("测试", speaker=speaker))
         speaker.assert_not_called()
 
@@ -235,12 +237,84 @@ class SharedPipelineSourceTests(unittest.TestCase):
 
 class OnlineBackendTests(unittest.TestCase):
     def test_piper_backend_is_lazy_and_uses_explicit_model_dir(self):
-        fake_tts = types.SimpleNamespace(tts_init=mock.Mock(return_value=True), tts_speak=mock.Mock(return_value=True))
+        fake_tts = types.SimpleNamespace(
+            tts_init=mock.Mock(return_value=True),
+            tts_speak=mock.Mock(return_value=True),
+            tts_phrase_ready=mock.Mock(return_value=False),
+        )
         with mock.patch.dict(sys.modules, {"voice_tts": fake_tts}, clear=False):
             backend = voice_tts_backend.PiperTTSBackend("/models/piper")
             self.assertTrue(backend.speak("你好"))
         fake_tts.tts_init.assert_called_once_with("/models/piper")
         fake_tts.tts_speak.assert_called_once_with("你好")
+
+    def test_piper_backend_cache_hit_skips_model_init(self):
+        """Disk/memory phrases must speak without waiting for ONNX (~3s load)."""
+        fake_tts = types.SimpleNamespace(
+            tts_init=mock.Mock(return_value=True),
+            tts_speak=mock.Mock(return_value=True),
+            tts_phrase_ready=mock.Mock(return_value=True),
+        )
+        with mock.patch.dict(sys.modules, {"voice_tts": fake_tts}, clear=False):
+            backend = voice_tts_backend.PiperTTSBackend("/models/piper")
+            self.assertTrue(backend.speak("小西收到"))
+        fake_tts.tts_phrase_ready.assert_called_once_with("小西收到")
+        fake_tts.tts_speak.assert_called_once_with("小西收到")
+        fake_tts.tts_init.assert_not_called()
+
+    def test_piper_backend_start_preload_initializes_once(self):
+        import threading
+
+        started = threading.Event()
+        release = threading.Event()
+        calls = []
+
+        def slow_init(model_dir):
+            calls.append(model_dir)
+            started.set()
+            release.wait(timeout=2)
+            return True
+
+        fake_tts = types.SimpleNamespace(
+            tts_init=mock.Mock(side_effect=slow_init),
+            tts_speak=mock.Mock(return_value=True),
+            tts_phrase_ready=mock.Mock(return_value=False),
+        )
+        with mock.patch.dict(sys.modules, {"voice_tts": fake_tts}, clear=False):
+            backend = voice_tts_backend.PiperTTSBackend("/models/piper")
+            backend.start_preload()
+            self.assertTrue(started.wait(timeout=2))
+            # Concurrent speak while preload holds initialize lock.
+            speak_result = []
+
+            def speak_worker():
+                speak_result.append(backend.speak("你好"))
+
+            worker = threading.Thread(target=speak_worker)
+            worker.start()
+            # Let speak block on init lock briefly, then finish load once.
+            release.set()
+            worker.join(timeout=2)
+            if backend._preload_thread is not None:
+                backend._preload_thread.join(timeout=2)
+
+        self.assertEqual(calls, ["/models/piper"])
+        self.assertEqual(speak_result, [True])
+        fake_tts.tts_init.assert_called_once_with("/models/piper")
+        fake_tts.tts_speak.assert_called_once_with("你好")
+
+    def test_runtime_container_starts_tts_background_preload(self):
+        tts = mock.Mock()
+        asr = mock.Mock()
+        container = voice_runtime_container.VoiceRuntimeContainer(
+            asr=asr,
+            tts=tts,
+            dialogue=mock.Mock(),
+            executor=None,
+        )
+        container.initialize()
+        asr.initialize.assert_called_once_with()
+        tts.start_preload.assert_called_once_with()
 
     def test_robot_commands_are_disabled_by_default(self):
         with mock.patch.dict(os.environ, {}, clear=False):
@@ -268,6 +342,56 @@ class OnlineBackendTests(unittest.TestCase):
 
 
 class TtsModelSelectionTests(unittest.TestCase):
+    def test_warmup_phrases_match_action_ack_hot_path(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("TTS_WARMUP_PHRASES", None)
+            os.environ.pop("TTS_SKIP_WARMUP", None)
+            os.environ.pop("VOICE_ACTION_ACK_TEXT", None)
+            phrases = voice_tts._warmup_phrases()
+        self.assertEqual(phrases, ["好的，正在执行"])
+
+    def test_disk_phrase_cache_enables_hit_without_model(self):
+        import numpy as np
+        import tempfile
+        from pathlib import Path
+
+        phrase = "磁盘缓存测试回复短语"
+        samples = np.array([0.0, 0.1, -0.1], dtype=np.float32)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "TTS_PHRASE_CACHE_DIR": temp_dir,
+                    "TTS_PRECACHE_PHRASES": phrase,
+                    "TTS_STREAM_PLAYBACK": "0",
+                    "VOICE_TTS_TIMING": "0",
+                },
+                clear=False,
+            ):
+                voice_tts.tts_cleanup()
+                voice_tts._cache_put(phrase, samples, 24000, persist=True)
+                self.assertTrue((Path(temp_dir)).exists())
+                voice_tts.tts_cleanup()
+                # No model loaded; disk reload + speak should work.
+                with mock.patch.object(voice_tts, "_play_pcm", return_value=True) as play:
+                    self.assertTrue(voice_tts.tts_speak(phrase))
+                play.assert_called_once()
+                self.assertIsNone(voice_tts._tts)
+
+    def test_warmup_phrases_respect_skip_and_override(self):
+        with mock.patch.dict(
+            os.environ,
+            {"TTS_SKIP_WARMUP": "1"},
+            clear=False,
+        ):
+            self.assertEqual(voice_tts._warmup_phrases(), [])
+        with mock.patch.dict(
+            os.environ,
+            {"TTS_SKIP_WARMUP": "0", "TTS_WARMUP_PHRASES": "甲|乙"},
+            clear=False,
+        ):
+            self.assertEqual(voice_tts._warmup_phrases(), ["甲", "乙"])
+
     def test_tts_uses_configured_aplay_device(self):
         fake_audio = types.SimpleNamespace(
             samples=np.array([0.0, 0.1], dtype=np.float32),
@@ -275,12 +399,17 @@ class TtsModelSelectionTests(unittest.TestCase):
         )
         fake_tts = types.SimpleNamespace(
             generate=mock.Mock(return_value=fake_audio),
+            sample_rate=44100,
         )
         with (
             mock.patch.object(voice_tts, "_tts", fake_tts),
             mock.patch.dict(
                 os.environ,
-                {"APLAY_DEVICE": "plughw:Generic_1,0"},
+                {
+                    "APLAY_DEVICE": "plughw:Generic_1,0",
+                    # Exercise batch play path (subprocess.run).
+                    "TTS_STREAM_PLAYBACK": "0",
+                },
                 clear=False,
             ),
             mock.patch.object(
@@ -297,6 +426,52 @@ class TtsModelSelectionTests(unittest.TestCase):
             ["aplay", "-q", "-D", "plughw:Generic_1,0"],
         )
 
+    def test_tts_stream_playback_uses_generate_callback(self):
+        chunks = [
+            np.array([0.1, 0.2], dtype=np.float32),
+            np.array([0.3, 0.4], dtype=np.float32),
+        ]
+        full = np.concatenate(chunks)
+
+        def fake_generate(text, sid=0, speed=1.0, callback=None):
+            if callback is not None:
+                for idx, chunk in enumerate(chunks):
+                    callback(chunk, (idx + 1) / len(chunks))
+            return types.SimpleNamespace(samples=full, sample_rate=24000)
+
+        fake_tts = types.SimpleNamespace(
+            generate=fake_generate,
+            sample_rate=24000,
+        )
+        stdin = mock.Mock()
+        proc = mock.Mock()
+        proc.stdin = stdin
+        proc.poll.return_value = None
+        proc.wait.return_value = 0
+        proc.stderr = mock.Mock(read=mock.Mock(return_value=b""))
+
+        with (
+            mock.patch.object(voice_tts, "_tts", fake_tts),
+            mock.patch.dict(
+                os.environ,
+                {"TTS_STREAM_PLAYBACK": "1", "APLAY_DEVICE": "default"},
+                clear=False,
+            ),
+            mock.patch.object(
+                voice_tts.subprocess,
+                "Popen",
+                return_value=proc,
+            ) as popen,
+        ):
+            voice_tts._phrase_cache.clear()
+            self.assertTrue(voice_tts.tts_speak("流式测试短语"))
+
+        popen.assert_called_once()
+        cmd = popen.call_args.args[0]
+        self.assertEqual(cmd[:4], ["aplay", "-q", "-D", "default"])
+        self.assertGreaterEqual(stdin.write.call_count, 2)
+        stdin.close.assert_called()
+
     def test_kokoro_assets_select_kokoro_configuration(self):
         config = types.SimpleNamespace
         fake_module = types.SimpleNamespace(
@@ -311,13 +486,14 @@ class TtsModelSelectionTests(unittest.TestCase):
                 model_dir.joinpath(filename).touch()
             model_dir.joinpath("espeak-ng-data").mkdir()
             with mock.patch.dict(sys.modules, {"sherpa_onnx": fake_module}, clear=False):
-                voice_tts.tts_cleanup()
-                self.assertTrue(voice_tts.tts_init(str(model_dir)))
-                model = voice_tts._tts.config.model
-                self.assertEqual(model.kokoro.model, str(model_dir / "model.onnx"))
-                self.assertEqual(model.kokoro.voices, str(model_dir / "voices.bin"))
-                self.assertIn("lexicon-zh.txt", model.kokoro.lexicon)
-                voice_tts.tts_cleanup()
+                with mock.patch.dict(os.environ, {"TTS_SKIP_WARMUP": "1"}, clear=False):
+                    voice_tts.tts_cleanup()
+                    self.assertTrue(voice_tts.tts_init(str(model_dir)))
+                    model = voice_tts._tts.config.model
+                    self.assertEqual(model.kokoro.model, str(model_dir / "model.onnx"))
+                    self.assertEqual(model.kokoro.voices, str(model_dir / "voices.bin"))
+                    self.assertIn("lexicon-zh.txt", model.kokoro.lexicon)
+                    voice_tts.tts_cleanup()
 
 
 class BuildWakeKeywordTests(unittest.TestCase):

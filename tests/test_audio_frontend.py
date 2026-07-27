@@ -142,6 +142,8 @@ class AudioFrontendTests(unittest.TestCase):
         session.open()
         self.assertTrue(source.opened)
         np.testing.assert_allclose(session.read_chunk(), [0.1, 0.2, 0.3])
+        # KWS path uses pre-frontend raw copy.
+        np.testing.assert_allclose(session.last_raw_chunk, [0.1, 0.2, 0.3])
         self.assertEqual(session.discard_buffered(), 42)
         session.close()
         self.assertTrue(source.closed)
@@ -176,6 +178,47 @@ class AudioFrontendTests(unittest.TestCase):
         out = session.read_chunk()
 
         np.testing.assert_array_equal(out, source.chunk)
+        session.close()
+
+    def test_ns_discard_keeps_noise_floor_and_passes_dry_onset(self):
+        """After discard, NS must not wipe the next speech onset with zeros."""
+        class Source:
+            sample_rate = 16000
+            chunk_samples = 320
+
+            def __init__(self):
+                self.chunk = np.full(320, 0.2, dtype=np.float32)
+
+            def open(self):
+                return None
+
+            def read_chunk(self):
+                return self.chunk.copy()
+
+            def discard_buffered(self):
+                return 1600
+
+            def close(self):
+                return None
+
+        frontend = NoiseSuppressingAudioFrontend(strength=1.0, min_gain=0.08)
+        session = FrontendAudioSession(Source(), frontend)
+        session.open()
+        # Warm noise estimate on floor-ish audio.
+        source_chunk = np.full(320, 0.02, dtype=np.float32)
+        session.source.chunk = source_chunk
+        for _ in range(4):
+            session.read_chunk()
+        noise_psd_before = None if frontend._noise_psd is None else frontend._noise_psd.copy()
+        session.discard_buffered()
+        # Noise floor should survive soft stream-buffer flush.
+        self.assertIsNotNone(frontend._noise_psd)
+        if noise_psd_before is not None:
+            np.testing.assert_allclose(frontend._noise_psd, noise_psd_before)
+        # Next chunk must not be all zeros (dry passthrough while STFT refills).
+        session.source.chunk = np.full(320, 0.4, dtype=np.float32)
+        out = session.read_chunk()
+        self.assertGreater(float(np.max(np.abs(out))), 0.05)
         session.close()
 
     def test_session_closes_source_when_debug_writer_open_fails(self):

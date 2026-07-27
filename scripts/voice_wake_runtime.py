@@ -126,15 +126,18 @@ class WakeWordRuntime:
 
                 self._rearm_if_needed()
                 chunk = self.audio.read_chunk()
-                if not self._accept_wake_audio(chunk):
+                # Prefer pre-frontend (raw) audio for KWS: NS blunts soft 小西小西.
+                wake_chunk = getattr(self.audio, "last_raw_chunk", None)
+                if wake_chunk is None:
+                    wake_chunk = chunk
+                if not self._accept_wake_audio(wake_chunk):
                     continue
 
                 self.state = VoiceState.WAITING_SPEECH
                 self.prompt_callback()
-                if self.prompt_guard:
-                    time.sleep(self.prompt_guard)
-                # Prompt playback also accumulates microphone frames while this
-                # thread is blocked. Drop them before command VAD starts.
+                # Prompt aplay blocks this thread; arecord fills with beep bleed.
+                # Drop that backlog once, then *live-read* (including prompt_guard)
+                # so early command onsets (左/右) go to VAD instead of being slept away.
                 self._discard_stale_audio()
                 self.vad.reset()
                 wait_started = self.clock()
@@ -177,7 +180,7 @@ class WakeWordRuntime:
                         repaired = repair_asr_text(text)
                         if repaired and repaired != text.strip():
                             print(
-                                f"🗣️ 识别输入: {repaired}（已折叠重复首字: {text}）",
+                                f"🗣️ 识别输入: {repaired}（ASR纠错: {text}）",
                                 flush=True,
                             )
                             text = repaired

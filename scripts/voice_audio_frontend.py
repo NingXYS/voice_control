@@ -157,6 +157,21 @@ class NoiseSuppressingAudioFrontend(AudioFrontend):
         self._noise_power = 0.0
         self._warmup_frames = 0
 
+    def reset_stream_buffers(self) -> None:
+        """Drop STFT latency queues but keep the adaptive noise floor.
+
+        Used after capture discard so the next speech onset is not learned as
+        silence (full ``reset``) and is not wiped by pure zero-pad.
+        """
+        if self._frame_size > 0:
+            self._in_buf = np.empty(0, dtype=np.float32)
+            self._out_buf = np.empty(0, dtype=np.float32)
+            self._ola = np.zeros(self._frame_size, dtype=np.float32)
+        else:
+            self._in_buf = np.empty(0, dtype=np.float32)
+            self._out_buf = np.empty(0, dtype=np.float32)
+            self._ola = np.empty(0, dtype=np.float32)
+
     def _configure(self, sample_rate: int) -> None:
         rate = int(sample_rate)
         if rate <= 0:
@@ -250,12 +265,14 @@ class NoiseSuppressingAudioFrontend(AudioFrontend):
             out = self._out_buf[:needed].copy()
             self._out_buf = self._out_buf[needed:]
         else:
-            # Start-up latency / incomplete hop: pad trailing zeros so callers
-            # always receive a shape-preserving chunk for KWS/VAD.
-            pad = needed - self._out_buf.size
-            out = np.concatenate(
-                (self._out_buf, np.zeros(pad, dtype=np.float32)),
-            )
+            # Cold start / after buffer flush: never emit pure zeros over speech.
+            # STFT has hop latency — fill the unavailable tail with dry input so
+            # VAD/ASR still hear first syllables (左/右) instead of silence.
+            n_enh = int(self._out_buf.size)
+            out = np.empty(needed, dtype=np.float32)
+            if n_enh:
+                out[:n_enh] = self._out_buf
+            out[n_enh:] = audio[n_enh:needed]
             self._out_buf = np.empty(0, dtype=np.float32)
 
         return np.clip(out, -1.0, 1.0).astype(np.float32, copy=False)
@@ -309,7 +326,12 @@ class _WavPairWriter:
 
 
 class FrontendAudioSession:
-    """Wrap a capture session while preserving its runtime-facing API."""
+    """Wrap a capture session while preserving its runtime-facing API.
+
+    ``read_chunk()`` returns frontend-processed audio (for VAD/ASR).
+    ``last_raw_chunk`` is the pre-frontend mono PCM (for KWS wake spotting) so
+    noise suppression does not blunt wake-word sensitivity.
+    """
 
     def __init__(self, source, frontend: AudioFrontend,
                  debug: DebugAudioConfig | None = None):
@@ -320,6 +342,12 @@ class FrontendAudioSession:
         self.debug = debug or DebugAudioConfig()
         self._debug_writer = None
         self._opened = False
+        self._last_raw: np.ndarray | None = None
+
+    @property
+    def last_raw_chunk(self) -> np.ndarray | None:
+        """Most recent pre-frontend mono chunk (16 kHz), or None before first read."""
+        return self._last_raw
 
     def open(self) -> None:
         if self._opened:
@@ -338,9 +366,11 @@ class FrontendAudioSession:
 
     def read_chunk(self) -> np.ndarray:
         raw = self.source.read_chunk()
+        raw = np.asarray(raw, dtype=np.float32)
+        self._last_raw = raw.copy()
         processed = self.frontend.process(raw, self.sample_rate)
         processed = np.asarray(processed, dtype=np.float32)
-        if processed.shape != np.asarray(raw).shape:
+        if processed.shape != raw.shape:
             raise RuntimeError("audio frontend must preserve chunk shape")
         if self._debug_writer is not None:
             self._debug_writer.write(raw, processed)
@@ -350,7 +380,13 @@ class FrontendAudioSession:
         discard = getattr(self.source, "discard_buffered", None)
         discarded = int(discard() or 0) if callable(discard) else 0
         if discarded > 0:
-            self.frontend.reset()
+            # Prefer stream-buffer flush over full frontend reset: NS zero-pad /
+            # noise re-learn after full reset was wiping soft first syllables.
+            soft = getattr(self.frontend, "reset_stream_buffers", None)
+            if callable(soft):
+                soft()
+            else:
+                self.frontend.reset()
         return discarded
 
     def close(self) -> None:

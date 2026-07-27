@@ -50,19 +50,39 @@ VOICE_WAKE_VENV_DIR="${VOICE_WAKE_VENV_DIR:-${REPO_ROOT}/.venv_online}"
     source /opt/ros/humble/setup.bash
     source "${ONLINE_INSTALL_ROOT}/setup.bash"
 
+    # Prefer project env (relative model paths under ${REPO_ROOT}/models/).
+    if [ -f "${REPO_ROOT}/voice_control_online.env" ]; then
+        # shellcheck disable=SC1091
+        set -a
+        source "${REPO_ROOT}/voice_control_online.env"
+        set +a
+    fi
+
     export PARAFORMER_MODEL_DIR="${PARAFORMER_MODEL_DIR:-${REPO_ROOT}/models/sherpa-onnx-paraformer-zh-2023-09-14}"
     export WAKE_MODEL_DIR="${WAKE_MODEL_DIR:-${REPO_ROOT}/models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20}"
     export VAD_MODEL_PATH="${VAD_MODEL_PATH:-${REPO_ROOT}/models/vad/silero_vad.onnx}"
-    export TTS_MODEL_DIR="${TTS_MODEL_DIR:-${PIPER_MODEL_DIR:-${REPO_ROOT}/models/tts/kokoro-multi-lang-v1_0}}"
+    # Default TTS: Matcha (ARM-friendly). Override via voice_control_online.env.
+    _default_tts="${REPO_ROOT}/models/tts/matcha-icefall-zh-baker"
+    if [ ! -d "${_default_tts}" ]; then
+        _default_tts="${REPO_ROOT}/models/tts/kokoro-multi-lang-v1_0"
+    fi
+    export TTS_MODEL_DIR="${TTS_MODEL_DIR:-${PIPER_MODEL_DIR:-${_default_tts}}}"
     export PIPER_MODEL_DIR="${PIPER_MODEL_DIR:-${TTS_MODEL_DIR}}"
     if [ -z "${TTS_MODEL_FILE:-}" ]; then
-        if [ -f "${TTS_MODEL_DIR}/model.onnx" ]; then
+        if [ -f "${TTS_MODEL_DIR}/model-steps-3.onnx" ]; then
+            export TTS_MODEL_FILE="model-steps-3.onnx"
+            export TTS_ENGINE="${TTS_ENGINE:-matcha}"
+            export TTS_SPEAKER_ID="${TTS_SPEAKER_ID:-0}"
+            if [ -z "${TTS_VOCODER:-}" ] && [ -f "${TTS_MODEL_DIR}/vocos-22khz-univ.onnx" ]; then
+                export TTS_VOCODER="${TTS_MODEL_DIR}/vocos-22khz-univ.onnx"
+            fi
+        elif [ -f "${TTS_MODEL_DIR}/model.onnx" ]; then
             export TTS_MODEL_FILE="model.onnx"
         else
             export TTS_MODEL_FILE="zh_CN-huayan-medium.onnx"
         fi
     fi
-    export TTS_SPEAKER_ID="${TTS_SPEAKER_ID:-47}"
+    export TTS_SPEAKER_ID="${TTS_SPEAKER_ID:-0}"
     export TTS_SPEED="${TTS_SPEED:-1.0}"
     export DIFY_BASE_URL="${DIFY_BASE_URL:-http://localhost:80}"
     export DIFY_INPUT_KEY="${DIFY_INPUT_KEY:-text}"
@@ -164,17 +184,34 @@ for lib in libs:
             exit 1
         fi
     done
-    if [ ! -d "${TTS_MODEL_DIR}/espeak-ng-data" ]; then
-        echo "Check failed: TTS espeak data missing at ${TTS_MODEL_DIR}/espeak-ng-data" >&2
-        exit 1
-    fi
+    # Kokoro / Piper need espeak-ng-data; Matcha uses lexicon + vocoder instead.
     if [ -f "${TTS_MODEL_DIR}/voices.bin" ]; then
+        if [ ! -d "${TTS_MODEL_DIR}/espeak-ng-data" ]; then
+            echo "Check failed: TTS espeak data missing at ${TTS_MODEL_DIR}/espeak-ng-data" >&2
+            exit 1
+        fi
         for file in voices.bin lexicon-us-en.txt lexicon-zh.txt; do
             if [ ! -f "${TTS_MODEL_DIR}/${file}" ]; then
                 echo "Check failed: Kokoro TTS file missing at ${TTS_MODEL_DIR}/${file}" >&2
                 exit 1
             fi
         done
+    elif [ -f "${TTS_MODEL_DIR}/model-steps-3.onnx" ] || [ "${TTS_ENGINE:-}" = "matcha" ]; then
+        if [ ! -f "${TTS_MODEL_DIR}/lexicon.txt" ]; then
+            echo "Check failed: Matcha lexicon missing at ${TTS_MODEL_DIR}/lexicon.txt" >&2
+            exit 1
+        fi
+        _vocoder="${TTS_VOCODER:-${TTS_MODEL_DIR}/vocos-22khz-univ.onnx}"
+        if [ ! -f "${_vocoder}" ]; then
+            echo "Check failed: Matcha vocoder missing at ${_vocoder}" >&2
+            exit 1
+        fi
+    else
+        # Piper / VITS: espeak data or lexicon
+        if [ ! -d "${TTS_MODEL_DIR}/espeak-ng-data" ] && [ ! -f "${TTS_MODEL_DIR}/lexicon.txt" ]; then
+            echo "Check failed: TTS needs espeak-ng-data or lexicon.txt under ${TTS_MODEL_DIR}" >&2
+            exit 1
+        fi
     fi
 
     if [ "${WAKE_DETECTOR_MODE}" = "kws" ]; then

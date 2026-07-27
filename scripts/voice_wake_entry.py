@@ -29,6 +29,8 @@ from voice_runtime_config import (
     COMMAND_MAX_DURATION_SEC,
     COMMAND_START_TIMEOUT_SEC,
     COMMAND_VAD_GATE,
+    KWS_KEYWORDS_SCORE,
+    KWS_KEYWORDS_THRESHOLD,
     KWS_NUM_THREADS,
     POST_TTS_GUARD_DURATION_SEC,
     PROMPT_GUARD_DURATION_SEC,
@@ -146,6 +148,11 @@ def main():
         print(
             f"🎛️ Command VAD gate: {COMMAND_VAD_GATE} "
             f"(segment=keep onsets; frame=legacy hard-zero)",
+            flush=True,
+        )
+        print(
+            f"🔔 KWS: threshold={KWS_KEYWORDS_THRESHOLD} score={KWS_KEYWORDS_SCORE} "
+            f"(keywords.txt #/ : override; wake uses raw audio before NS)",
             flush=True,
         )
         runtime = WakeWordRuntime(

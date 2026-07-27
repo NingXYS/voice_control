@@ -20,6 +20,14 @@ class VoiceActionAcknowledgementTests(unittest.TestCase):
         )
         self.local_reply_patch.start()
         self.addCleanup(self.local_reply_patch.stop)
+        # Disable thinking ack for classic action-ack assertions; dedicated tests cover it.
+        self.thinking_env = mock.patch.dict(
+            os.environ,
+            {"VOICE_THINKING_ACK": "0"},
+            clear=False,
+        )
+        self.thinking_env.start()
+        self.addCleanup(self.thinking_env.stop)
 
     def test_speaks_once_after_motion_batch_is_dispatched(self):
         events = []
@@ -97,6 +105,46 @@ class VoiceActionAcknowledgementTests(unittest.TestCase):
 
         self.assertEqual(result, commands)
         self.assertEqual(spoken, [voice_text_pipeline.ACTION_EXECUTION_REPLY])
+
+    def test_thinking_ack_plays_before_dify_on_slow_path(self):
+        spoken = []
+        commands = [{"reply": "这是完整回答"}]
+
+        with mock.patch.dict(
+            os.environ,
+            {"VOICE_THINKING_ACK": "1", "VOICE_THINKING_ACK_TEXT": "小西收到"},
+            clear=False,
+        ):
+            with mock.patch.object(voice_text_pipeline, "THINKING_ACK_TEXT", "小西收到"):
+                result = voice_text_pipeline.process_text(
+                    "介绍一下你的功能吧",
+                    speaker=spoken.append,
+                    dialogue=lambda _text: commands,
+                )
+
+        self.assertEqual(result, commands)
+        self.assertEqual(spoken[0], "小西收到")
+        self.assertEqual(spoken[-1], "这是完整回答")
+
+    def test_thinking_ack_skipped_when_local_reply_already_cached(self):
+        spoken = []
+        reply = "我是施耐力双臂六关节机械臂，拥有左右两条手臂，各六个关节。"
+        with mock.patch.object(
+            voice_text_pipeline,
+            "check_local_reply_command",
+            return_value=[{"reply": reply}],
+        ), mock.patch.object(
+            voice_text_pipeline,
+            "_tts_phrase_ready",
+            return_value=True,
+        ), mock.patch.dict(os.environ, {"VOICE_THINKING_ACK": "1"}, clear=False):
+            result = voice_text_pipeline.process_text(
+                "你是谁",
+                speaker=spoken.append,
+                dialogue=lambda _t: (_ for _ in ()).throw(AssertionError("no dify")),
+            )
+        self.assertEqual(result, [{"reply": reply}])
+        self.assertEqual(spoken, [reply])
 
 
 if __name__ == "__main__":

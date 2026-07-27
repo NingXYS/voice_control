@@ -1,7 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(python3 -c \"import py_compile; py_compile.compile\\('voice_debug_tool.py', doraise=True\\); print\\('voice_debug_tool.py OK'\\)\")"
-    ]
-  }
-}

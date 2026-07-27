@@ -1,0 +1,15 @@
+=== Task 6: Dify Workflow Verification ===
+Date: 2026-07-23
+PC_DIFY_LAN_IP: 10.36.159.111
+DIFY_BASE_URL: http://10.36.159.111:80
+
+Test 1: curl http://10.36.159.111:80/install
+Result: HTTP 200 - PASS
+
+Test 2: Workflow API - "查询左臂状态"
+Result: [{"action":"get_status","arm":"left"}] - PASS
+
+Test 3: Workflow API - "请用一句话介绍你自己"
+Result: [{"reply":"我是施耐力双臂六关节机械臂，拥有左右两条手臂，各六个关节。"}] - PASS
+
+Status: PASS

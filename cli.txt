@@ -1,0 +1,166 @@
+
+export DIFY_API_KEY="app-aX1eDdXfL7Tan2G1Depberf8"
+
+
+
+# 1. 加载环境变量
+  set -a
+  source /mnt/ssd/voice_online/voice_control_online.env
+  set +a
+  
+  # 2. 禁用机械臂动作（安全模式）
+  export VOICE_ENABLE_ROBOT_COMMAND=0
+
+  # 3. 进入项目目录
+  cd /mnt/ssd/voice_online
+  
+
+  # 4. 启动语音系统
+  .venv_online/bin/python -u scripts/voice_wake_entry.py
+
+  使用方法：
+  - 对麦克风说 "小西小西" → 听到"滴"提示音
+  - 然后说出指令，例如"请用一句话介绍你自己"
+  - 系统会通过 Dify 处理并用 TTS 播报回复
+  
+  停止： 按 Ctrl+C
+
+  如果想用 ros2 方式启动：
+  set -a; source /mnt/ssd/voice_online/voice_control_online.env; set +a
+  export VOICE_ENABLE_ROBOT_COMMAND=0
+  cd /mnt/ssd/voice_online
+  bash scripts/run_voice_wake.sh
+
+  终端1 — 启动语音系统（启用机械臂指令）：
+  set -a
+  source /mnt/ssd/voice_online/voice_control_online.env
+  set +a 
+  export VOICE_ENABLE_ROBOT_COMMAND=1
+  cd /mnt/ssd/voice_online
+  .venv_online/bin/python -u scripts/voice_wake_entry.py
+
+  终端2 — 监控 /robot_command 话题：
+  source /opt/ros/humble/setup.bash
+  ros2 topic echo /robot_command std_msgs/msg/String
+  
+  这样当你说出运动指令（如"左臂向下二十厘米"）时，终端2 会实时显示发布的 JSON
+  指令内容。
+
+  如果只想看有没有消息（不看内容）：
+  ros2 topic hz /robot_command
+
+  如果 /robot_command 话题不存在（还没有机械臂控制器节点），先确认：
+  ros2 topic list | grep robot
+
+
+export VOICE_TTS_TIMING=1
+export TTS_NUM_THREADS=4          # 设备核多可试 6
+export TTS_SPEED=1.05             # 略快语速，可接受再试 1.1
+export TTS_PLAYBACK_NATIVE=1
+
+
+
+export AUDIO_DEVICE=hw:3,0
+export AUDIO_CAPTURE_SAMPLE_RATE=48000
+export AUDIO_CAPTURE_CHANNELS=2
+export VOICE_AUDIO_FRONTEND=passthrough
+export KWS_KEYWORDS_SCORE=1.5
+export KWS_KEYWORDS_THRESHOLD=0.35
+
+# 设备忙时先 free
+# python3 scripts/voice_capture_smoke.py --free-device --seconds 1
+
+bash scripts/run_voice_wake.sh
+
+
+
+
+sudo systemctl start docker
+sudo systemctl stop docker
+
+docker compose up -d
+docker compose down
+	
+conda activate vllm
+
+OLLMA_HOST=0.0.0.0 ollama serve
+OLLAMA_HOST=0.0.0.0:11434 ollama serve
+
+cd /home/ning/model/lyz/src/voice_control/scripts
+
+dify知识库：
+export DIFY_API_KEY="app-xxxxxxxxxxxxx"
+export DIFY_API_KEY="app-sTmYJ3JZIvuXGfncq8D4KJMp"
+
+export DIFY_API_KEY="app-cO08t3nQGrCkCS77HdyNcH62"
+
+python3 voice_qwen_llm.py
+
+python3 voice_debug_tool.py
+
+  真正的启动原理现在是两段式：
+
+  1. 先用 scripts/setup_voice_wake.sh:8 把运行环境装到固定目录 ~/model/lyz/
+     voice_control_runtime：它创建独立 venv、装依赖、在固定 install 目录里编译
+     voice_control 包。
+
+  2. 运行时用 scripts/run_voice_wake.sh:27 启动：
+      - 先清掉 Conda/Python 污染变量
+      - 再把 PATH 切到固定 venv
+      - source ROS Humble 和固定 overlay
+      - 检查 Python 3.10、依赖导入、voice_wake_entry.py、模型文件、arecord
+      - 全部通过后才 exec ros2 run voice_control voice_wake_entry.py
+
+  所以现在的思路不是“手工在当前 shell 里凑环境”，而是“先把环境固化到一个 runtime
+  root，再由启动脚本自检并拉起唤醒入口”。
+
+  唤醒配置本身走的是 scripts/voice_runtime_config.py:1：PARAFORMER_MODEL_DIR、
+  AUDIO_DEVICE 等都从环境变量读，默认值写死在模块里，启动时决定，不是跑起来以后
+  再临时补。
+
+  如果你现在要启动，直接：
+
+  cd /home/ning/model/lyz/src/voice_control
+  bash scripts/run_voice_wake.sh
+
+  只想先验环境，不真正启动：
+
+  bash scripts/run_voice_wake.sh --check
+  
+  
+  机器人发布开关
+
+  默认关闭：
+
+  export VOICE_ENABLE_ROBOT_COMMAND=0
+
+  运行时不会创建 ROS publisher，见 scripts/voice_runtime_container.py:32 和
+  scripts/voice_runtime_config.py:73。
+
+  需要只测试 ROS 发布能力时：
+
+  # 终端 1，无机械臂也可以
+  source /opt/ros/humble/setup.bash
+  ros2 topic echo /robot_command
+
+  # 终端 2
+  cd /home/ning/model/lyz/src/voice_control_online
+  export DIFY_API_KEY='你的工作流API密钥'
+  export VOICE_ENABLE_ROBOT_COMMAND=1
+  bash scripts/run_voice_wake.sh
+  
+  
+export DIFY_API_KEY="app-cO08t3nQGrCkCS77HdyNcH62"
+ 
+export AUDIO_DEVICE=hw:3,0
+export AUDIO_CAPTURE_SAMPLE_RATE=48000
+export AUDIO_CAPTURE_CHANNELS=2
+
+# 前端 A/B
+export VOICE_AUDIO_FRONTEND=ns          # 或 passthrough 做对照
+# export VOICE_DEBUG_AUDIO=1            # 需要时对比 raw/ vs frontend/
+
+# 若设备忙
+python3 scripts/voice_capture_smoke.py --free-device --seconds 1
+
+bash scripts/run_voice_wake.sh

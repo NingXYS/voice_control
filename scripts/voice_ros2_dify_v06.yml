@@ -8,7 +8,7 @@ app:
   icon: 🤖
   icon_background: '#FFEAD5'
 workflow:
-  id: a0c3473f-3f21-4366-bc16-0862decac829
+  id: 13f96178-cba4-4061-a265-dbc24953daf8
   title: 语音指令解析工作流(知识库)
   features:
     file_upload:
@@ -39,17 +39,28 @@ workflow:
         title: 本地意图分类
         description: 规则分类，不调用模型
         code_language: python3
-        code: "import re\n\ndef main(user_text: str) -> dict:\n    text = re.sub(r'[\\\
-          s，。！？；：,.!?;:]+', '', user_text or '')\n    number_token = r'(?:-?\\d+(?:\\\
+        code: "import re\n\n_JOINT_SPOKEN = {'一': '1', '二': '2', '两': '2', '三': '3',\
+          \ '四': '4', '五': '5', '六': '6',\n                 '1': '1', '2': '2', '3':\
+          \ '3', '4': '4', '5': '5', '6': '6'}\n\ndef _normalize_joint_refs(text:\
+          \ str) -> str:\n    def _ord(m):\n        d = _JOINT_SPOKEN.get(m.group(1))\n\
+          \        return f'关节{d}' if d else m.group(0)\n    text = re.sub(r'第([一二两三四五六1-6])个?关节',\
+          \ _ord, text)\n    text = re.sub(r'关节([一二两三四五六])', _ord, text)\n    return\
+          \ text\n\ndef main(user_text: str) -> dict:\n    text = re.sub(r'[\\s，。！？；：,.!?;:]+',\
+          \ '', user_text or '')\n    # Align with Python repair_asr_text: 往后/往前 →\
+          \ 向后/向前\n    text = re.sub(r'往([上下左右前后])', r'向\\1', text)\n    # Leading\
+          \ filler / rotate verb + spoken joint numbering (第一关节 → 关节1)\n    text =\
+          \ re.sub(r'^(?:把你的|将你的|拿你的|请你把|请你|请把|帮我|给我|麻烦你|麻烦|你的|请|把|将|拿)+(?=左臂|右臂|左手|右手)',\
+          \ '', text)\n    text = re.sub(r'^(?:请)?(?:旋转|转动)(?=左臂|右臂)', '', text)\n\
+          \    text = _normalize_joint_refs(text)\n    number_token = r'(?:-?\\d+(?:\\\
           .\\d+)?|[零〇一二两三四五六七八九十百千万点]+)'\n    arms = re.findall(r'左臂|右臂|左手|右手', text)\n\
           \    directions = re.findall(r'向上|向下|向前|向后|向左|向右', text)\n    distances\
           \ = re.findall(rf'{number_token}(?:毫米|厘米|米)', text)\n    joints = re.findall(r'关节[1-6]',\
           \ text)\n    angles = re.findall(rf'{number_token}(?:度|弧度)', text)\n   \
           \ has_home = any(keyword in text for keyword in ('回零', '归零', '零位'))\n  \
           \  has_status = '状态' in text or ('查询' in text and '位置' in text)\n    single_action_patterns\
-          \ = (\n        rf'(?:左臂|右臂)(?:向)?[上下左右前后](?:抬|降|移动|走)?{number_token}(?:毫米|厘米|米)',\n\
-          \        rf'(?:左臂|右臂)关节[1-6](?:反转)?(?:旋转)?{number_token}(?:度|弧度)',\n   \
-          \     r'(?:左臂|右臂)(?:回零位?|归零|零位)',\n        r'(?:查询)?(?:左臂|右臂)(?:状态|位置)',\n\
+          \ = (\n        rf'(?:左臂|右臂)(?:向|往)?[上下左右前后](?:抬|降|移动|移|走)?{number_token}(?:毫米|厘米|米)',\n\
+          \        rf'(?:左臂|右臂)关节[1-6](?:反转)?(?:旋转|转动)?{number_token}(?:度|弧度)',\n\
+          \        r'(?:左臂|右臂)(?:回零位?|归零|零位)',\n        r'(?:查询)?(?:左臂|右臂)(?:状态|位置)',\n\
           \    )\n    is_single_action = any(re.fullmatch(pattern, text) for pattern\
           \ in single_action_patterns)\n    is_complete_action = bool(arms) and (\n\
           \        bool(directions and distances)\n        or bool(joints and angles)\n\
@@ -65,8 +76,9 @@ workflow:
           \ '您好', '谢谢', '感谢', '辛苦了', '唱歌', '唱首歌', '唱一首', '跳舞', '天气', '气温', '下雨', '联网',\
           \ '上网', '在线检索')):\n        return {'intent': 'fixed_reply'}\n    if any(keyword\
           \ in text for keyword in ('左臂', '右臂', '左手', '右手', '关节', '移动', '向上', '向下',\
-          \ '向前', '向后', '向左', '向右', '抬', '降', '旋转', '转动', '回零', '归零', '状态', '位置')):\n\
-          \        return {'intent': 'ambiguous_control'}\n    return {'intent': 'complex_fallback'}"
+          \ '向前', '向后', '向左', '向右', '往后', '往前', '抬', '降', '旋转', '转动', '回零', '归零',\
+          \ '状态', '位置')):\n        return {'intent': 'ambiguous_control'}\n    return\
+          \ {'intent': 'complex_fallback'}"
         variables:
         - variable: user_text
           value_selector:
@@ -176,7 +188,13 @@ workflow:
         code: "import json\nimport math\nimport re\n\n_NUMBER_TOKEN = r'(?:-?\\d+(?:\\\
           .\\d+)?|[零〇一二两三四五六七八九十百千万点]+)'\n_CHINESE_DIGITS = {'零': 0, '〇': 0, '一':\
           \ 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九':\
-          \ 9}\n_CHINESE_UNITS = {'十': 10, '百': 100, '千': 1000, '万': 10000}\n\ndef\
+          \ 9}\n_CHINESE_UNITS = {'十': 10, '百': 100, '千': 1000, '万': 10000}\n_JOINT_SPOKEN\
+          \ = {'一': '1', '二': '2', '两': '2', '三': '3', '四': '4', '五': '5', '六': '6',\n\
+          \                 '1': '1', '2': '2', '3': '3', '4': '4', '5': '5', '6':\
+          \ '6'}\n\ndef _normalize_joint_refs(text: str) -> str:\n    def _ord(m):\n\
+          \        d = _JOINT_SPOKEN.get(m.group(1))\n        return f'关节{d}' if d\
+          \ else m.group(0)\n    text = re.sub(r'第([一二两三四五六1-6])个?关节', _ord, text)\n\
+          \    text = re.sub(r'关节([一二两三四五六])', _ord, text)\n    return text\n\ndef\
           \ _parse_number(value: str) -> float | None:\n    try:\n        return float(value)\n\
           \    except ValueError:\n        pass\n    integer_text, _, fraction_text\
           \ = value.partition('点')\n    integer = 0\n    section = 0\n    digit =\
@@ -191,26 +209,29 @@ workflow:
           \ fraction_text:\n        if char not in _CHINESE_DIGITS:\n            return\
           \ None\n        fraction_digits.append(str(_CHINESE_DIGITS[char]))\n   \
           \ fraction = ''.join(fraction_digits)\n    return float(f'{integer}.{fraction}')\n\
-          \ndef _is_single_action(text: str) -> bool:\n    patterns = (\n        rf'(?:左臂|右臂)(?:向)?[上下左右前后](?:抬|降|移动|走)?{_NUMBER_TOKEN}(?:毫米|厘米|米)',\n\
-          \        rf'(?:左臂|右臂)关节[1-6](?:反转)?(?:旋转)?{_NUMBER_TOKEN}(?:度|弧度)',\n  \
-          \      r'(?:左臂|右臂)(?:回零位?|归零|零位)',\n        r'(?:查询)?(?:左臂|右臂)(?:状态|位置)',\n\
+          \ndef _is_single_action(text: str) -> bool:\n    patterns = (\n        rf'(?:左臂|右臂)(?:向|往)?[上下左右前后](?:抬|降|移动|移|走)?{_NUMBER_TOKEN}(?:毫米|厘米|米)',\n\
+          \        rf'(?:左臂|右臂)关节[1-6](?:反转)?(?:旋转|转动)?{_NUMBER_TOKEN}(?:度|弧度)',\n\
+          \        r'(?:左臂|右臂)(?:回零位?|归零|零位)',\n        r'(?:查询)?(?:左臂|右臂)(?:状态|位置)',\n\
           \    )\n    return any(re.fullmatch(pattern, text) for pattern in patterns)\n\
           \ndef main(user_text: str) -> dict:\n    text = re.sub(r'[\\s，。！？；：,.!?;:]+',\
-          \ '', user_text or '')\n    if not _is_single_action(text):\n        return\
-          \ {'result': json.dumps({'reply': '请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。'}, ensure_ascii=False)}\n\
-          \    arm_match = re.search(r'左臂|左手|右臂|右手', text)\n    if arm_match is None:\n\
+          \ '', user_text or '')\n    text = re.sub(r'往([上下左右前后])', r'向\\1', text)\n\
+          \    text = re.sub(r'^(?:把你的|将你的|拿你的|请你把|请你|请把|帮我|给我|麻烦你|麻烦|你的|请|把|将|拿)+(?=左臂|右臂|左手|右手)',\
+          \ '', text)\n    text = re.sub(r'^(?:请)?(?:旋转|转动)(?=左臂|右臂)', '', text)\n\
+          \    text = _normalize_joint_refs(text)\n    if not _is_single_action(text):\n\
           \        return {'result': json.dumps({'reply': '请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。'},\
-          \ ensure_ascii=False)}\n    arm = 'left' if arm_match.group(0) in ('左臂',\
-          \ '左手') else 'right'\n    if any(keyword in text for keyword in ('回零', '归零',\
-          \ '零位')):\n        command = {'action': 'home', 'arm': arm}\n    elif '状态'\
-          \ in text or ('查询' in text and '位置' in text):\n        command = {'action':\
-          \ 'get_status', 'arm': arm}\n    else:\n        joint_match = re.search(r'关节([1-6])',\
-          \ text)\n        angle_match = re.search(rf'({_NUMBER_TOKEN})(度|弧度)', text)\n\
-          \        direction_match = re.search(r'向上|向下|向前|向后|向左|向右', text)\n     \
-          \   distance_match = re.search(rf'({_NUMBER_TOKEN})(毫米|厘米|米)', text)\n \
-          \       if joint_match is not None and angle_match is not None:\n      \
-          \      value = _parse_number(angle_match.group(1))\n            if value\
-          \ is None:\n                command = {'reply': '请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。'}\n\
+          \ ensure_ascii=False)}\n    arm_match = re.search(r'左臂|左手|右臂|右手', text)\n\
+          \    if arm_match is None:\n        return {'result': json.dumps({'reply':\
+          \ '请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。'}, ensure_ascii=False)}\n    arm = 'left'\
+          \ if arm_match.group(0) in ('左臂', '左手') else 'right'\n    if any(keyword\
+          \ in text for keyword in ('回零', '归零', '零位')):\n        command = {'action':\
+          \ 'home', 'arm': arm}\n    elif '状态' in text or ('查询' in text and '位置' in\
+          \ text):\n        command = {'action': 'get_status', 'arm': arm}\n    else:\n\
+          \        joint_match = re.search(r'关节([1-6])', text)\n        angle_match\
+          \ = re.search(rf'({_NUMBER_TOKEN})(度|弧度)', text)\n        direction_match\
+          \ = re.search(r'向上|向下|向前|向后|向左|向右', text)\n        distance_match = re.search(rf'({_NUMBER_TOKEN})(毫米|厘米|米)',\
+          \ text)\n        if joint_match is not None and angle_match is not None:\n\
+          \            value = _parse_number(angle_match.group(1))\n            if\
+          \ value is None:\n                command = {'reply': '请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。'}\n\
           \                return {'result': json.dumps(command, ensure_ascii=False)}\n\
           \            if angle_match.group(2) == '度':\n                value = math.radians(value)\n\
           \            if value > 0 and any(keyword in text for keyword in ('反转',\
