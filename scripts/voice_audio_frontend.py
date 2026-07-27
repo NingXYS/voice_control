@@ -329,25 +329,39 @@ class FrontendAudioSession:
     """Wrap a capture session while preserving its runtime-facing API.
 
     ``read_chunk()`` returns frontend-processed audio (for VAD/ASR).
-    ``last_raw_chunk`` is the pre-frontend mono PCM (for KWS wake spotting) so
-    noise suppression does not blunt wake-word sensitivity.
+    ``last_raw_chunk`` is the pre-frontend mono PCM (after channel pick / resample)
+    used for KWS when ``kws_use_raw`` is True so NS does not blunt wake sensitivity.
     """
 
-    def __init__(self, source, frontend: AudioFrontend,
-                 debug: DebugAudioConfig | None = None):
+    def __init__(
+        self,
+        source,
+        frontend: AudioFrontend,
+        debug: DebugAudioConfig | None = None,
+        kws_use_raw: bool = True,
+    ):
         self.source = source
         self.frontend = frontend
         self.sample_rate = int(source.sample_rate)
         self.chunk_samples = int(source.chunk_samples)
         self.debug = debug or DebugAudioConfig()
+        self.kws_use_raw = bool(kws_use_raw)
         self._debug_writer = None
         self._opened = False
         self._last_raw: np.ndarray | None = None
+        self._last_processed: np.ndarray | None = None
 
     @property
     def last_raw_chunk(self) -> np.ndarray | None:
         """Most recent pre-frontend mono chunk (16 kHz), or None before first read."""
         return self._last_raw
+
+    @property
+    def last_kws_chunk(self) -> np.ndarray | None:
+        """Audio that should be fed to the wake detector for this hop."""
+        if self.kws_use_raw:
+            return self._last_raw
+        return self._last_processed if self._last_processed is not None else self._last_raw
 
     def open(self) -> None:
         if self._opened:
@@ -372,6 +386,7 @@ class FrontendAudioSession:
         processed = np.asarray(processed, dtype=np.float32)
         if processed.shape != raw.shape:
             raise RuntimeError("audio frontend must preserve chunk shape")
+        self._last_processed = processed
         if self._debug_writer is not None:
             self._debug_writer.write(raw, processed)
         return processed

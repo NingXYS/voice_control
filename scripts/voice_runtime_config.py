@@ -67,6 +67,12 @@ AUDIO_DEVICE = os.environ.get("AUDIO_DEVICE", "default")
 APLAY_DEVICE = os.environ.get("APLAY_DEVICE", "default").strip() or "default"
 CAPTURE_SAMPLE_RATE = int(os.environ.get("AUDIO_CAPTURE_SAMPLE_RATE", str(SAMPLE_RATE)))
 CAPTURE_CHANNELS = int(os.environ.get("AUDIO_CAPTURE_CHANNELS", "1"))
+# Multi-channel → mono. Prefer fixed channel over mean (phase cancel risk).
+# channel_0 | channel_1 | mean | best_channel
+AUDIO_CHANNEL_MODE = os.environ.get("AUDIO_CHANNEL_MODE", "channel_0").strip().lower()
+# How long best_channel holds a pick before re-scoring (in output chunks ~100ms).
+AUDIO_CHANNEL_BEST_HOLD = int(os.environ.get("AUDIO_CHANNEL_BEST_HOLD", "5"))
+# Dialogue path frontend (VAD/ASR). KWS uses pre-frontend raw by default.
 AUDIO_FRONTEND_MODE = os.environ.get("VOICE_AUDIO_FRONTEND", "passthrough").strip().lower()
 AUDIO_FRONTEND_TARGET_RMS = float(os.environ.get("VOICE_AUDIO_FRONTEND_TARGET_RMS", "0.05"))
 AUDIO_FRONTEND_MAX_GAIN = float(os.environ.get("VOICE_AUDIO_FRONTEND_MAX_GAIN", "2.0"))
@@ -79,6 +85,9 @@ AUDIO_FRONTEND_NS_NOISE_UPDATE = float(
 AUDIO_FRONTEND_NS_NOISE_MARGIN = float(
     os.environ.get("VOICE_AUDIO_NS_NOISE_MARGIN", "1.8")
 )
+# True (default): feed KWS the pre-frontend mono (raw after channel pick/resample).
+# False: feed KWS the same processed audio as VAD/ASR (A/B only; NS often hurts KWS).
+VOICE_KWS_USE_RAW = _configured_bool("VOICE_KWS_USE_RAW", default=True)
 VOICE_DEBUG_AUDIO = _configured_bool("VOICE_DEBUG_AUDIO")
 VOICE_DEBUG_AUDIO_DIR = os.environ.get("VOICE_DEBUG_AUDIO_DIR", "debug_audio")
 PARAFORMER_MODEL_DIR = _configured_path(
@@ -102,7 +111,19 @@ KWS_NUM_THREADS = int(os.environ.get("KWS_NUM_THREADS", "2"))
 KWS_MAX_ACTIVE_PATHS = int(os.environ.get("KWS_MAX_ACTIVE_PATHS", "4"))
 KWS_NUM_TRAILING_BLANKS = int(os.environ.get("KWS_NUM_TRAILING_BLANKS", "2"))
 KWS_KEYWORDS_SCORE = float(os.environ.get("KWS_KEYWORDS_SCORE", "1.5"))
+# Single-stage / high-path default (also used as dual-stage high when unset).
 KWS_KEYWORDS_THRESHOLD = float(os.environ.get("KWS_KEYWORDS_THRESHOLD", "0.35"))
+# Two-stage wake (KWS high direct + KWS low → ASR confirm).
+# Sherpa does not expose per-hit scores; dual thresholds approximate high/low.
+WAKE_TWO_STAGE = _configured_bool("WAKE_TWO_STAGE", default=True)
+# High threshold → harder to fire → direct accept (no ASR).
+KWS_HIGH_THRESHOLD = float(
+    os.environ.get("KWS_HIGH_THRESHOLD", str(KWS_KEYWORDS_THRESHOLD))
+)
+# Low threshold → easier candidate → needs ASR verify.
+KWS_LOW_THRESHOLD = float(os.environ.get("KWS_LOW_THRESHOLD", "0.15"))
+# Seconds of audio kept for second-stage ASR on a low-threshold hit.
+WAKE_VERIFY_WINDOW_SEC = float(os.environ.get("WAKE_VERIFY_WINDOW_SEC", "2.0"))
 
 VAD_MODEL_PATH = _configured_path(
     "VAD_MODEL_PATH",
@@ -128,11 +149,30 @@ SPEECH_MIN_SNR_DB = float(os.environ.get("SPEECH_MIN_SNR_DB", "2.0"))
 # off     = no RMS/SNR gate (Silero only)
 COMMAND_VAD_GATE = os.environ.get("VOICE_COMMAND_VAD_GATE", "segment").strip().lower()
 
+# Continuous dialogue idle window after wake / each turn.
+# >0: after wake, user may speak again without the wake word until idle this long.
+#  0: classic single-turn mode (every reply returns to WAITING_WAKE_WORD).
+# Lab tip: 60 or 90. Exhibition tip: often 10–15 to limit ambient false commands.
 VOICE_SESSION_TIMEOUT_SEC = float(os.environ.get("VOICE_SESSION_TIMEOUT_SEC", "60"))
+# Comma/space separated phrases that end a continuous session early.
+VOICE_SESSION_END_PHRASES = os.environ.get(
+    "VOICE_SESSION_END_PHRASES",
+    "退出,结束对话,结束会话,再见,不用了,停止聊天,停止对话",
+)
 # Short anti double-wake after a turn. Combined with POST_TTS_GUARD this is the
 # blackout before the next "小西小西" is accepted. Was 1.5s and felt like "dead"
 # if the user re-woke immediately after TTS.
 WAKE_COOLDOWN_SEC = float(os.environ.get("WAKE_COOLDOWN_SEC", "0.6"))
+
+
+def session_end_phrases() -> tuple[str, ...]:
+    raw = VOICE_SESSION_END_PHRASES.replace("，", ",").replace("、", ",")
+    parts = []
+    for chunk in raw.replace(" ", ",").split(","):
+        token = chunk.strip()
+        if token:
+            parts.append(token)
+    return tuple(parts)
 PROMPT_GUARD_DURATION_SEC = float(os.environ.get("PROMPT_GUARD_DURATION_SEC", "0.25"))
 POST_TTS_GUARD_DURATION_SEC = float(
     os.environ.get("POST_TTS_GUARD_DURATION_SEC", "0.45")
@@ -187,6 +227,16 @@ def validate_runtime_config() -> None:
         raise ValueError("AUDIO_CAPTURE_SAMPLE_RATE must be positive")
     if CAPTURE_CHANNELS <= 0:
         raise ValueError("AUDIO_CAPTURE_CHANNELS must be positive")
+    try:
+        from voice_capture_adapter import normalize_channel_mode
+
+        normalize_channel_mode(AUDIO_CHANNEL_MODE)
+    except Exception as exc:  # CaptureFormatError or import issues
+        raise ValueError(f"AUDIO_CHANNEL_MODE is invalid: {exc}") from exc
+    if AUDIO_CHANNEL_BEST_HOLD <= 0:
+        raise ValueError("AUDIO_CHANNEL_BEST_HOLD must be positive")
+    if AUDIO_CHANNEL_MODE in {"channel_1", "1", "ch1", "right"} and CAPTURE_CHANNELS < 2:
+        raise ValueError("AUDIO_CHANNEL_MODE=channel_1 requires AUDIO_CAPTURE_CHANNELS>=2")
 
     for name, value in (
         ("KWS_NUM_THREADS", KWS_NUM_THREADS),
@@ -200,6 +250,14 @@ def validate_runtime_config() -> None:
         raise ValueError("KWS_KEYWORDS_SCORE must be non-negative")
     if not 0.0 <= KWS_KEYWORDS_THRESHOLD <= 1.0:
         raise ValueError("KWS_KEYWORDS_THRESHOLD must be between 0 and 1")
+    if not 0.0 <= KWS_HIGH_THRESHOLD <= 1.0:
+        raise ValueError("KWS_HIGH_THRESHOLD must be between 0 and 1")
+    if not 0.0 <= KWS_LOW_THRESHOLD <= 1.0:
+        raise ValueError("KWS_LOW_THRESHOLD must be between 0 and 1")
+    if KWS_LOW_THRESHOLD > KWS_HIGH_THRESHOLD:
+        raise ValueError("KWS_LOW_THRESHOLD must be <= KWS_HIGH_THRESHOLD")
+    if WAKE_VERIFY_WINDOW_SEC <= 0:
+        raise ValueError("WAKE_VERIFY_WINDOW_SEC must be positive")
 
     for name, value in (
         ("COMMAND_START_TIMEOUT_SEC", COMMAND_START_TIMEOUT_SEC),

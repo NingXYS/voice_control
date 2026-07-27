@@ -402,12 +402,20 @@ def run_smoke(
         chunk_ms=chunk_ms,
         channels=capture_channels,
     )
-    adapter = CaptureFormatAdapter(source, target, chunk_ms=chunk_ms)
+    channel_mode = os.environ.get("AUDIO_CHANNEL_MODE", "channel_0")
+    best_hold = int(os.environ.get("AUDIO_CHANNEL_BEST_HOLD", "5"))
+    adapter = CaptureFormatAdapter(
+        source,
+        target,
+        chunk_ms=chunk_ms,
+        channel_mode=channel_mode,
+        best_hold_chunks=best_hold,
+    )
 
     chunks_needed = max(1, int(round(seconds * 1000 / chunk_ms)))
     print(
         f"Capture: device={device!r} rate={capture_rate} channels={capture_channels} "
-        f"chunk_ms={chunk_ms}",
+        f"chunk_ms={chunk_ms} channel_mode={adapter.channel_mode}",
         flush=True,
     )
     print(

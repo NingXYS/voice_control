@@ -347,8 +347,9 @@ class TtsModelSelectionTests(unittest.TestCase):
             os.environ.pop("TTS_WARMUP_PHRASES", None)
             os.environ.pop("TTS_SKIP_WARMUP", None)
             os.environ.pop("VOICE_ACTION_ACK_TEXT", None)
+            os.environ.pop("VOICE_WAKE_ACK_TEXT", None)
             phrases = voice_tts._warmup_phrases()
-        self.assertEqual(phrases, ["好的，正在执行"])
+        self.assertEqual(phrases, ["我在", "好的，正在执行"])
 
     def test_disk_phrase_cache_enables_hit_without_model(self):
         import numpy as np

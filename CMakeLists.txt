@@ -36,6 +36,7 @@ install(PROGRAMS
 install(FILES
   scripts/voice_runtime_config.py
   scripts/voice_wake_word.py
+  scripts/voice_wake_verifier.py
   scripts/voice_command_vad.py
   scripts/voice_asr_wake_word.py
   scripts/voice_audio_session.py
@@ -45,6 +46,7 @@ install(FILES
   scripts/voice_wake_runtime.py
   scripts/voice_tts.py
   scripts/voice_dialogue_backend.py
+  scripts/voice_text_segmenter.py
   scripts/voice_asr_backend.py
   scripts/voice_tts_backend.py
   scripts/voice_runtime_container.py

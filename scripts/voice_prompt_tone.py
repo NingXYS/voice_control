@@ -1,10 +1,18 @@
-"""Generate and play a short local wake acknowledgement tone."""
+"""Wake acknowledgement: TTS phrase (default 我在) with local beep fallback."""
+from __future__ import annotations
+
 import math
 import os
 import struct
 import subprocess
 import tempfile
 import wave
+from typing import Callable
+
+
+def wake_ack_text() -> str:
+    """Spoken wake ack; empty disables speech and keeps the beep only."""
+    return os.environ.get("VOICE_WAKE_ACK_TEXT", "我在").strip()
 
 
 def play_prompt_tone(duration_sec=0.12, frequency_hz=880, sample_rate=16000) -> bool:
@@ -35,3 +43,19 @@ def play_prompt_tone(duration_sec=0.12, frequency_hz=880, sample_rate=16000) -> 
                 os.unlink(path)
             except OSError:
                 pass
+
+
+def make_wake_prompt_callback(speaker: Callable[[str], object] | None = None) -> Callable[[], bool]:
+    """Return a prompt_callback that says the wake ack (TTS) or beeps on failure."""
+
+    def _prompt() -> bool:
+        text = wake_ack_text()
+        if text and speaker is not None:
+            try:
+                if speaker(text) is not False:
+                    return True
+            except Exception as exc:
+                print(f"⚠️ wake ack TTS failed, falling back to tone: {exc}", flush=True)
+        return play_prompt_tone()
+
+    return _prompt

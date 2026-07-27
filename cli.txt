@@ -1,5 +1,9 @@
 
-export DIFY_API_KEY="app-aX1eDdXfL7Tan2G1Depberf8"
+
+
+# 本机 Dify；正式配置以 voice_control_online.env 为准
+export DIFY_BASE_URL="http://127.0.0.1:80"
+export DIFY_API_KEY="app-KiWZZq9lVpwSOJyTxKtIWBXx"
 
 
 
@@ -19,7 +23,7 @@ export DIFY_API_KEY="app-aX1eDdXfL7Tan2G1Depberf8"
   .venv_online/bin/python -u scripts/voice_wake_entry.py
 
   使用方法：
-  - 对麦克风说 "小西小西" → 听到"滴"提示音
+  - 对麦克风说 "小西小西" → 听到"我在"应答
   - 然后说出指令，例如"请用一句话介绍你自己"
   - 系统会通过 Dify 处理并用 TTS 播报回复
   

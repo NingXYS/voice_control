@@ -51,6 +51,8 @@ VOICE_WAKE_VENV_DIR="${VOICE_WAKE_VENV_DIR:-${REPO_ROOT}/.venv_online}"
     source "${ONLINE_INSTALL_ROOT}/setup.bash"
 
     # Prefer project env (relative model paths under ${REPO_ROOT}/models/).
+    # Values already set in the environment or in voice_control_online.env win;
+    # the baseline block below only fills unset keys.
     if [ -f "${REPO_ROOT}/voice_control_online.env" ]; then
         # shellcheck disable=SC1091
         set -a
@@ -87,13 +89,41 @@ VOICE_WAKE_VENV_DIR="${VOICE_WAKE_VENV_DIR:-${REPO_ROOT}/.venv_online}"
     export DIFY_BASE_URL="${DIFY_BASE_URL:-http://localhost:80}"
     export DIFY_INPUT_KEY="${DIFY_INPUT_KEY:-text}"
     export DIFY_OUTPUT_KEY="${DIFY_OUTPUT_KEY:-result}"
-    export AUDIO_DEVICE="${AUDIO_DEVICE:-default}"
     export APLAY_DEVICE="${APLAY_DEVICE:-default}"
-    # Hardware capture format (before CaptureFormatAdapter → 16 kHz mono).
-    # UGREEN MIC-CM581 example: hw:3,0 / 48000 / 2
-    export AUDIO_CAPTURE_SAMPLE_RATE="${AUDIO_CAPTURE_SAMPLE_RATE:-16000}"
-    export AUDIO_CAPTURE_CHANNELS="${AUDIO_CAPTURE_CHANNELS:-1}"
     export WAKE_DETECTOR_MODE="${WAKE_DETECTOR_MODE:-kws}"
+
+    # -------------------------------------------------------------------------
+    # Lab baseline (2026-07, UGREEN CM581 + two-stage wake + continuous session)
+    # Only applied when the variable is still unset after env file / caller export.
+    # Override anytime: export FOO=... before bash scripts/run_voice_wake.sh
+    # -------------------------------------------------------------------------
+    # Capture: UGREEN USB mic (CARD name survives re-plug better than hw:N,0)
+    export AUDIO_DEVICE="${AUDIO_DEVICE:-hw:CARD=MICCM581,DEV=0}"
+    export AUDIO_CAPTURE_SAMPLE_RATE="${AUDIO_CAPTURE_SAMPLE_RATE:-48000}"
+    export AUDIO_CAPTURE_CHANNELS="${AUDIO_CAPTURE_CHANNELS:-2}"
+    export AUDIO_CHANNEL_MODE="${AUDIO_CHANNEL_MODE:-channel_0}"
+
+    # Dialogue frontend vs KWS: keep KWS on raw mono; ASR path passthrough by default
+    export VOICE_AUDIO_FRONTEND="${VOICE_AUDIO_FRONTEND:-passthrough}"
+    export VOICE_KWS_USE_RAW="${VOICE_KWS_USE_RAW:-1}"
+
+    # Two-stage wake: high KWS direct, low KWS → ASR confirm
+    export WAKE_TWO_STAGE="${WAKE_TWO_STAGE:-1}"
+    export KWS_HIGH_THRESHOLD="${KWS_HIGH_THRESHOLD:-0.35}"
+    export KWS_LOW_THRESHOLD="${KWS_LOW_THRESHOLD:-0.15}"
+    export KWS_KEYWORDS_THRESHOLD="${KWS_KEYWORDS_THRESHOLD:-${KWS_HIGH_THRESHOLD}}"
+    export KWS_KEYWORDS_SCORE="${KWS_KEYWORDS_SCORE:-1.5}"
+    export WAKE_VERIFY_WINDOW_SEC="${WAKE_VERIFY_WINDOW_SEC:-2.0}"
+    export WAKE_MATCH_THRESHOLD="${WAKE_MATCH_THRESHOLD:-0.82}"
+
+    # Continuous dialogue: idle window without re-wake (seconds)
+    export VOICE_SESSION_TIMEOUT_SEC="${VOICE_SESSION_TIMEOUT_SEC:-60}"
+
+    # Streaming reply + sentence-level Matcha TTS (faster first audio on long answers)
+    export VOICE_STREAM_REPLY="${VOICE_STREAM_REPLY:-1}"
+    export VOICE_SENTENCE_TTS="${VOICE_SENTENCE_TTS:-1}"
+    # workflow = structured /v1/workflows/run (default). chat = /v1/chat-messages stream.
+    export DIFY_API_MODE="${DIFY_API_MODE:-workflow}"
 
     if [ -z "${DIFY_API_KEY:-}" ]; then
         echo "Check failed: DIFY_API_KEY is not set." >&2
@@ -147,11 +177,18 @@ for lib in libs:
         voice_capture_adapter.py \
         voice_audio_frontend.py \
         voice_wake_word.py \
+        voice_wake_verifier.py \
         voice_command_vad.py \
         voice_asr_backend.py \
         voice_text_pipeline.py \
         voice_llm_client.py \
-        voice_local_knowledge.py; do
+        voice_local_knowledge.py \
+        voice_dialogue_backend.py \
+        voice_text_pipeline.py \
+        voice_text_segmenter.py; do
+        if [ ! -f "${REPO_ROOT}/scripts/${file}" ]; then
+            continue
+        fi
         if ! cmp -s "${REPO_ROOT}/scripts/${file}" "${INSTALLED_PACKAGE_DIR}/${file}"; then
             echo "Check failed: installed overlay is stale for ${file}." >&2
             echo "Please run 'bash scripts/setup_voice_wake.sh' before launching." >&2
@@ -238,11 +275,11 @@ for lib in libs:
     fi
 
     export VOICE_AUDIO_FRONTEND="${VOICE_AUDIO_FRONTEND:-passthrough}"
-    echo "Capture config: AUDIO_DEVICE=${AUDIO_DEVICE} AUDIO_CAPTURE_SAMPLE_RATE=${AUDIO_CAPTURE_SAMPLE_RATE} AUDIO_CAPTURE_CHANNELS=${AUDIO_CAPTURE_CHANNELS}"
-    echo "Audio frontend: VOICE_AUDIO_FRONTEND=${VOICE_AUDIO_FRONTEND}"
-    echo "Tip: for UGREEN CM581 use AUDIO_DEVICE=hw:N,0 AUDIO_CAPTURE_SAMPLE_RATE=48000 AUDIO_CAPTURE_CHANNELS=2"
-    echo "     smoke test: python3 scripts/voice_capture_smoke.py --free-device --seconds 5"
-    echo "     NS A/B: VOICE_AUDIO_FRONTEND=passthrough|basic|ns"
+    echo "Capture: DEVICE=${AUDIO_DEVICE} ${AUDIO_CAPTURE_SAMPLE_RATE}Hz/${AUDIO_CAPTURE_CHANNELS}ch channel_mode=${AUDIO_CHANNEL_MODE}"
+    echo "Frontend: VOICE_AUDIO_FRONTEND=${VOICE_AUDIO_FRONTEND} VOICE_KWS_USE_RAW=${VOICE_KWS_USE_RAW}"
+    echo "Wake: TWO_STAGE=${WAKE_TWO_STAGE} high=${KWS_HIGH_THRESHOLD} low=${KWS_LOW_THRESHOLD} session=${VOICE_SESSION_TIMEOUT_SEC}s"
+    echo "Reply: STREAM=${VOICE_STREAM_REPLY} SENTENCE_TTS=${VOICE_SENTENCE_TTS} DIFY_API_MODE=${DIFY_API_MODE}"
+    echo "Tip: override any export before launch; smoke: .venv_online/bin/python scripts/voice_capture_smoke.py --free-device --seconds 5"
 
     echo "All checks passed successfully."
 
@@ -251,5 +288,20 @@ for lib in libs:
     fi
 
     echo "Starting voice_wake_entry.py..."
-    exec ros2 run voice_control voice_wake_entry.py
+    # ament discovers lib/<pkg>/<name> only when the file is executable.
+    # Manual cp from scripts/ can drop +x and make `ros2 run` print "No executable found".
+    ENTRY_SCRIPT="${INSTALLED_PACKAGE_DIR}/voice_wake_entry.py"
+    if [ ! -x "${ENTRY_SCRIPT}" ]; then
+        chmod +x "${ENTRY_SCRIPT}" 2>/dev/null || true
+    fi
+    if command -v ros2 >/dev/null 2>&1 && [ -x "${ENTRY_SCRIPT}" ]; then
+        exec ros2 run voice_control voice_wake_entry.py
+    fi
+    # Fallback: run the installed entry with the venv interpreter (same overlay files).
+    if [ -f "${ENTRY_SCRIPT}" ]; then
+        echo "Note: launching via python3 ${ENTRY_SCRIPT} (ros2 run unavailable or entry not executable)."
+        exec python3 "${ENTRY_SCRIPT}"
+    fi
+    echo "Error: voice_wake_entry.py not found at ${ENTRY_SCRIPT}" >&2
+    exit 1
 )

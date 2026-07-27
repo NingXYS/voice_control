@@ -64,14 +64,22 @@ def _warmup_phrases() -> list[str]:
     raw = os.environ.get("TTS_WARMUP_PHRASES", "").strip()
     if raw:
         return [part.strip() for part in raw.split("|") if part.strip()]
-    # Keep in sync with VOICE_ACTION_ACK_TEXT / ACTION_EXECUTION_REPLY default.
-    # Only warm the first-turn action ack by default: extra long phrases make
+    # Keep in sync with wake ack + thinking ack + action ack defaults.
+    # Only warm short first-turn phrases by default: extra long phrases make
     # background preload take several more seconds before speak() is free.
+    wake_ack = os.environ.get("VOICE_WAKE_ACK_TEXT", "我在").strip() or "我在"
+    think_ack = (
+        os.environ.get("VOICE_THINKING_ACK_TEXT", "小西收到").strip() or "小西收到"
+    )
     ack = (
         os.environ.get("VOICE_ACTION_ACK_TEXT", "好的，正在执行").strip()
         or "好的，正在执行"
     )
-    return [ack]
+    phrases = []
+    for phrase in (wake_ack, think_ack, ack):
+        if phrase and phrase not in phrases:
+            phrases.append(phrase)
+    return phrases
 
 
 def _num_threads() -> int:
@@ -264,10 +272,12 @@ def _local_reply_phrases() -> list[str]:
         seen.add(cleaned)
         phrases.append(cleaned)
 
-    # Action / pipeline fixed lines + thinking ack (must stay disk-cached for <1s)
+    # Action / pipeline fixed lines + wake/thinking ack (must stay disk-cached for <1s)
+    _add(os.environ.get("VOICE_WAKE_ACK_TEXT", "我在").strip() or "我在")
     _add(os.environ.get("VOICE_ACTION_ACK_TEXT", "好的，正在执行") or "好的，正在执行")
     _add(os.environ.get("VOICE_THINKING_ACK_TEXT", "小西收到").strip() or "小西收到")
     _add("好的")
+    _add("我在")
     _add("小西收到")
     _add("刚才没有听清有效指令，请靠近麦克风后简短再说一次。")
     try:

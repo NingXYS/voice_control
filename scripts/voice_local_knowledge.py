@@ -309,6 +309,7 @@ def normalize_joint_refs(text: str) -> str:
       关节三 → 关节3
       一关节 / 膝关节 (field mishears) → 关节1 when arm context exists
       后四关节 / 度五关节 (same-arm multi-joint chains) → 后关节4 / 度关节5
+      右臂四关节二十度 → 右臂关节4二十度  (must NOT become 关节42十度)
     """
     if not isinstance(text, str) or not text:
         return text if isinstance(text, str) else ""
@@ -319,8 +320,9 @@ def normalize_joint_refs(text: str) -> str:
 
     # 第N关节 / 第N个关节 (N = 1-6 or 一..六)
     out = re.sub(r"第([一二两三四五六1-6])个?关节", _ord_repl, text)
-    # 关节一 / 关节六 (do not touch 关节10+; only single Chinese digit 1-6)
-    out = re.sub(r"关节([一二两三四五六])", _ord_repl, out)
+
+    # Bare "N关节" forms MUST run before "关节N". Otherwise:
+    #   四关节二十度 → false match on 关节二 → 四关节2十度 → 关节42十度
     # Bare "一关节" / "二关节" (missing 第) after arm-ish context
     out = re.sub(
         r"(?<=[左右臂手])([一二两三四五六1-6])个?关节",
@@ -330,8 +332,26 @@ def normalize_joint_refs(text: str) -> str:
     # Same-arm multi-joint chains often drop the arm word:
     # 「左臂关节3旋转三十度后四关节旋转二十度」→「…后关节4…」
     # Lookbehind tokens: connectors / previous unit / rotation verbs.
+    # Exclude bare 转 inside 旋转 when the next token is N关节 for angle text —
+    # connectors 后/再/… already cover multi-joint chains.
     out = re.sub(
-        r"(?<=[后度再和与及,，转])([一二两三四五六1-6])个?关节",
+        r"(?<=[后度再和与及,，])([一二两三四五六1-6])个?关节",
+        _ord_repl,
+        out,
+    )
+    # Also allow continuation after a completed 度 or 转 (…度四关节 / …转转四关节 rare).
+    # Require that N关节 is not the start of a Chinese teens number (N十…).
+    out = re.sub(
+        r"(?<=[度转])([一二两三四五六1-6])个?关节(?![十百千万])",
+        _ord_repl,
+        out,
+    )
+
+    # 关节一 / 关节六 — only a standalone joint index, not mid-number glue.
+    # Negative lookbehind: skip when a digit already prefixes 关节 (N关节 form).
+    # Negative lookahead: skip 关节二 inside …关节二十度 (angle starts with 二/三…).
+    out = re.sub(
+        r"(?<![一二两三四五六1-6])关节([一二两三四五六])(?![十百千万])",
         _ord_repl,
         out,
     )

@@ -35,7 +35,10 @@ class OnlineVoicePhase1Tests(unittest.TestCase):
         self.assertIn("自适应阻抗控制", result[0]["reply"])
         self.assertIn("强化学习", result[0]["reply"])
         self.assertIn("视觉语言模型", result[0]["reply"])
-        speaker.assert_called_once_with(result[0]["reply"])
+        # Sentence-level TTS may split a long local reply into multiple speak() calls.
+        spoken = "".join(str(c.args[0]) for c in speaker.call_args_list)
+        self.assertIn("精密装配场景", spoken)
+        self.assertGreaterEqual(speaker.call_count, 1)
 
     def test_hardware_qa_hits_local_knowledge(self):
         speaker = mock.Mock()

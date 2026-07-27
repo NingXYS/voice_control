@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 import re
+import time
 
 from voice_dialogue_backend import run_dialogue
 from voice_command_validation import validate_command_batch
 from voice_llm_client import check_local_reply_command, check_simple_action_command
 from voice_local_knowledge import normalize_text, repair_asr_text
+from voice_text_segmenter import StreamingTextSegmenter, split_sentences
 
 
 # Short default keeps TTS generate time down on weak devices; override if needed.
@@ -23,6 +25,24 @@ THINKING_ACK_TEXT = _os.environ.get("VOICE_THINKING_ACK_TEXT", "小西收到").s
 
 def _thinking_ack_enabled() -> bool:
     return _os.environ.get("VOICE_THINKING_ACK", "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _stream_reply_enabled() -> bool:
+    return _os.environ.get("VOICE_STREAM_REPLY", "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _sentence_tts_enabled() -> bool:
+    return _os.environ.get("VOICE_SENTENCE_TTS", "1").strip().lower() in {
         "1",
         "true",
         "yes",
@@ -80,6 +100,37 @@ def _speak_thinking_ack(speaker) -> bool:
     except Exception as exc:
         print(f"⚠️ thinking ack failed: {exc}", flush=True)
         return False
+
+
+def _speak_text(speaker, text: str, *, sentence_tts: bool | None = None) -> None:
+    """Speak a reply; optionally split into sentences for lower time-to-first-audio."""
+    if speaker is None or not isinstance(text, str) or not text.strip():
+        return
+    use_sentences = _sentence_tts_enabled() if sentence_tts is None else sentence_tts
+    if not use_sentences or _tts_phrase_ready(text):
+        speaker(text)
+        return
+    parts = split_sentences(text)
+    if not parts:
+        speaker(text)
+        return
+    if len(parts) == 1:
+        speaker(parts[0])
+        return
+    print(f"🗣️ 句级 TTS: {len(parts)} 句", flush=True)
+    for index, part in enumerate(parts, start=1):
+        t0 = time.perf_counter()
+        speaker(part)
+        print(
+            f"⏱️ sentence[{index}/{len(parts)}] chars={len(part)} "
+            f"ms={(time.perf_counter() - t0) * 1000.0:.0f}",
+            flush=True,
+        )
+
+
+def _looks_like_json_prefix(text: str) -> bool:
+    s = (text or "").lstrip()
+    return s.startswith("{") or s.startswith("[") or s.startswith("```")
 
 
 def is_plausible_utterance(text: str) -> bool:
@@ -153,7 +204,7 @@ def process_text(
             # Instant full reply if pre-rendered; otherwise short ack first.
             if not _tts_phrase_ready(reply):
                 _speak_thinking_ack(speaker)
-            speaker(reply)
+            _speak_text(speaker, reply)
         return checked
 
     # Template arm motion: parse locally so field ASR variants (往后/把左臂/…)
@@ -171,11 +222,21 @@ def process_text(
         print("⚠️ 识别结果过长且无控制特征，疑似环境人声，已忽略", flush=True)
         reject = [{"reply": _AMBIENT_REJECT_REPLY}]
         if speaker is not None:
-            speaker(_AMBIENT_REJECT_REPLY)
+            _speak_text(speaker, _AMBIENT_REJECT_REPLY, sentence_tts=False)
         return reject
 
     # Dify / slow path: open with a cached short ack so dead air stays under ~1s.
     _speak_thinking_ack(speaker)
+
+    # Streaming path: first complete sentence can TTS while the rest still generates.
+    stream_fn = getattr(dialogue, "stream_reply", None) if dialogue is not None else None
+    if _stream_reply_enabled() and callable(stream_fn):
+        return _process_stream_dialogue(
+            dialogue,
+            text,
+            executor=executor,
+            speaker=speaker,
+        )
 
     commands = _run_dialogue(dialogue, text)
     if commands is None:
@@ -187,7 +248,92 @@ def process_text(
     return _dispatch_commands(checked, executor=executor, speaker=speaker)
 
 
-def _dispatch_commands(checked, executor=None, speaker=None):
+def _process_stream_dialogue(dialogue, text, executor=None, speaker=None):
+    """Consume Dify SSE stream: sentence TTS for prose; JSON buffered until done."""
+    print("🌊 流式回复开启（句级 TTS）", flush=True)
+    segmenter = StreamingTextSegmenter()
+    acc: list[str] = []
+    spoke_streaming = False
+    json_mode = False
+    t0 = time.perf_counter()
+    first_sentence_at = None
+    commands = None
+
+    try:
+        for kind, payload in dialogue.stream_reply(text):
+            if kind == "delta" and isinstance(payload, str) and payload:
+                acc.append(payload)
+                joined = "".join(acc)
+                if not json_mode and _looks_like_json_prefix(joined):
+                    json_mode = True
+                    segmenter.reset()
+                    continue
+                if json_mode:
+                    continue
+                for sentence in segmenter.feed(payload):
+                    if speaker is not None:
+                        if first_sentence_at is None:
+                            first_sentence_at = time.perf_counter()
+                            print(
+                                f"⏱️ stream first sentence after "
+                                f"{(first_sentence_at - t0) * 1000.0:.0f} ms: "
+                                f"{sentence[:40]!r}",
+                                flush=True,
+                            )
+                        speaker(sentence)
+                        spoke_streaming = True
+            elif kind == "done":
+                commands = payload
+    except Exception as exc:
+        print(f"⚠️ stream dialogue failed: {exc}", flush=True)
+        commands = _run_dialogue(dialogue, text)
+
+    # Flush trailing prose if we were speaking stream text.
+    if not json_mode and speaker is not None:
+        for sentence in segmenter.flush():
+            if first_sentence_at is None:
+                first_sentence_at = time.perf_counter()
+                print(
+                    f"⏱️ stream first sentence after "
+                    f"{(first_sentence_at - t0) * 1000.0:.0f} ms: "
+                    f"{sentence[:40]!r}",
+                    flush=True,
+                )
+            speaker(sentence)
+            spoke_streaming = True
+
+    if commands is None:
+        # Build a reply from accumulated plain text.
+        full = "".join(acc).strip()
+        if full and not _looks_like_json_prefix(full):
+            commands = [{"reply": full}]
+        else:
+            return None
+
+    checked = validate_command_batch(commands)
+    if checked is None:
+        return None
+
+    # If we already spoke prose deltas, avoid re-speaking the same reply text.
+    if spoke_streaming and not any("action" in c for c in checked if isinstance(c, dict)):
+        # Only replies and already spoken — still return for logging.
+        print(
+            f"⏱️ stream total {(time.perf_counter() - t0) * 1000.0:.0f} ms "
+            f"(replies already spoken)",
+            flush=True,
+        )
+        return checked
+
+    # Structured actions / JSON path: speak replies by sentence (may not have streamed).
+    return _dispatch_commands(
+        checked,
+        executor=executor,
+        speaker=speaker,
+        skip_reply_tts=spoke_streaming,
+    )
+
+
+def _dispatch_commands(checked, executor=None, speaker=None, skip_reply_tts=False):
     """Execute validated action/reply batch and speak acks. Shared by local+Dify."""
     actions = [command for command in checked if "reply" not in command]
     # 先检查是否存在需要确认的动作指令（无论 executor 是否启用）
@@ -211,8 +357,9 @@ def _dispatch_commands(checked, executor=None, speaker=None):
         if ACTION_EXECUTION_REPLY != THINKING_ACK_TEXT:
             speaker(ACTION_EXECUTION_REPLY)
 
-    for command in checked:
-        if "reply" in command and speaker is not None:
-            speaker(command["reply"])
+    if not skip_reply_tts:
+        for command in checked:
+            if "reply" in command and speaker is not None:
+                _speak_text(speaker, command["reply"])
 
     return checked

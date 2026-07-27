@@ -1277,6 +1277,24 @@ class LocalReplyCommandTests(unittest.TestCase):
             local_knowledge.repair_asr_text("拿你的左臂第一关节旋转二十度"),
             "左臂关节1旋转二十度",
         )
+        # Regression: 「四关节二十度」must not glue into 「关节42十度」
+        # (旧规则误把「关节二」从「四关节二十度」里抠出来).
+        self.assertEqual(
+            local_knowledge.repair_asr_text("旋旋转右臂四关节二十度"),
+            "右臂关节4二十度",
+        )
+        self.assertEqual(
+            local_knowledge.repair_asr_text("右臂四关节二十度"),
+            "右臂关节4二十度",
+        )
+        parsed = check_simple_action_command("旋旋转右臂四关节二十度")
+        self.assertIsNotNone(parsed)
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0]["action"], "move_joint")
+        self.assertEqual(parsed[0]["arm"], "right")
+        self.assertEqual(parsed[0]["joint"], 4)
+        self.assertEqual(parsed[0]["type"], "delta")
+        self.assertAlmostEqual(parsed[0]["value"], 20 * 3.141592653589793 / 180.0, places=5)
         # Same-arm multi-joint chain must not be truncated to the first joint only.
         self.assertEqual(
             local_knowledge.repair_asr_text(
