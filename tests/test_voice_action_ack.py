@@ -128,7 +128,10 @@ class VoiceActionAcknowledgementTests(unittest.TestCase):
 
     def test_thinking_ack_skipped_when_local_reply_already_cached(self):
         spoken = []
-        reply = "我是施耐力双臂六关节机械臂，拥有左右两条手臂，各六个关节。"
+        reply = (
+            "我是一款面向精密装配场景的具身智能双臂机器人，"
+            "深度融合自适应阻抗控制、强化学习与视觉语言模型三大技术。"
+        )
         with mock.patch.object(
             voice_text_pipeline,
             "check_local_reply_command",

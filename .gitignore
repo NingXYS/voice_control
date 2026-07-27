@@ -33,6 +33,29 @@ install_online/
 logs/
 voice_control_online.env
 
+# Local test audio
+*.wav
+
+# Local AI config
+.claude/
+
 # Migration acceptance runtime outputs
 migration_acceptance/**/*.log
 migration_acceptance/**/*.wav
+
+# Runtime generated files
+*.wav
+*.pyc
+__pycache__/
+
+# Python cache
+**/__pycache__/
+
+# Runtime cache
+models/tts/phrase_cache/
+
+# Build/install outputs
+install_online/
+
+# Environment
+*.env

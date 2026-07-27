@@ -29,10 +29,12 @@ class OnlineVoicePhase1Tests(unittest.TestCase):
             dialogue=DialogueMustNotRun(),
         )
 
-        self.assertEqual(
-            result,
-            [{"reply": "我是施耐力双臂六关节机械臂，拥有左右两条手臂，各六个关节。"}],
-        )
+        self.assertEqual(len(result), 1)
+        self.assertIn("reply", result[0])
+        self.assertIn("精密装配场景", result[0]["reply"])
+        self.assertIn("自适应阻抗控制", result[0]["reply"])
+        self.assertIn("强化学习", result[0]["reply"])
+        self.assertIn("视觉语言模型", result[0]["reply"])
         speaker.assert_called_once_with(result[0]["reply"])
 
     def test_hardware_qa_hits_local_knowledge(self):

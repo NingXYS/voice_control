@@ -942,6 +942,11 @@ class LocalReplyCommandTests(unittest.TestCase):
                 self.assertIn("左右", reply)
                 self.assertIn("关节旋转", reply)
                 self.assertIn("空间移动", reply)
+                # 新自我介绍模板中的技术能力摘要
+                self.assertTrue(
+                    "精密装配" in reply or "阻抗" in reply or "强化学习" in reply,
+                    msg=f"capability reply should mention assembly tech: {reply}",
+                )
                 # 不得声明的未对齐能力
                 forbidden = ["回零", "零位", "状态", "查询状态", "home", "get_status"]
                 for word in forbidden:

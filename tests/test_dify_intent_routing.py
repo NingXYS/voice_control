@@ -92,18 +92,23 @@ class DifyIntentRoutingTests(unittest.TestCase):
 
         scope = {}
         exec(node["data"]["code"], scope)
-        expected_replies = {
-            "你是谁": "我是施耐力双臂六关节机械臂，拥有左右两条手臂，各六个关节。",
-            "你能做什么": "我可以控制左右两条机械臂，支持关节旋转和空间移动。",
-            "你你会干什么": "我可以控制左右两条机械臂，支持关节旋转和空间移动。",
-            "给我唱首歌": "我不能唱歌。我可以控制左右两条机械臂，支持关节旋转和空间移动。",
-            "今天天气怎么样": "我无法查询天气。我可以帮助控制左右两条机械臂。",
-            "谢谢": "不客气，很高兴能帮到你。",
+        expected_needles = {
+            "你是谁": ["精密装配场景", "自适应阻抗控制", "强化学习", "视觉语言模型"],
+            "自我介绍": ["感知-决策-执行", "柔性装配产线"],
+            "强化学习": ["训练周期", "工件公差"],
+            "阻抗控制": ["力矩传感器", "力觉响应"],
+            "你能做什么": ["关节旋转", "空间移动"],
+            "你你会干什么": ["关节旋转", "空间移动"],
+            "给我唱首歌": ["不能唱歌"],
+            "今天天气怎么样": ["无法查询天气"],
+            "谢谢": ["不客气"],
         }
-        for user_text, expected_reply in expected_replies.items():
+        for user_text, needles in expected_needles.items():
             with self.subTest(user_text=user_text):
                 output = scope["main"](user_text)
-                self.assertEqual(json.loads(output["result"]), {"reply": expected_reply})
+                reply = json.loads(output["result"])["reply"]
+                for needle in needles:
+                    self.assertIn(needle, reply)
 
         edge = next(
             edge

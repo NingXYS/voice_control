@@ -276,7 +276,10 @@ def _local_reply_phrases() -> list[str]:
         _add(INTRO_TEXT)
         _add(LOCAL_CONTROL_CLARIFICATION_REPLY)
     except Exception:
-        _add("我是施耐力双臂六关节机械臂，拥有左右两条手臂，各六个关节。")
+        _add(
+            "我是一款面向精密装配场景的具身智能双臂机器人，"
+            "深度融合自适应阻抗控制、强化学习与视觉语言模型三大技术。"
+        )
         _add("请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。")
     try:
         from voice_local_knowledge import list_all_local_replies
@@ -313,8 +316,10 @@ def _phrase_cache_dir() -> Path:
 
 
 def _disk_cache_key(text: str) -> str:
+    # Include spoken form + norm version so polyphone/acronym fixes bust stale audio.
+    spoken = normalize_tts_text(text)
     material = (
-        f"{text}\0sid={_speaker_id()}\0speed={_speed()}\0"
+        f"{text}\0spoken={spoken}\0norm=v9\0sid={_speaker_id()}\0speed={_speed()}\0"
         f"model={_model_file(str(_MODEL_DIR))}"
     )
     return hashlib.sha1(material.encode("utf-8")).hexdigest()
@@ -574,7 +579,9 @@ def tts_init(model_dir=None):
                 with _lock:
                     if _cache_get(phrase) is not None:
                         continue
-                    audio = engine.generate(phrase, sid=sid, speed=spd)
+                    audio = engine.generate(
+                        normalize_tts_text(phrase), sid=sid, speed=spd
+                    )
                     if audio is not None and len(audio.samples) > 0:
                         import numpy as np
 
@@ -614,21 +621,37 @@ def _start_faq_precache() -> None:
         )
         return
 
+    # 短句优先：长自我介绍合成会长时间占 _lock，拖慢启动后首轮 speak。
+    # 超长句放到最后；可选跳过（TTS_PRECACHE_MAX_CHARS，默认 120）。
+    try:
+        max_chars = int(os.environ.get("TTS_PRECACHE_MAX_CHARS", "120"))
+    except ValueError:
+        max_chars = 120
+    short_first = sorted(missing, key=len)
+    if max_chars > 0:
+        primary = [p for p in short_first if len(p) <= max_chars]
+        deferred = [p for p in short_first if len(p) > max_chars]
+    else:
+        primary, deferred = short_first, []
+    ordered = primary + deferred
+
     print(
-        f"⏳ TTS local reply precache started (missing={len(missing)})",
+        f"⏳ TTS local reply precache started "
+        f"(missing={len(ordered)}, short={len(primary)}, long={len(deferred)})",
         flush=True,
     )
 
     def _run() -> None:
         filled = 0
         try:
-            for phrase in missing:
+            for phrase in ordered:
+                # 每句单独加锁，句间释放，便于用户 speak 插队
                 with _lock:
                     if _tts is None or _cache_get(phrase) is not None:
                         continue
                     try:
                         audio = _tts.generate(
-                            phrase,
+                            normalize_tts_text(phrase),
                             sid=_speaker_id(),
                             speed=_speed(),
                         )
@@ -933,6 +956,80 @@ def _play_via_temp_wav(samples, sample_rate: int, device: str | None = None) -> 
                 pass
 
 
+# Matcha 中文词表会 Ignore OOV 直接丢字：英文缩写、连字符、括号等。
+# 展示文案不改；仅合成前替换。缓存 key 仍用原文。
+# 注意：不把「力矩」改成「转矩」；用停顿拆开「力」「矩」让 ju3 更清晰。
+_TTS_PHRASE_REPLACEMENTS: tuple[tuple[str, str], ...] = (
+    # 英文：中文含义，不读字母
+    ("VLM", "视觉语言模型"),
+    ("vlm", "视觉语言模型"),
+    ("3C电子", "三西电子"),
+    ("3c电子", "三西电子"),
+    ("3C", "三西"),
+    ("3c", "三西"),
+    # 力矩：保留「力」「矩」二字，中间加顿号强制两拍（不改成转矩）
+    ("力矩传感器", "力、矩传感器"),
+    ("力矩", "力、矩"),
+    # 位姿：模型常把「位/为」读成二三声；「卫」在词表仅 wei4，逼第四声
+    ("位姿偏差", "卫、姿偏差"),
+    ("位姿", "卫、姿"),
+    # 「缩至」连读含糊 → 拉长为更清晰口语
+    ("缩至数小时", "缩短到数小时"),
+    ("缩至", "缩短到"),
+    # 多音字（词表曾把公差标成 chai1；条/插为稳妥逼读）
+    ("调整", "条整"),
+    ("公差", "公插"),
+    # 连字符整段（日志: Ignore OOV '-'）
+    ("感知-决策-执行", "感知决策执行"),
+    ("感知—决策—执行", "感知决策执行"),
+    ("感知–决策–执行", "感知决策执行"),
+)
+
+# 残余 OOV 标点直接去掉，避免整段被切碎/漏读
+_TTS_OOV_PUNCT_TRANSLATE = str.maketrans(
+    {
+        "-": "",
+        "–": "",
+        "—": "",
+        "_": "",
+        "(": "",
+        ")": "",
+        "（": "",
+        "）": "",
+        "[": "",
+        "]": "",
+        "{": "",
+        "}": "",
+        "“": "",
+        "”": "",
+        "‘": "",
+        "’": "",
+        '"': "",
+        "'": "",
+    }
+)
+
+
+def normalize_tts_text(text: str) -> str:
+    """Rewrite text for Matcha Chinese TTS (not for display/logs).
+
+    - VLM → 视觉语言模型；3C → 三西（不读英文字母）
+    - 力矩 → 力、矩（保留原字，顿号拆拍，不用转矩）
+    - 位姿 → 卫、姿（「卫」仅第四声 wei4；「为」仍是多音易读错）
+    - 缩至 → 缩短到（连读更清晰）
+    - 调整 → 条整；公差 → 公插
+    - 去掉连字符/括号等 OOV 标点
+    """
+    if not isinstance(text, str) or not text:
+        return text if isinstance(text, str) else ""
+    out = text
+    for src, dst in _TTS_PHRASE_REPLACEMENTS:
+        if src in out:
+            out = out.replace(src, dst)
+    out = out.translate(_TTS_OOV_PUNCT_TRANSLATE)
+    return out
+
+
 def tts_phrase_ready(text: str) -> bool:
     """Return True if text can be played without ONNX generate (memory or disk)."""
     if not isinstance(text, str) or not text.strip():
@@ -958,11 +1055,15 @@ def tts_speak(text):
     Cache hit (memory/disk): play immediately — no model wait (local replies <1s).
     Cache miss + stream: generate with callback into aplay.
     Cache miss without stream: generate fully, then play.
+
+    Cache keys use the caller text; synthesis uses normalize_tts_text() so
+    English acronyms / polyphones are spoken correctly.
     """
     if not isinstance(text, str) or not text.strip():
         return False
 
     key = text.strip()
+    spoken = normalize_tts_text(key)
     # Disk-backed local replies can play before ONNX is ready.
     _ensure_disk_phrases_loaded()
 
@@ -1014,14 +1115,14 @@ def tts_speak(text):
                 cache_hit = False
                 stream_mode = True
                 result = _play_streamed_generate(
-                    key,
+                    spoken,
                     sid=_speaker_id(),
                     speed=_speed(),
                 )
                 if result is None:
                     stream_mode = False
                     audio = _tts.generate(
-                        key,
+                        spoken,
                         sid=_speaker_id(),
                         speed=_speed(),
                     )
@@ -1051,7 +1152,7 @@ def tts_speak(text):
             else:
                 cache_hit = False
                 audio = _tts.generate(
-                    key,
+                    spoken,
                     sid=_speaker_id(),
                     speed=_speed(),
                 )
