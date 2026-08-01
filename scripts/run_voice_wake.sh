@@ -183,6 +183,8 @@ for lib in libs:
         voice_text_pipeline.py \
         voice_llm_client.py \
         voice_local_knowledge.py \
+        voice_assembly_controller.py \
+        voice_runtime_container.py \
         voice_dialogue_backend.py \
         voice_text_pipeline.py \
         voice_text_segmenter.py; do

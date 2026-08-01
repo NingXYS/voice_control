@@ -4,7 +4,12 @@ import time
 
 from voice_dialogue_backend import run_dialogue
 from voice_command_validation import validate_command_batch
-from voice_llm_client import check_local_reply_command, check_simple_action_command
+from voice_llm_client import (
+    check_assembly_command,
+    check_local_reply_command,
+    check_photo_command,
+    check_simple_action_command,
+)
 from voice_local_knowledge import normalize_text, repair_asr_text
 from voice_text_segmenter import StreamingTextSegmenter, split_sentences
 
@@ -167,6 +172,90 @@ def is_plausible_utterance(text: str) -> bool:
     return True
 
 
+def _get_assembly_controller(runtime=None, assembly_controller=None):
+    if assembly_controller is not None:
+        return assembly_controller
+    if runtime is not None:
+        ctrl = getattr(runtime, "assembly_controller", None)
+        if ctrl is not None:
+            return ctrl
+    return None
+
+
+def _handle_assembly_intents(text, speaker=None, runtime=None, assembly_controller=None):
+    """Two-step assembly: photo first, then count + auto_demo. Returns list or None."""
+    ctrl = _get_assembly_controller(runtime, assembly_controller)
+
+    # 阶段②：装配数量（优先于拍照，避免「装配两个」误判为开始装配）
+    count = check_assembly_command(text)
+    if count is not None:
+        print(f"🔩 本地装配指令命中，数量: {count}", flush=True)
+        if ctrl is None:
+            # 懒创建，便于无 runtime 的调用路径
+            try:
+                from voice_assembly_controller import AssemblyController
+
+                ctrl = AssemblyController()
+                if runtime is not None:
+                    runtime.assembly_controller = ctrl
+            except Exception as exc:
+                print(f"⚠️ 无法创建装配控制器: {exc}", flush=True)
+                reply = f"已识别装配{count}个，但装配控制器不可用"
+                if speaker is not None:
+                    _speak_text(speaker, reply, sentence_tts=False)
+                return [{"reply": reply, "action": "assembly_start", "count": count}]
+        result = ctrl.start_assembly(count, speaker=speaker)
+        # 不走 robot_command 校验 schema；直接返回结果供日志
+        out = {
+            "action": "assembly_start",
+            "count": int(result.get("count", count)),
+        }
+        if result.get("reply"):
+            out["reply"] = result["reply"]
+        elif result.get("reason") == "need_photo":
+            out["reply"] = "请先说开始拍照，完成检测后再告诉我装配几个"
+        elif result.get("reason") == "disabled":
+            out["reply"] = f"已解析装配{count}个（执行未启用）"
+            # controller 在 disabled 时不播报，补一句避免静音
+            if speaker is not None:
+                _speak_text(speaker, out["reply"], sentence_tts=False)
+        elif result.get("reason") == "launch_failed":
+            out["reply"] = "装配节点启动失败，请检查机械臂环境"
+            if speaker is not None:
+                _speak_text(speaker, out["reply"], sentence_tts=False)
+        return [out]
+
+    # 阶段①：拍照 / 准备装配
+    if check_photo_command(text):
+        print("📷 本地拍照/准备装配指令命中", flush=True)
+        if ctrl is None:
+            try:
+                from voice_assembly_controller import AssemblyController
+
+                ctrl = AssemblyController()
+                if runtime is not None:
+                    runtime.assembly_controller = ctrl
+            except Exception as exc:
+                print(f"⚠️ 无法创建装配控制器: {exc}", flush=True)
+                reply = "拍照控制器不可用"
+                if speaker is not None:
+                    _speak_text(speaker, reply, sentence_tts=False)
+                return [{"reply": reply, "action": "assembly_photo"}]
+        result = ctrl.start_photo(speaker=speaker)
+        out = {"action": "assembly_photo"}
+        if result.get("reason") == "disabled":
+            out["reply"] = "拍照指令已识别（执行未启用）"
+            if speaker is not None:
+                _speak_text(speaker, out["reply"], sentence_tts=False)
+        elif result.get("reason") == "busy":
+            out["reply"] = "正在拍照，请稍候"
+            if speaker is not None:
+                _speak_text(speaker, out["reply"], sentence_tts=False)
+        return [out]
+
+    return None
+
+
 def process_text(
     text,
     executor=None,
@@ -175,6 +264,7 @@ def process_text(
     runtime=None,
     reply_speaker=None,
     tracker=None,
+    assembly_controller=None,
 ):
     if not isinstance(text, str) or not text.strip():
         return None
@@ -188,8 +278,20 @@ def process_text(
         executor = executor if executor is not None else getattr(runtime, "executor", None)
         dialogue = dialogue if dialogue is not None else getattr(runtime, "dialogue_backend", None)
         speaker = reply_speaker or speaker or getattr(runtime, "speak", None)
+        if assembly_controller is None:
+            assembly_controller = getattr(runtime, "assembly_controller", None)
     else:
         speaker = reply_speaker or speaker
+
+    # 装配两步流程：优先于本地 FAQ / 动作 / Dify
+    assembly_hit = _handle_assembly_intents(
+        text,
+        speaker=speaker,
+        runtime=runtime,
+        assembly_controller=assembly_controller,
+    )
+    if assembly_hit is not None:
+        return assembly_hit
 
     local_commands = check_local_reply_command(text, tracker=tracker)
     if local_commands is not None:

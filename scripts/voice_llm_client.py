@@ -136,19 +136,53 @@ SYSTEM_PROMPT = """你是双臂机械臂控制助手，负责将用户的自然�
 
 # ==================== 关键词 ====================
 GREET_KEYWORDS = ["敬礼", "致敬", "问好", "打招呼", "你好", "您好", "问候"]
-ASSEMBLY_KEYWORDS = ["装配", "组装", "装备", "装"]
+# 装配动作词：裸「装」过宽，仅在带数量/个/一下 等语境时匹配（见 check_assembly_command）
+ASSEMBLY_KEYWORDS = ["装配", "组装", "装备"]
+# 排除「安装」等：不能以「安」开头的「装…」
+ASSEMBLY_BARE_LOAD_RE = re.compile(
+    r"(?<!安)装(?:一?下|一?个|\d+|[一二两三四五六七八九十两]+)"
+)
+# 拍照 / 准备装配（无数量）触发词
+PHOTO_COMMAND_KEYWORDS = [
+    "开始拍照", "拍照检测", "拍一下", "来拍照", "准备拍照",
+    "开始装配", "准备装配", "启动装配",
+]
+# 短词较宽，需额外过滤（见 check_photo_command）
+PHOTO_SHORT_KEYWORDS = ["拍照"]
+# FAQ / 场景闲聊：命中则不当作装配执行指令
+ASSEMBLY_FAQ_EXCLUDE = [
+    "精密装配", "装配场景", "柔性装配", "能装配吗", "会装配吗",
+    "可以装配吗", "什么是装配", "装配训练", "装配演示",
+    "会不会装配", "能不能装配", "可不可以装配", "你会装配吗",
+]
+# 疑问/闲聊特征：有这些时，无「N个」明确数量则不执行装配
+ASSEMBLY_QUESTION_HINTS = (
+    "吗", "呢", "什么", "怎么", "如何", "会不会", "能不能",
+    "可不可以", "演示", "场景", "训练", "讲个", "介绍",
+)
+# 与机械臂位移/关节指令混说时，让位给动作解析（避免「十厘米」被当成数量 10）
+ASSEMBLY_ARM_MOTION_HINTS = (
+    "左臂", "右臂", "左手", "右手", "关节",
+    "厘米", "毫米", "向上", "向下", "向前", "向后", "向左", "向右",
+)
+PHOTO_PREP_PHRASES = (
+    "开始装配", "准备装配", "启动装配", "开始拍照", "准备拍照", "拍照检测",
+)
 INTRO_KEYWORDS = ["你是谁", "你叫什么", "自我介绍", "介绍一下自己", "介绍你自己", "你是什么", "介绍你"]
+
+_CN_NUM_MAP = {
+    "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
+    "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+}
+_CN_NUM_RE = re.compile(
+    r"(?:(?:[一二三四五六七八九]?十[一二三四五六七八九]?)|[一二两三四五六七八九十])"
+)
+_ARABIC_COUNT_RE = re.compile(r"(\d+)\s*(?:个|件|只|次)?")
 
 INTRO_TEXT = (
     "我是一款面向精密装配场景的具身智能双臂机器人，"
-    "深度融合自适应阻抗控制、强化学习与视觉语言模型三大技术。"
-    "底层采用高精度力矩传感器与自适应阻抗算法，实现毫秒级力觉响应与微克级分辨率，"
-    "根据接触状态实时调整柔顺度，有效消除位姿偏差。"
-    "强化学习框架使机器人在仿真中自主探索最优策略，"
-    "将复杂装配训练周期从数周缩至数小时，并泛化适应工件公差变化。"
-    "VLM赋予机器人跨模态认知能力，能理解自然语言指令与场景图像，将高层任务分解为动作序列。"
-    "三大技术协同形成“感知-决策-执行”闭环，兼具工业稳定性与场景泛化能力，"
-    "显著降低部署门槛，适用于3C电子、汽车零部件等行业的柔性装配产线。"
+    "深度融合了自适应阻抗控制、强化学习与视觉语言模型三大技术，"
+    "能实现毫秒级的力觉响应与克级柔顺力度控制。"
 )
 
 # ==================== 本地 reply 意图常量 ====================
@@ -156,7 +190,8 @@ _LOCAL_REPLY_IDENTITY_KW = [
     "你是谁", "你叫什么", "你是什么机器人", "介绍一下自己",
     "介绍你自己", "你是施耐力的吗", "你是施耐力机器人吗",
     "自我介绍", "自适应阻抗", "阻抗控制", "强化学习", "视觉语言模型", "VLM",
-    "精密装配", "具身智能",
+    "精密装配", "具身智能", "三大技术", "核心技术", "有什么技术",
+    "力觉响应", "柔顺力度", "毫秒级", "克级",
 ]
 
 _LOCAL_REPLY_CAPABILITY_KW = [
@@ -335,10 +370,27 @@ def check_simple_action_command(text, tracker=None):
             tracker.mark("local_action_parser_end")
         return None
 
-    if "".join(segments) != text:
-        if tracker:
-            tracker.mark("local_action_parser_end")
-        return None
+    joined = "".join(segments)
+    # Allow leading ASR junk before the first 左臂/右臂 (already often stripped by
+    # extract_control_span; keep a safety net here).
+    if joined != text:
+        if not (text.endswith(joined) or joined in text):
+            if tracker:
+                tracker.mark("local_action_parser_end")
+            return None
+        prefix = text[: text.find(segments[0])] if segments[0] in text else ""
+        # Mixed "question then command" must still miss local action.
+        if re.search(r"介绍|你是|你能|你会|什么机器人|谢谢", prefix):
+            if tracker:
+                tracker.mark("local_action_parser_end")
+            return None
+        # Reject if extra arm clauses exist outside segments (shouldn't happen).
+        if text.count("左臂") + text.count("右臂") != sum(
+            1 for s in segments if s.startswith(("左臂", "右臂"))
+        ):
+            if tracker:
+                tracker.mark("local_action_parser_end")
+            return None
 
     commands = []
     for seg in segments:
@@ -658,20 +710,150 @@ def check_greet_keywords(text):
     return any(kw in text for kw in GREET_KEYWORDS)
 
 
-def check_assembly_command(text):
-    """检测装配指令，返回数量；无匹配返回 None"""
-    for kw in ASSEMBLY_KEYWORDS:
-        if kw in text:
-            match = re.search(r'(\d+)\s*个', text)
-            if match:
-                return int(match.group(1))
-            cn_map = {'一': 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5,
-                      '六': 6, '七': 7, '八': 8, '九': 9, '十': 10}
-            for cn, num in cn_map.items():
-                if cn in text:
-                    return num
-            return 1  # 没找到数字，默认 1 个
+def _parse_cn_number(token: str) -> int | None:
+    """解析常见中文数量词（1–99），失败返回 None。"""
+    if not token:
+        return None
+    if token in _CN_NUM_MAP:
+        return _CN_NUM_MAP[token]
+    if token == "十":
+        return 10
+    if token.startswith("十") and len(token) == 2:
+        ones = _CN_NUM_MAP.get(token[1])
+        return 10 + ones if ones is not None else None
+    if "十" in token:
+        parts = token.split("十", 1)
+        tens = _CN_NUM_MAP.get(parts[0], 1) if parts[0] else 1
+        ones = _CN_NUM_MAP.get(parts[1], 0) if parts[1] else 0
+        return tens * 10 + ones
     return None
+
+
+def _is_spurious_cn_number_span(text: str, start: int, end: int, token: str) -> bool:
+    """过滤「一下/十厘米」等不应当作装配数量的中文数字跨度。"""
+    # 「一」仅出现在「一下/一些/一点」中 → 不是数量
+    if token == "一":
+        tail = text[end : end + 1]
+        if tail in {"下", "些", "点"}:
+            return True
+    # 「十/二十…」紧跟长度单位 → 位移量不是装配个数
+    after = text[end : end + 2]
+    if after.startswith(("厘", "毫", "度", "米")):
+        return True
+    # 前面是「第」→ 序号
+    if start > 0 and text[start - 1] == "第":
+        return True
+    return False
+
+
+def _extract_assembly_count(text: str) -> int | None:
+    """从装配话术中提取明确个数；无明确数量返回 None（不默认 1）。
+
+    明确数量示例：两个、3个、装配5、装两。
+    非明确：请装配、现在装配、给我装配、装配一下。
+    """
+    # 1) 明确「N个/件」阿拉伯数字（最可靠）
+    m = re.search(r"(\d+)\s*(?:个|件|只|次)", text)
+    if m:
+        return max(1, int(m.group(1)))
+    # 2) 中文「两个/五个/十二个/一个」
+    m = re.search(
+        r"([一二两三四五六七八九]?十[一二三四五六七八九]?|[一二两三四五六七八九十])\s*(?:个|件|只|次)",
+        text,
+    )
+    if m:
+        n = _parse_cn_number(m.group(1))
+        if n is not None and n >= 1:
+            return n
+    # 3) 紧邻装配词的阿拉伯数字：装配3 / 装2
+    m = re.search(r"(?:装配|组装|装备|(?<!安)装)\s*(\d+)", text)
+    if m:
+        return max(1, int(m.group(1)))
+    # 4) 紧邻装配词的中文数字：装配两 / 装三（不含「装一下」）
+    m = re.search(
+        r"(?:装配|组装|装备|(?<!安)装)\s*"
+        r"([一二两三四五六七八九]?十[一二三四五六七八九]?|[一二两三四五六七八九十两])"
+        r"(?![下些点])",  # 排除 一下/一些/一点
+        text,
+    )
+    if m:
+        token = m.group(1)
+        n = _parse_cn_number(token)
+        if n is not None and n >= 1:
+            end = m.end(1)
+            if not _is_spurious_cn_number_span(text, m.start(1), end, token):
+                return n
+    return None
+
+
+def _has_explicit_assembly_count(text: str) -> bool:
+    """是否出现明确的装配个数（排除一下/十厘米等）。无默认。"""
+    return _extract_assembly_count(text) is not None
+
+
+def _has_assembly_action_word(text: str) -> bool:
+    if any(kw in text for kw in ASSEMBLY_KEYWORDS):
+        return True
+    return bool(ASSEMBLY_BARE_LOAD_RE.search(text))
+
+
+def check_photo_command(text):
+    """检测拍照/准备装配指令（两步流程的第一步）。True 表示应启动拍照节点。"""
+    if not isinstance(text, str):
+        return False
+    text = text.strip()
+    if not text:
+        return False
+    # 带明确数量的装配话术走装配指令，不走拍照
+    if check_assembly_command(text) is not None:
+        return False
+    if any(ex in text for ex in ASSEMBLY_FAQ_EXCLUDE):
+        return False
+    # 与手臂运动混说时不当作拍照
+    if any(h in text for h in ASSEMBLY_ARM_MOTION_HINTS):
+        return False
+    if any(kw in text for kw in PHOTO_COMMAND_KEYWORDS):
+        return True
+    # 短词「拍照」
+    if any(kw in text for kw in PHOTO_SHORT_KEYWORDS):
+        if "关节" in text or "左臂" in text or "右臂" in text:
+            return False
+        return True
+    return False
+
+
+def check_assembly_command(text):
+    """检测装配执行指令，返回数量（阿拉伯 int）；无匹配返回 None。
+
+    策略：仅当话术含**明确个数**时才执行（两个/3个/装配5/装两…）。
+    非明确指令（请装配、现在装配、给我装配、装配一下）一律不执行。
+    FAQ（精密装配、能装配吗）返回 None。
+    """
+    if not isinstance(text, str):
+        return None
+    text = text.strip()
+    if not text:
+        return None
+
+    # 场景/问答：不当作执行指令
+    if any(ex in text for ex in ASSEMBLY_FAQ_EXCLUDE):
+        return None
+
+    if not _has_assembly_action_word(text):
+        return None
+
+    # 与手臂位移/关节混说：让位给动作解析，避免「十厘米」→10
+    if any(h in text for h in ASSEMBLY_ARM_MOTION_HINTS):
+        return None
+
+    # 核心策略：无明确数量 → 不执行（不默认 1）
+    count = _extract_assembly_count(text)
+    if count is None:
+        return None
+
+    # 疑问句即使带了数字也偏问答时（极少）：仍允许「装配两个吗」执行
+    # 精密/场景类已在 FAQ_EXCLUDE 拦截
+    return count
 
 
 def check_intro_keywords(text):

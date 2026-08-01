@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from voice_asr_backend import LocalASRBackend, create_local_asr_backend
+from voice_assembly_controller import AssemblyController
 from voice_dialogue_backend import DifyWorkflowBackend
 from voice_robot_executor import ROSRobotExecutor
 from voice_text_pipeline import process_text
@@ -10,15 +11,16 @@ from voice_runtime_config import robot_commands_enabled
 
 
 class VoiceRuntimeContainer:
-    def __init__(self, asr=None, tts=None, dialogue=None, executor=None):
+    def __init__(self, asr=None, tts=None, dialogue=None, executor=None, assembly_controller=None):
         self.asr_backend = asr
         self.tts_backend = tts
         self.dialogue_backend = dialogue
         self.executor = executor
         self.robot_executor = executor
+        self.assembly_controller = assembly_controller if assembly_controller is not None else AssemblyController()
 
     @classmethod
-    def from_local(cls, recognizer=None, speaker=None, executor=None, dialogue=None):
+    def from_local(cls, recognizer=None, speaker=None, executor=None, dialogue=None, assembly_controller=None):
         asr = LocalASRBackend(recognizer) if recognizer is not None else create_local_asr_backend()
         tts = LocalTTSBackend(speaker) if speaker is not None else create_local_tts_backend()
         return cls(
@@ -26,6 +28,7 @@ class VoiceRuntimeContainer:
             tts=tts,
             dialogue=dialogue or DifyWorkflowBackend(),
             executor=executor,
+            assembly_controller=assembly_controller,
         )
 
     @classmethod
@@ -36,6 +39,7 @@ class VoiceRuntimeContainer:
             tts=create_local_tts_backend(),
             dialogue=DifyWorkflowBackend(),
             executor=executor,
+            assembly_controller=AssemblyController(),
         )
 
     def initialize(self) -> None:
@@ -90,11 +94,19 @@ class VoiceRuntimeContainer:
             executor=self.executor,
             speaker=reply_speaker or self.speak,
             dialogue=self.dialogue_backend,
+            runtime=self,
             tracker=tracker,
+            assembly_controller=self.assembly_controller,
         )
 
     def close(self) -> None:
-        for component in (self.executor, self.tts_backend, self.asr_backend, self.dialogue_backend):
+        for component in (
+            self.assembly_controller,
+            self.executor,
+            self.tts_backend,
+            self.asr_backend,
+            self.dialogue_backend,
+        ):
             close = getattr(component, "close", None)
             if callable(close):
                 close()

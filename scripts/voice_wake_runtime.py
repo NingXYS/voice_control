@@ -27,6 +27,16 @@ _DEFAULT_END_PHRASES = (
     "闭嘴",
 )
 
+# If the command ASR is just the wake word (or a near-miss), answer like a re-wake.
+_DEFAULT_WAKE_ACK_PHRASES = (
+    "小西小西",
+    "小溪小溪",
+    "小喜小喜",
+    "小希小希",
+    "晓西晓西",
+    "嘻嘻",  # very short false ASR near 西
+)
+
 
 class VoiceState(Enum):
     WAITING_WAKE_WORD = auto()
@@ -55,6 +65,78 @@ def is_session_end_phrase(text: str, phrases: Iterable[str] | None = None) -> bo
         if normalized == token or token in normalized:
             return True
     return False
+
+
+# Homophones / near-miss chars ASR uses for 小西小西.
+_WAKE_CHAR_FOLD = str.maketrans(
+    {
+        "溪": "西",
+        "喜": "西",
+        "希": "西",
+        "嘻": "西",
+        "兮": "西",
+        "席": "西",
+        "锡": "西",
+    }
+)
+
+
+def _wake_core_chars(text: str) -> str:
+    """Map wake homophones and keep only 小/西 (+ drop fillers)."""
+    folded = _normalize_end_text(text).translate(_WAKE_CHAR_FOLD)
+    folded = re.sub(r"[啊呀呢吧嗯哦呵欸诶]+", "", folded)
+    # Keep only wake syllables; anything else means real command/chit-chat.
+    return re.sub(r"[^小西]", "", folded)
+
+
+def is_wake_ack_only(text: str, phrases: Iterable[str] | None = None) -> bool:
+    """True when ASR is only (or almost only) the wake word — re-greet, don't NLU.
+
+    Handles field ASR variants from logs, e.g.:
+      小西小西 / 小溪小溪 / 小小溪小溪 / 小溪小溪小溪 / 小小西小西
+    Not: 「小西小西帮我抬左臂」(contains non-wake content).
+    """
+    normalized = _normalize_end_text(text)
+    if not normalized:
+        return False
+    # Ignore pure filler particles after wake word.
+    stripped = re.sub(r"[啊呀呢吧嗯哦呵欸诶]+$", "", normalized)
+    if not stripped:
+        return False
+
+    # Fast path: exact / near-exact known phrases.
+    for phrase in phrases if phrases is not None else _DEFAULT_WAKE_ACK_PHRASES:
+        token = _normalize_end_text(str(phrase))
+        if not token:
+            continue
+        if stripped == token:
+            return True
+        if stripped.startswith(token) and len(stripped) - len(token) <= 1:
+            return True
+
+    # Robust path: utterance is only 小/西-family syllables (possibly stuttered).
+    # Reject if original still has arm/control/Q words outside that family.
+    if re.search(
+        r"[左右臂手关节度厘米毫米米旋转]|你是|你能|你会|介绍|装配|笑话|唱歌",
+        stripped,
+    ):
+        return False
+    core = _wake_core_chars(stripped)
+    if len(core) < 2 or len(core) > 12:
+        return False
+    # Must look like repeated 小西 (allow extra 小/西 from stutter: 小小西小西小西).
+    if "小" not in core or "西" not in core:
+        # 「嘻嘻」→ 西西: short pure-西 ack near wake
+        return bool(re.fullmatch(r"西{2,4}", core))
+    # Peel off 小西 pairs; allow leftover single 小 or 西 from ASR stutter.
+    rest = core
+    pairs = 0
+    while "小西" in rest:
+        rest = rest.replace("小西", "", 1)
+        pairs += 1
+    rest = re.sub(r"小+", "", rest)
+    rest = re.sub(r"西+", "", rest)
+    return rest == "" and pairs >= 1
 
 
 class WakeWordRuntime:
@@ -91,6 +173,7 @@ class WakeWordRuntime:
         session_timeout=0.0,
         end_phrases: Iterable[str] | None = None,
         wake_verifier=None,
+        followup_max_duration: float | None = None,
     ):
         self.audio = audio
         self.wake_detector = wake_detector
@@ -100,6 +183,11 @@ class WakeWordRuntime:
         self.prompt_callback = prompt_callback
         self.start_timeout = float(start_timeout)
         self.max_duration = float(max_duration)
+        self.followup_max_duration = float(
+            followup_max_duration
+            if followup_max_duration is not None
+            else max_duration
+        )
         self.cooldown = float(cooldown)
         self.prompt_guard = float(prompt_guard)
         self.post_tts_guard = float(post_tts_guard)
@@ -285,6 +373,7 @@ class WakeWordRuntime:
         wait_started = self.clock()
         record_started = None
         collected: list[np.ndarray] = []
+        max_dur = self.followup_max_duration if followup else self.max_duration
 
         if followup:
             self.state = VoiceState.FOLLOWUP_LISTENING
@@ -317,7 +406,7 @@ class WakeWordRuntime:
                     # The VAD segment already contains the complete utterance.
                     collected = [segment]
                     break
-                if now - record_started >= self.max_duration:
+                if now - record_started >= max_dur:
                     break
 
         if self._stop or not collected:
@@ -351,6 +440,15 @@ class WakeWordRuntime:
                 except Exception:
                     pass
                 return "__END_SESSION__"
+
+            # Re-heard wake word as "command" (common after wake / follow-up).
+            if text and is_wake_ack_only(text):
+                print("🔔 识别到唤醒词本身，回复在线提示", flush=True)
+                try:
+                    self._reply_speaker("我在")
+                except Exception:
+                    pass
+                return text
 
             if text:
                 result = self.process_callback(text, self._reply_speaker)

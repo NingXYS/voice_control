@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import os
 import signal
 
 import numpy as np
@@ -31,6 +32,8 @@ from voice_runtime_config import (
     COMMAND_MAX_DURATION_SEC,
     COMMAND_START_TIMEOUT_SEC,
     COMMAND_VAD_GATE,
+    FOLLOWUP_COMMAND_MAX_DURATION_SEC,
+    VAD_MAX_SPEECH_DURATION_SEC,
     KWS_HIGH_THRESHOLD,
     KWS_KEYWORDS_SCORE,
     KWS_KEYWORDS_THRESHOLD,
@@ -229,6 +232,7 @@ def main():
                 VAD_MODEL_PATH,
                 VAD_MIN_SPEECH_DURATION_SEC,
                 VAD_SILENCE_DURATION_SEC,
+                max_speech_sec=VAD_MAX_SPEECH_DURATION_SEC,
             ),
             asr_callback=recognize_audio,
             process_callback=process_text,
@@ -243,9 +247,28 @@ def main():
             session_timeout=VOICE_SESSION_TIMEOUT_SEC,
             end_phrases=session_end_phrases(),
             wake_verifier=_build_wake_verifier(container),
+            followup_max_duration=FOLLOWUP_COMMAND_MAX_DURATION_SEC,
         )
-        signal.signal(signal.SIGINT, lambda *_: runtime.request_stop())
-        signal.signal(signal.SIGTERM, lambda *_: runtime.request_stop())
+        _sig_count = {"n": 0}
+
+        def _on_signal(signum, _frame):
+            _sig_count["n"] += 1
+            print(
+                f"\n🛑 收到信号 {signum}，正在停止"
+                f"（再按一次强制退出）…",
+                flush=True,
+            )
+            try:
+                runtime.request_stop()
+            except Exception:
+                pass
+            # 第二次信号：子进程 aplay/arecord 可能卡死，直接退出
+            if _sig_count["n"] >= 2:
+                print("🛑 强制退出", flush=True)
+                os._exit(128 + (signum if isinstance(signum, int) else 2))
+
+        signal.signal(signal.SIGINT, _on_signal)
+        signal.signal(signal.SIGTERM, _on_signal)
         print(f"🎙️ Voice runtime started. Wake word: {WAKE_WORD}")
         runtime.run()
     finally:

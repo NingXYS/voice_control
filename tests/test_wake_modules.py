@@ -461,6 +461,34 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(runtime.state, VoiceState.STOPPED)
 
 
+class WakeAckPhraseTests(unittest.TestCase):
+    def test_wake_ack_variants_from_field_logs(self):
+        from voice_wake_runtime import is_wake_ack_only
+
+        should_ack = [
+            "小西小西",
+            "小溪小溪",
+            "小小溪小溪",
+            "小溪小溪小溪",
+            "小小西小西",
+            "小西小西啊",
+            "嘻嘻",
+        ]
+        should_not = [
+            "你是小西小西",
+            "小西小西帮我抬左臂",
+            "右臂向上十厘米",
+            "你能做什么",
+            "再见",
+        ]
+        for text in should_ack:
+            with self.subTest(text=text):
+                self.assertTrue(is_wake_ack_only(text), text)
+        for text in should_not:
+            with self.subTest(text=text):
+                self.assertFalse(is_wake_ack_only(text), text)
+
+
 class DualStageWakeTests(unittest.TestCase):
     def test_keywords_file_with_threshold_rewrites_hash(self):
         from voice_wake_word import keywords_file_with_threshold

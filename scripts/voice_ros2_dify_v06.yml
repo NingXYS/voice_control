@@ -74,12 +74,13 @@ workflow:
           \ 'robot_knowledge'}\n    if any(keyword in text for keyword in ('你是谁',\
           \ '你叫什么', '你是什么', '介绍', '你能做什么', '你会做什么', '你会干什么', '你能干什么', '功能', '你好',\
           \ '您好', '谢谢', '感谢', '辛苦了', '唱歌', '唱首歌', '唱一首', '跳舞', '天气', '气温', '下雨', '联网',\
-          \ '上网', '在线检索', '自适应阻抗', '阻抗控制', '力矩传感器', '力觉', '强化学习', '视觉语言模型', 'VLM',\
-          \ '跨模态', '精密装配', '柔性装配', '具身智能', '三大技术', '感知-决策', '3C电子', '汽车零部件')):\n \
-          \       return {'intent': 'fixed_reply'}\n    if any(keyword in text for\
-          \ keyword in ('左臂', '右臂', '左手', '右手', '关节', '移动', '向上', '向下', '向前', '向后',\
-          \ '向左', '向右', '往后', '往前', '抬', '降', '旋转', '转动', '回零', '归零', '状态', '位置')):\n\
-          \        return {'intent': 'ambiguous_control'}\n    return {'intent': 'complex_fallback'}"
+          \ '上网', '在线检索', '有什么技术', '哪些技术', '核心技术', '柔顺力度', '毫秒级', '克级', '力度控制', '什么技术',\
+          \ '自适应阻抗', '阻抗控制', '力矩传感器', '力觉', '强化学习', '视觉语言模型', 'VLM', '跨模态', '精密装配',\
+          \ '柔性装配', '具身智能', '三大技术', '感知-决策', '3C电子', '汽车零部件')):\n        return {'intent':\
+          \ 'fixed_reply'}\n    if any(keyword in text for keyword in ('左臂', '右臂',\
+          \ '左手', '右手', '关节', '移动', '向上', '向下', '向前', '向后', '向左', '向右', '往后', '往前',\
+          \ '抬', '降', '旋转', '转动', '回零', '归零', '状态', '位置')):\n        return {'intent':\
+          \ 'ambiguous_control'}\n    return {'intent': 'complex_fallback'}"
         variables:
         - variable: user_text
           value_selector:
@@ -150,35 +151,41 @@ workflow:
         title: 本地固定问答
         description: 确定性本地回复，不调用模型
         code_language: python3
-        code: "import json\nimport re\n\ndef main(user_text: str) -> dict:\n    text\
-          \ = re.sub(r'[\\s，。！？；：,.!?;:]+', '', user_text or '')\n    if any(keyword\
-          \ in text for keyword in ('唱歌', '唱首歌', '唱一首', '跳舞')):\n        reply = '我不能唱歌。我可以控制左右两条机械臂，支持关节旋转和空间移动。'\n\
-          \    elif any(keyword in text for keyword in ('天气', '气温', '下雨')):\n    \
-          \    reply = '我无法查询天气。我可以帮助控制左右两条机械臂。'\n    elif any(keyword in text for\
-          \ keyword in ('联网', '上网', '在线检索')):\n        reply = '我不能联网检索。我可以帮助控制左右两条机械臂。'\n\
-          \    elif any(keyword in text for keyword in ('几条手臂', '几个手臂', '几只手臂', '多少条手臂',\
-          \ '有几条手臂', '有几个手臂')):\n        reply = '我有左右两条手臂，是双臂机械臂。'\n    elif any(keyword\
-          \ in text for keyword in ('几个关节', '多少个关节', '有几个关节', '一共几个关节')):\n      \
-          \  reply = '左右两条手臂，各六个关节，一共十二个关节。'\n    elif any(keyword in text for keyword\
-          \ in ('几个自由度', '多少自由度', '有几个自由度', '自由度')):\n        reply = '每条手臂六个自由度，左右双臂各六个关节。'\n\
-          \    elif any(keyword in text for keyword in (\n        '自适应阻抗', '阻抗控制',\
-          \ '力矩传感器', '力觉响应', '力觉', '柔顺度',\n    )):\n        reply = '底层采用高精度力矩传感器与自适应阻抗算法，实现毫秒级力觉响应与微克级分辨率，根据接触状态实时调整柔顺度，有效消除位姿偏差。'\n\
-          \    elif any(keyword in text for keyword in ('强化学习', '装配训练周期', '最优策略')):\n\
-          \        reply = '强化学习框架使机器人在仿真中自主探索最优策略，将复杂装配训练周期从数周缩至数小时，并泛化适应工件公差变化。'\n\
-          \    elif any(keyword in text for keyword in ('视觉语言模型', 'VLM', '跨模态')):\n\
-          \        reply = 'VLM赋予机器人跨模态认知能力，能理解自然语言指令与场景图像，将高层任务分解为动作序列。'\n    elif\
-          \ any(keyword in text for keyword in ('三大技术', '感知-决策', '感知决策', '核心技术')):\n\
-          \        reply = '三大技术协同形成“感知-决策-执行”闭环，兼具工业稳定性与场景泛化能力，显著降低部署门槛。'\n    elif\
+        code: "import json\nimport re\n\n_FULL_INTRO = (\n    '我是一款面向精密装配场景的具身智能双臂机器人，'\n\
+          \    '深度融合了自适应阻抗控制、强化学习与视觉语言模型三大技术，'\n    '能实现毫秒级的力觉响应与克级柔顺力度控制。'\n)\n_SHORT_ID\
+          \ = (\n    '我是一款面向精密装配场景的具身智能双臂机器人，'\n    '深度融合了自适应阻抗控制、强化学习与视觉语言模型三大技术。'\n\
+          )\n_IMPEDANCE = '我融合了自适应阻抗控制技术，能实现毫秒级的力觉响应与克级柔顺力度控制。'\n_FORCE = '能实现毫秒级的力觉响应与克级柔顺力度控制。'\n\
+          _RL = (\n    '我融合了强化学习技术，'\n    '与自适应阻抗控制、视觉语言模型共同构成三大技术。'\n)\n_VLM = (\n\
+          \    '我融合了视觉语言模型技术，'\n    '与自适应阻抗控制、强化学习共同构成三大技术。'\n)\n_LOOP = '深度融合了自适应阻抗控制、强化学习与视觉语言模型三大技术。'\n\
+          _SCENE = '我面向精密装配场景，是具身智能双臂机器人。'\n_CAPABILITY = (\n    '我可以控制左右两条机械臂，支持关节旋转和空间移动。'\n\
+          \    '我面向精密装配，融合自适应阻抗控制、强化学习与视觉语言模型。'\n)\n\ndef main(user_text: str) ->\
+          \ dict:\n    text = re.sub(r'[\\\\s，。！？；：,.!?;:]+', '', user_text or '')\n\
+          \    if any(keyword in text for keyword in ('唱歌', '唱首歌', '唱一首', '跳舞')):\n\
+          \        reply = '我不能唱歌。我可以控制左右两条机械臂，支持关节旋转和空间移动。'\n    elif any(keyword\
+          \ in text for keyword in ('天气', '气温', '下雨')):\n        reply = '我无法查询天气。我可以帮助控制左右两条机械臂。'\n\
+          \    elif any(keyword in text for keyword in ('联网', '上网', '在线检索')):\n  \
+          \      reply = '我不能联网检索。我可以帮助控制左右两条机械臂。'\n    elif any(keyword in text for\
+          \ keyword in ('几条手臂', '几个手臂', '几只手臂', '多少条手臂', '有几条手臂', '有几个手臂')):\n   \
+          \     reply = '我有左右两条手臂，是双臂机械臂。'\n    elif any(keyword in text for keyword\
+          \ in ('几个关节', '多少个关节', '有几个关节', '一共几个关节')):\n        reply = '左右两条手臂，各六个关节，一共十二个关节。'\n\
+          \    elif any(keyword in text for keyword in ('几个自由度', '多少自由度', '有几个自由度',\
+          \ '自由度')):\n        reply = '每条手臂六个自由度，左右双臂各六个关节。'\n    elif any(keyword\
+          \ in text for keyword in (\n        '自适应阻抗', '阻抗控制', '阻抗',\n    )):\n  \
+          \      reply = _IMPEDANCE\n    elif any(keyword in text for keyword in (\n\
+          \        '力觉响应', '力觉', '柔顺度', '柔顺力度', '柔顺力', '毫秒级', '克级', '力度控制',\n    )):\n\
+          \        reply = _FORCE\n    elif any(keyword in text for keyword in ('强化学习',\
+          \ '装配训练周期', '最优策略')):\n        reply = _RL\n    elif any(keyword in text\
+          \ for keyword in ('视觉语言模型', 'VLM', '跨模态')):\n        reply = _VLM\n    elif\
+          \ any(keyword in text for keyword in ('三大技术', '感知-决策', '感知决策', '核心技术', '有什么技术',\
+          \ '哪些技术', '什么技术', '融合了什么技术', '用了什么技术')):\n        reply = _LOOP\n    elif\
           \ any(keyword in text for keyword in (\n        '适用什么场景', '应用场景', '精密装配',\
-          \ '柔性装配', '3C电子', '汽车零部件',\n    )):\n        reply = '适用于3C电子、汽车零部件等行业的柔性装配产线，面向精密装配场景。'\n\
-          \    elif any(keyword in text for keyword in (\n        '你能做什么', '你会做什么',\
-          \ '你会干什么', '你能干什么', '你有什么功能',\n        '你支持哪些指令', '你能控制什么', '你支持哪些动作', '功能',\n\
-          \    )):\n        reply = '我可以控制左右两条机械臂，支持关节旋转和空间移动。我面向精密装配，融合自适应阻抗控制、强化学习与视觉语言模型。'\n\
-          \    elif any(keyword in text for keyword in ('你叫什么', '你叫啥', '你的名字')):\n\
-          \        reply = '我是一款面向精密装配场景的具身智能双臂机器人，深度融合自适应阻抗控制、强化学习与视觉语言模型三大技术。'\n\
-          \    elif any(keyword in text for keyword in (\n        '你是谁', '你是什么', '介绍一下自己',\
-          \ '介绍自己', '介绍一下你',\n        '自我介绍', '介绍你', '具身智能', '介绍',\n    )):\n    \
-          \    reply = '我是一款面向精密装配场景的具身智能双臂机器人，深度融合自适应阻抗控制、强化学习与视觉语言模型三大技术。底层采用高精度力矩传感器与自适应阻抗算法，实现毫秒级力觉响应与微克级分辨率，根据接触状态实时调整柔顺度，有效消除位姿偏差。强化学习框架使机器人在仿真中自主探索最优策略，将复杂装配训练周期从数周缩至数小时，并泛化适应工件公差变化。VLM赋予机器人跨模态认知能力，能理解自然语言指令与场景图像，将高层任务分解为动作序列。三大技术协同形成“感知-决策-执行”闭环，兼具工业稳定性与场景泛化能力，显著降低部署门槛，适用于3C电子、汽车零部件等行业的柔性装配产线。'\n\
+          \ '柔性装配', '3C电子', '汽车零部件',\n    )):\n        reply = _SCENE\n    elif any(keyword\
+          \ in text for keyword in (\n        '你能做什么', '你会做什么', '你会干什么', '你能干什么',\
+          \ '你有什么功能',\n        '你支持哪些指令', '你能控制什么', '你支持哪些动作', '功能',\n    )):\n  \
+          \      reply = _CAPABILITY\n    elif any(keyword in text for keyword in\
+          \ ('你叫什么', '你叫啥', '你的名字')):\n        reply = _SHORT_ID\n    elif any(keyword\
+          \ in text for keyword in (\n        '你是谁', '你是什么', '介绍一下自己', '介绍自己', '介绍一下你',\n\
+          \        '自我介绍', '介绍你', '具身智能', '介绍',\n    )):\n        reply = _FULL_INTRO\n\
           \    elif any(keyword in text for keyword in ('谢谢', '感谢', '辛苦了')):\n   \
           \     reply = '不客气，很高兴能帮到你。'\n    else:\n        reply = '你好！我是面向精密装配的具身智能双臂机器人，请问有什么可以帮您？'\n\
           \    return {'result': json.dumps({'reply': reply}, ensure_ascii=False)}\n"

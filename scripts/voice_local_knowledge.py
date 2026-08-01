@@ -15,82 +15,111 @@ from pathlib import Path
 # 展示文案保持原词；TTS 多音字在 voice_tts.normalize_tts_text 中做最小替换。
 FULL_SELF_INTRO = (
     "我是一款面向精密装配场景的具身智能双臂机器人，"
-    "深度融合自适应阻抗控制、强化学习与视觉语言模型三大技术。"
-    "底层采用高精度力矩传感器与自适应阻抗算法，实现毫秒级力觉响应与微克级分辨率，"
-    "根据接触状态实时调整柔顺度，有效消除位姿偏差。"
-    "强化学习框架使机器人在仿真中自主探索最优策略，"
-    "将复杂装配训练周期从数周缩至数小时，并泛化适应工件公差变化。"
-    "VLM赋予机器人跨模态认知能力，能理解自然语言指令与场景图像，将高层任务分解为动作序列。"
-    "三大技术协同形成“感知-决策-执行”闭环，兼具工业稳定性与场景泛化能力，"
-    "显著降低部署门槛，适用于3C电子、汽车零部件等行业的柔性装配产线。"
+    "深度融合了自适应阻抗控制、强化学习与视觉语言模型三大技术，"
+    "能实现毫秒级的力觉响应与克级柔顺力度控制。"
 )
-SHORT_SELF_ID = (
-    "我是一款面向精密装配场景的具身智能双臂机器人，"
-    "深度融合自适应阻抗控制、强化学习与视觉语言模型三大技术。"
-)
+# 分块：对应短介绍三句，问小点只答对应块
+INTRO_IDENTITY = "我是一款面向精密装配场景的具身智能双臂机器人。"
+INTRO_TECHS = "深度融合了自适应阻抗控制、强化学习与视觉语言模型三大技术。"
+INTRO_FORCE = "能实现毫秒级的力觉响应与克级柔顺力度控制。"
+SHORT_SELF_ID = INTRO_IDENTITY
+# 单项技术：先点名该项，再带上能力句
 IMPEDANCE_REPLY = (
-    "底层采用高精度力矩传感器与自适应阻抗算法，实现毫秒级力觉响应与微克级分辨率，"
-    "根据接触状态实时调整柔顺度，有效消除位姿偏差。"
+    "我融合了自适应阻抗控制技术，"
+    "能实现毫秒级的力觉响应与克级柔顺力度控制。"
 )
 RL_REPLY = (
-    "强化学习框架使机器人在仿真中自主探索最优策略，"
-    "将复杂装配训练周期从数周缩至数小时，并泛化适应工件公差变化。"
+    "我融合了强化学习技术，"
+    "与自适应阻抗控制、视觉语言模型共同构成三大技术。"
 )
 VLM_REPLY = (
-    "VLM赋予机器人跨模态认知能力，能理解自然语言指令与场景图像，将高层任务分解为动作序列。"
+    "我融合了视觉语言模型技术，"
+    "与自适应阻抗控制、强化学习共同构成三大技术。"
 )
-TECH_LOOP_REPLY = (
-    "三大技术协同形成“感知-决策-执行”闭环，兼具工业稳定性与场景泛化能力，显著降低部署门槛。"
-)
-SCENE_REPLY = "适用于3C电子、汽车零部件等行业的柔性装配产线，面向精密装配场景。"
+TECH_LOOP_REPLY = INTRO_TECHS
+FORCE_REPLY = INTRO_FORCE
+SCENE_REPLY = "我面向精密装配场景，是具身智能双臂机器人。"
+# Keep capability answers short for live demo TTS latency (~6s not 15s).
 CAPABILITY_REPLY = (
     "我可以控制左右两条机械臂，支持关节旋转和空间移动。"
-    "我面向精密装配，融合自适应阻抗控制、强化学习与视觉语言模型。"
+    "我面向精密装配场景。"
+    "你可以说，左臂向上十厘米，或者右臂关节一旋转三十度。"
+)
+# Off-topic but common visitor lines: stay friendly, steer back to demo.
+JOKE_REDIRECT_REPLY = (
+    "我不太会讲笑话。"
+    "不过我可以演示机械臂动作，例如说右臂向上十厘米。"
+)
+SING_REDIRECT_REPLY = (
+    "我不会唱歌。"
+    "我可以控制机械臂移动和旋转，例如说左臂向前五厘米。"
+)
+ASSEMBLY_DEMO_REPLY = (
+    "精密装配是我的目标场景。"
+    "演示装配可以说开始拍照，拍照完成后再说给我装配两个。"
+)
+CHAT_REDIRECT_REPLY = (
+    "我主要负责机械臂介绍和动作演示。"
+    "你可以问我是谁、有几个关节，或者说左臂向上十厘米。"
 )
 
 # 不可变或只读使用的固定 reply 规则表
-# 更具体的技术问答放在完整自我介绍之前，便于“问某项技术只答对应段落”。
+# 更具体的技术/分块问答放在完整自我介绍之前。
 LOCAL_REPLY_RULES = [
     {
         "keywords": [
-            "自适应阻抗控制", "阻抗控制", "力矩传感器", "力觉响应", "力觉",
-            "柔顺度", "什么是阻抗", "什么是自适应阻抗",
+            "自适应阻抗控制", "阻抗控制", "什么是阻抗", "什么是自适应阻抗",
+            "阻抗",
         ],
         "reply": IMPEDANCE_REPLY,
     },
     {
         "keywords": [
-            "强化学习", "什么是强化学习", "装配训练周期", "仿真中自主探索",
-            "最优策略",
+            "力觉响应", "力觉", "柔顺度", "柔顺力度", "柔顺力", "柔顺",
+            "毫秒级", "克级", "力度控制", "力觉控制",
+        ],
+        "reply": FORCE_REPLY,
+    },
+    {
+        "keywords": [
+            "强化学习", "什么是强化学习",
         ],
         "reply": RL_REPLY,
     },
     {
         "keywords": [
             "视觉语言模型", "什么是VLM", "VLM是什么", "VLM", "跨模态认知",
-            "跨模态", "自然语言指令与场景图像",
+            "跨模态",
         ],
         "reply": VLM_REPLY,
     },
     {
         "keywords": [
-            "三大技术", "感知决策执行", "感知-决策-执行", "感知-决策",
-            "你的核心技术", "核心技术",
+            "三大技术", "你有什么技术", "有什么技术", "你有哪些技术",
+            "哪些技术", "核心技术", "你的核心技术", "融合了什么技术",
+            "什么技术", "技术有哪些", "用了什么技术", "采用什么技术",
+            "你有什么技术啊", "有什么技术啊", "技术啊",
         ],
         "reply": TECH_LOOP_REPLY,
     },
     {
         "keywords": [
-            "适用什么场景", "应用场景", "精密装配", "柔性装配", "3C电子",
-            "汽车零部件", "装配产线",
+            "适用什么场景", "应用场景", "精密装配", "装配场景",
+            "什么场景", "面向什么",
         ],
         "reply": SCENE_REPLY,
     },
     {
         "keywords": [
+            "双臂机器人", "是什么机器人", "什么机器人", "具身智能",
+        ],
+        "reply": INTRO_IDENTITY,
+    },
+    {
+        "keywords": [
             "你是谁", "你是什么", "你是什么机器人", "介绍一下自己", "介绍自己",
             "介绍一下你", "介绍你自己", "自我介绍", "介绍你", "请自我介绍",
-            "请介绍一下自己", "告诉我你是谁", "具身智能",
+            "请介绍一下自己", "告诉我你是谁",
             "你是施耐力吗", "你是施耐力机器人吗", "你是施耐力的吗",
         ],
         "reply": FULL_SELF_INTRO,
@@ -103,9 +132,45 @@ LOCAL_REPLY_RULES = [
         "keywords": [
             "你能做什么", "你会做什么", "你会干什么", "你有什么功能",
             "你支持哪些指令", "你能控制什么", "你能干什么", "你支持哪些动作",
+            "你会干些什么", "你像我觉得你会干什么", "你能做些什么",
             "功能",
         ],
         "reply": CAPABILITY_REPLY,
+    },
+    {
+        "keywords": [
+            "讲个笑话", "讲笑话", "说个笑话", "来个笑话", "给我讲个笑话",
+            "讲段笑话", "逗我笑",
+        ],
+        "reply": JOKE_REDIRECT_REPLY,
+    },
+    {
+        "keywords": [
+            "唱首歌", "唱个歌", "唱歌", "给我唱首歌", "来首歌", "你会唱歌吗",
+            "能唱歌吗",
+        ],
+        "reply": SING_REDIRECT_REPLY,
+    },
+    {
+        # 仅 FAQ/能力问答；执行类「给我装配两个」由 check_assembly_command 拦截
+        "keywords": [
+            "能装配吗", "会装配吗", "可以装配吗", "会不会装配",
+            "能不能装配", "装配演示",
+        ],
+        "reply": ASSEMBLY_DEMO_REPLY,
+    },
+    {
+        "keywords": [
+            "做个自我介绍", "来个自我介绍", "给我自我介绍", "介绍一下吧",
+        ],
+        "reply": FULL_SELF_INTRO,
+    },
+    {
+        # Off-topic chit-chat (do NOT put 「你好」here — greeter route must stay free).
+        "keywords": [
+            "无聊", "好玩吗", "你真笨", "在吗在吗", "哈喽啊",
+        ],
+        "reply": CHAT_REDIRECT_REPLY,
     },
     {
         "keywords": [
@@ -223,6 +288,31 @@ _ONSET_STUTTER_PHRASES = (
     "将左",
     "旋转",
     "转动",
+    # Lab ASR often doubles short openers even in quiet rooms.
+    "给我",
+    "帮我",
+    "做个",
+    "来个",
+    "退出",
+    "结束",
+    "再见",
+    "不用",
+    "可以",
+    "但是",
+    "然后",
+    "就是",
+    "那个",
+    "什么",
+    "怎么",
+    "自我",
+    "介绍",
+    "向前",
+    "向后",
+    "向上",
+    "向下",
+    "向左",
+    "向右",
+    "关节",
 )
 # Longest first so 「把你的」wins over shorter fragments when matching.
 _ONSET_STUTTER_PHRASES_SORTED = tuple(
@@ -274,6 +364,16 @@ def collapse_repeated_prefix(text: str) -> str:
                 out = rest
                 changed = True
                 continue
+        # Bare leading letter b before joint/arm (「b关节3…」).
+        if re.match(r"^[bB]\s*(?=关节|第|左|右|臂)", out):
+            out = re.sub(r"^[bB]\s*", "", out, count=1)
+            changed = True
+            continue
+    # Also collapse allowlisted doubles anywhere once (退出退出啊 / 可以可以).
+    for prefix in _ONSET_STUTTER_PHRASES_SORTED:
+        doubled = prefix + prefix
+        if doubled in out:
+            out = out.replace(doubled, prefix)
     return out
 
 
@@ -414,18 +514,11 @@ def _extend_span_with_action_chain(text: str, end: int) -> int:
 
 
 def extract_control_span(text: str) -> str:
-    """If ASR glued a clear arm command to long ambient speech, keep only the command.
+    """If ASR glued a clear arm command to ambient speech, keep only the command.
 
-    Example: 「左臂向前五厘米我感觉它现在…」→「左臂向前五厘米」
-
-    Does **not** strip:
-    - intentional leading words (「先左臂…再介绍」must stay mixed → miss local action)
-    - trailing Q&A (「…然后你是谁」)
-    - multi-action chains (「右臂…左臂…」 / same-arm multi-joint / multi-cartesian)
-
-    Does strip:
-    - short leading ASR junk (≤4 chars, no intentional keywords) before 左臂/右臂
-    - long ambient after the last complete control clause (including action chains)
+    Examples:
+      「左臂向前五厘米我感觉它现在…」→「左臂向前五厘米」
+      「改着改着又改回来了左臂关节3旋转六十度」→「左臂关节3旋转六十度」
     """
     if not isinstance(text, str) or not text:
         return text if isinstance(text, str) else ""
@@ -436,36 +529,46 @@ def extract_control_span(text: str) -> str:
     last = matches[-1]
     span_end = _extend_span_with_action_chain(text, last.end())
 
+    core = text[first.start() : span_end]
     leading = text[: first.start()]
+    trailing_raw = text[span_end:]
+    trailing = trailing_raw.strip()
+
+    # Leading: drop pure junk/chatter; keep polite/Q&A prefixes (mixed intent).
+    drop_leading = False
     if leading.strip():
-        # Drop only short pure ASR junk; keep mixed/polite leading content.
-        if (
+        keep_leading = bool(
+            _LEADING_INTENTIONAL_RE.search(leading)
+            or re.search(r"(?:左臂|右臂|介绍|你是|你能|你会|什么机器人)", leading)
+        )
+        short_junk = (
             len(leading) <= _LEADING_NOISE_MAX
             and not _LEADING_INTENTIONAL_RE.search(leading)
-        ):
-            core = text[first.start() : span_end]
-            trailing = text[span_end:].strip()
-            if not trailing:
-                return core
-            if re.search(r"介绍|你是|你能|你会|谢谢|什么机器人|吗|呢\b", trailing):
-                # Keep trailing Q&A with the command (caller will miss local action).
-                return core + text[span_end:]
-            if len(trailing) >= 4:
-                return core
-            return core + text[span_end:]
-        return text
+        )
+        # Chatter like 「改着改着又…」→ drop; 「先/请/你是…」→ keep full text.
+        drop_leading = short_junk or not keep_leading
 
-    core = text[first.start() : span_end]
-    trailing = text[span_end:].strip()
-    if not trailing:
+    # Trailing: keep Q&A mixed intents; strip long ambient only.
+    drop_trailing = False
+    keep_trailing_qa = bool(
+        trailing
+        and re.search(r"介绍|你是|你能|你会|谢谢|什么机器人|吗|呢\b", trailing)
+    )
+    if trailing and not keep_trailing_qa and len(trailing) >= 4:
+        drop_trailing = True
+
+    if not drop_leading and not drop_trailing:
         return text
-    # Keep mixed action+question for the conservative parser to miss.
-    if re.search(r"介绍|你是|你能|你会|谢谢|什么机器人|吗|呢\b", trailing):
-        return text
-    # Long ambient / mid-sentence chatter after a complete command → keep command only.
-    if len(trailing) >= 4:
+    if drop_leading and drop_trailing:
         return core
-    return text
+    if drop_leading:
+        return core + (
+            trailing_raw
+            if keep_trailing_qa or (trailing and len(trailing) < 4)
+            else ""
+        )
+    # drop trailing only
+    return text[:span_end]
 
 
 # Leading control clause without 左臂/右臂 (VAD/ASR often swallows soft 左/右).

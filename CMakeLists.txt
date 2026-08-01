@@ -55,6 +55,7 @@ install(FILES
   scripts/voice_robot_executor.py
   scripts/voice_local_knowledge.py
   scripts/voice_llm_client.py
+  scripts/voice_assembly_controller.py
   scripts/voice_qwen_llm.py
   scripts/latency_metrics.py
   DESTINATION lib/${PROJECT_NAME}

@@ -36,8 +36,10 @@ _MODEL_DIR = PIPER_MODEL_DIR
 _TARGET_SR = 44100  # legacy default when forcing host-friendly rate
 
 _tts = None  # sherpa_onnx.OfflineTts 实例
-_lock = threading.Lock()  # 合成/播放互斥，避免并发覆盖
+_lock = threading.Lock()  # 合成/缓存互斥（播放必须在锁外，否则 aplay/precache 会卡死唤醒）
 _init_lock = threading.Lock()  # 冷启动互斥：后台预加载与首次 speak 并发安全
+# speak 优先：precache 在句间让出，避免唤醒「我在」被 50+ 句预合成堵死
+_speak_priority = threading.Event()
 # phrase -> (pcm_float32_bytes_as_numpy_list_or_array, sample_rate)
 _phrase_cache: OrderedDict[str, tuple] = OrderedDict()
 _CACHE_MAX = max(1, int(os.environ.get("TTS_PHRASE_CACHE_SIZE", "128")))
@@ -180,13 +182,36 @@ def _rule_fsts(path: str) -> str:
     return ",".join(preferred)
 
 
+def _tts_model_path() -> str:
+    """Same path resolution as tts_init (env or package default)."""
+    return (
+        os.environ.get("PIPER_MODEL_DIR")
+        or os.environ.get("TTS_MODEL_DIR")
+        or _MODEL_DIR
+        or ""
+    )
+
+
 def _speaker_id():
-    # Matcha/Piper should set TTS_SPEAKER_ID=0 in env; Kokoro multi-speaker often uses 47.
+    """Resolve TTS speaker id.
+
+    Kokoro multi-lang 产品默认音色为 47；未设置时若引擎是 kokoro 用 47，
+    其它引擎（matcha/vits）用 0。显式 TTS_SPEAKER_ID 始终优先。
+    """
+    raw = os.environ.get("TTS_SPEAKER_ID", "").strip()
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            print("⚠️ TTS_SPEAKER_ID 必须是整数，回退到引擎默认", flush=True)
+    path = _tts_model_path()
     try:
-        return int(os.environ.get("TTS_SPEAKER_ID", "0"))
-    except ValueError:
-        print("⚠️ TTS_SPEAKER_ID 必须是整数，回退到 0")
-        return 0
+        engine = _detect_engine(path) if path else ""
+    except Exception:
+        engine = ""
+    if engine == "kokoro" or (path and os.path.isfile(os.path.join(path, "voices.bin"))):
+        return 47
+    return 0
 
 
 def _speed():
@@ -288,7 +313,8 @@ def _local_reply_phrases() -> list[str]:
     except Exception:
         _add(
             "我是一款面向精密装配场景的具身智能双臂机器人，"
-            "深度融合自适应阻抗控制、强化学习与视觉语言模型三大技术。"
+            "深度融合了自适应阻抗控制、强化学习与视觉语言模型三大技术，"
+            "能实现毫秒级的力觉响应与克级柔顺力度控制。"
         )
         _add("请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。")
     try:
@@ -457,13 +483,15 @@ def tts_init(model_dir=None):
 
         _ensure_disk_phrases_loaded()
 
-        path = (
-            model_dir
-            or os.environ.get("PIPER_MODEL_DIR")
-            or os.environ.get("TTS_MODEL_DIR")
-            or _MODEL_DIR
-        )
+        path = model_dir or _tts_model_path()
         engine_name = _detect_engine(path)
+        # 启动时打印是否拿到 export 的 SPEAKER，避免 silent speaker=0
+        if engine_name == "kokoro" and not os.environ.get("TTS_SPEAKER_ID", "").strip():
+            print(
+                "ℹ️ Kokoro 未检测到 export 的 TTS_SPEAKER_ID，"
+                "使用产品默认 speaker=47（请用 set -a; source voice_control_online.env）",
+                flush=True,
+            )
         model_name = _model_file(path)
         model_file = os.path.join(path, model_name)
         tokens_file = os.path.join(path, "tokens.txt")
@@ -655,8 +683,13 @@ def _start_faq_precache() -> None:
         filled = 0
         try:
             for phrase in ordered:
+                # 唤醒/回复 speak 优先：等其结束后再抢锁合成
+                while _speak_priority.is_set():
+                    time.sleep(0.05)
                 # 每句单独加锁，句间释放，便于用户 speak 插队
                 with _lock:
+                    if _speak_priority.is_set():
+                        continue
                     if _tts is None or _cache_get(phrase) is not None:
                         continue
                     try:
@@ -675,6 +708,8 @@ def _start_faq_precache() -> None:
                         filled += 1
                     except Exception:
                         continue
+                # 句间短歇，给主线程拿锁播「我在」的窗口
+                time.sleep(0.02)
             still_missing = sum(1 for p in phrases if _cache_get(p) is None)
             print(
                 f"✅ TTS local replies ready "
@@ -729,6 +764,9 @@ def _aplay_raw_cmd(device: str, rate: int) -> list[str]:
 
 
 def _run_aplay_raw(pcm: bytes, device: str, rate: int) -> tuple[int, str]:
+    # 按 PCM 时长设超时，防止 aplay 卡死导致整个语音主循环无法 ^C
+    n_frames = max(1, len(pcm) // 2)  # S16 mono
+    timeout_sec = max(5.0, n_frames / float(max(1, rate)) + 3.0)
     try:
         completed = subprocess.run(
             _aplay_raw_cmd(device, rate),
@@ -736,9 +774,12 @@ def _run_aplay_raw(pcm: bytes, device: str, rate: int) -> tuple[int, str]:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             check=False,
+            timeout=timeout_sec,
         )
     except FileNotFoundError:
         return 127, "aplay not found"
+    except subprocess.TimeoutExpired:
+        return 124, f"aplay timed out after {timeout_sec:.1f}s"
     err = (completed.stderr or b"").decode("utf-8", errors="replace").strip()
     return int(completed.returncode), err
 
@@ -949,13 +990,18 @@ def _play_via_temp_wav(samples, sample_rate: int, device: str | None = None) -> 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
             wav_path = handle.name
         sf.write(wav_path, samples, int(sample_rate))
+        n = max(1, int(getattr(samples, "shape", [len(samples)])[0]))
+        timeout_sec = max(5.0, n / float(max(1, int(sample_rate))) + 3.0)
         completed = subprocess.run(
             ["aplay", "-q", "-D", playback_device, wav_path],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             check=False,
+            timeout=timeout_sec,
         )
         return completed.returncode == 0
+    except subprocess.TimeoutExpired:
+        return False
     except Exception:
         return False
     finally:
@@ -1066,6 +1112,9 @@ def tts_speak(text):
     Cache miss + stream: generate with callback into aplay.
     Cache miss without stream: generate fully, then play.
 
+    **锁策略**：只在读/写缓存与 ONNX generate 时持锁；**播放 aplay 必须在锁外**。
+    否则后台 precache 一长句合成就会堵住唤醒「我在」，表现为卡死、无声、^C 无效。
+
     Cache keys use the caller text; synthesis uses normalize_tts_text() so
     English acronyms / polyphones are spoken correctly.
     """
@@ -1077,12 +1126,23 @@ def tts_speak(text):
     # Disk-backed local replies can play before ONNX is ready.
     _ensure_disk_phrases_loaded()
 
-    with _lock:
-        cached = _cache_get(key)
-        if cached is not None:
+    import numpy as np
+
+    # 通知 precache 让路（句间检查）
+    _speak_priority.set()
+    try:
+        # --- 缓存命中：拷贝后锁外播放 ---
+        samples = None
+        sample_rate = 24000
+        with _lock:
+            cached = _cache_get(key)
+            if cached is not None:
+                samples = np.asarray(cached[0], dtype="float32").copy()
+                sample_rate = int(cached[1])
+
+        if samples is not None:
             try:
                 t0 = time.perf_counter()
-                samples, sample_rate = cached
                 ok = _play_pcm(samples, sample_rate)
                 if _timing_enabled():
                     play_ms = (time.perf_counter() - t0) * 1000.0
@@ -1097,40 +1157,76 @@ def tts_speak(text):
                 print(f"⚠️ TTS playback failed: {exc}")
                 return False
 
-    # Cache miss: need model (and may block on cold load).
-    if not tts_init():
-        return False
+        # Cache miss: need model (and may block on cold load).
+        if not tts_init():
+            return False
 
-    with _lock:
+        stream_mode = False
+        first_audio_at = None
+        gen_ms = 0.0
+        play_ms = 0.0
+        ok = False
+        cache_hit = False
+        t0 = time.perf_counter()
+
         try:
-            import numpy as np
-
-            t0 = time.perf_counter()
-            # Another thread may have filled the cache while we waited for init.
-            cached = _cache_get(key)
-            stream_mode = False
-            first_audio_at = None
-            gen_ms = 0.0
-            play_ms = 0.0
-            sample_rate = 24000
-            ok = False
-
-            if cached is not None:
-                samples, sample_rate = cached
-                cache_hit = True
-                t1 = time.perf_counter()
-                ok = _play_pcm(samples, sample_rate)
-                play_ms = (time.perf_counter() - t1) * 1000.0
-            elif _streaming_enabled():
-                cache_hit = False
-                stream_mode = True
-                result = _play_streamed_generate(
-                    spoken,
-                    sid=_speaker_id(),
-                    speed=_speed(),
-                )
-                if result is None:
-                    stream_mode = False
+            with _lock:
+                # Another thread may have filled the cache while we waited.
+                cached = _cache_get(key)
+                if cached is not None:
+                    samples = np.asarray(cached[0], dtype="float32").copy()
+                    sample_rate = int(cached[1])
+                    cache_hit = True
+                elif _streaming_enabled():
+                    # 流式路径内部会开 aplay，仍须在持锁时合成；尽量短
+                    stream_mode = True
+                    result = _play_streamed_generate(
+                        spoken,
+                        sid=_speaker_id(),
+                        speed=_speed(),
+                    )
+                    if result is None:
+                        stream_mode = False
+                        audio = _tts.generate(
+                            spoken,
+                            sid=_speaker_id(),
+                            speed=_speed(),
+                        )
+                        gen_ms = (time.perf_counter() - t0) * 1000.0
+                        if audio is None or len(audio.samples) == 0:
+                            return False
+                        samples = np.asarray(audio.samples, dtype="float32").copy()
+                        sample_rate = int(audio.sample_rate)
+                        if _should_cache_phrase(key):
+                            _cache_put(key, samples.copy(), sample_rate)
+                    else:
+                        ok, raw_samples, sample_rate, first_audio_at = result
+                        if first_audio_at is not None:
+                            gen_ms = (first_audio_at - t0) * 1000.0
+                        else:
+                            gen_ms = (time.perf_counter() - t0) * 1000.0
+                        play_ms = (time.perf_counter() - t0) * 1000.0
+                        if raw_samples is not None and _should_cache_phrase(key):
+                            _cache_put(
+                                key,
+                                np.asarray(raw_samples, dtype="float32").copy(),
+                                int(sample_rate),
+                            )
+                        # 流式已播放完毕
+                        if _timing_enabled():
+                            total_ms = (time.perf_counter() - t0) * 1000.0
+                            ttfb = ""
+                            if first_audio_at is not None:
+                                ttfb = f" ttfb_ms={(first_audio_at - t0) * 1000.0:.0f}"
+                            print(
+                                f"⏱️ TTS timing: cache=miss stream=1 "
+                                f"gen_ms={gen_ms:.0f} play_ms={play_ms:.0f} "
+                                f"total_ms={total_ms:.0f} chars={len(key)} "
+                                f"rate={sample_rate}{ttfb}",
+                                flush=True,
+                            )
+                        return bool(ok)
+                else:
                     audio = _tts.generate(
                         spoken,
                         sid=_speaker_id(),
@@ -1139,54 +1235,24 @@ def tts_speak(text):
                     gen_ms = (time.perf_counter() - t0) * 1000.0
                     if audio is None or len(audio.samples) == 0:
                         return False
-                    samples = np.asarray(audio.samples, dtype="float32")
+                    samples = np.asarray(audio.samples, dtype="float32").copy()
                     sample_rate = int(audio.sample_rate)
                     if _should_cache_phrase(key):
                         _cache_put(key, samples.copy(), sample_rate)
-                    t1 = time.perf_counter()
-                    ok = _play_pcm(samples, sample_rate)
-                    play_ms = (time.perf_counter() - t1) * 1000.0
-                else:
-                    ok, samples, sample_rate, first_audio_at = result
-                    if first_audio_at is not None:
-                        gen_ms = (first_audio_at - t0) * 1000.0
-                    else:
-                        gen_ms = (time.perf_counter() - t0) * 1000.0
-                    play_ms = (time.perf_counter() - t0) * 1000.0
-                    if samples is not None and _should_cache_phrase(key):
-                        _cache_put(
-                            key,
-                            np.asarray(samples, dtype="float32").copy(),
-                            int(sample_rate),
-                        )
-            else:
-                cache_hit = False
-                audio = _tts.generate(
-                    spoken,
-                    sid=_speaker_id(),
-                    speed=_speed(),
-                )
-                gen_ms = (time.perf_counter() - t0) * 1000.0
-                if audio is None or len(audio.samples) == 0:
-                    return False
-                samples = np.asarray(audio.samples, dtype="float32")
-                sample_rate = int(audio.sample_rate)
-                if _should_cache_phrase(key):
-                    _cache_put(key, samples.copy(), sample_rate)
-                t1 = time.perf_counter()
-                ok = _play_pcm(samples, sample_rate)
-                play_ms = (time.perf_counter() - t1) * 1000.0
+
+            # --- 锁外播放 ---
+            if samples is None:
+                return False
+            t1 = time.perf_counter()
+            ok = _play_pcm(samples, sample_rate)
+            play_ms = (time.perf_counter() - t1) * 1000.0
 
             if _timing_enabled():
                 total_ms = (time.perf_counter() - t0) * 1000.0
-                ttfb = ""
-                if stream_mode and first_audio_at is not None:
-                    ttfb = f" ttfb_ms={(first_audio_at - t0) * 1000.0:.0f}"
-                elif cache_hit:
-                    ttfb = " ttfb_ms=0"
+                ttfb = " ttfb_ms=0" if cache_hit else ""
                 print(
                     f"⏱️ TTS timing: cache={'hit' if cache_hit else 'miss'} "
-                    f"stream={'1' if stream_mode else '0'} "
+                    f"stream=0 "
                     f"gen_ms={gen_ms:.0f} play_ms={play_ms:.0f} total_ms={total_ms:.0f} "
                     f"chars={len(key)} rate={sample_rate}{ttfb}",
                     flush=True,
@@ -1195,6 +1261,8 @@ def tts_speak(text):
         except Exception as exc:
             print(f"⚠️ TTS playback failed: {exc}")
             return False
+    finally:
+        _speak_priority.clear()
 
 
 def tts_cleanup():

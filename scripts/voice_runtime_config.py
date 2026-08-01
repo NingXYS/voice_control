@@ -131,15 +131,25 @@ VAD_MODEL_PATH = _configured_path(
 )
 # Slightly lower than 0.60 so soft first syllables (e.g. 左/你) start speech sooner.
 VAD_THRESHOLD = float(os.environ.get("VAD_THRESHOLD", "0.50"))
-VAD_SILENCE_DURATION_SEC = float(os.environ.get("VAD_SILENCE_DURATION_SEC", "1.0"))
+# End utterance sooner after user stops (lab chatter used to keep recording).
+VAD_SILENCE_DURATION_SEC = float(os.environ.get("VAD_SILENCE_DURATION_SEC", "0.45"))
 VAD_MIN_SPEECH_DURATION_SEC = float(os.environ.get("VAD_MIN_SPEECH_DURATION_SEC", "0.25"))
-# Prepend a short ring of audio before Silero marks speech. Helps quiet first
-# syllables (左/你). Dedup in CommandVadDetector + repair_asr_text collapses
-# accidental 「左臂左臂」/「你有你有」. 0 disables. Typical useful range 0.12–0.28.
-VAD_PRE_ROLL_SEC = float(os.environ.get("VAD_PRE_ROLL_SEC", "0.18"))
+# Hard cap per command segment (Silero max_speech_duration). Was 30s → glued ambient.
+VAD_MAX_SPEECH_DURATION_SEC = float(os.environ.get("VAD_MAX_SPEECH_DURATION_SEC", "6.0"))
+# Prepend a short ring before Silero marks speech — only helps when first
+# syllables are *missing* (noisy / far-talk). In quiet near-mic labs pre-roll
+# often *duplicates* onsets (你能你能). Prefer 0–0.12 in lab; 0.18–0.28 on floor.
+# Text collapse in repair_asr_text is a backup, not the primary fix.
+# 0 disables pre-roll entirely.
+VAD_PRE_ROLL_SEC = float(os.environ.get("VAD_PRE_ROLL_SEC", "0.10"))
 
 COMMAND_START_TIMEOUT_SEC = float(os.environ.get("COMMAND_START_TIMEOUT_SEC", "4.0"))
-COMMAND_MAX_DURATION_SEC = float(os.environ.get("COMMAND_MAX_DURATION_SEC", "15.0"))
+COMMAND_MAX_DURATION_SEC = float(os.environ.get("COMMAND_MAX_DURATION_SEC", "8.0"))
+# Follow-up turns: end even sooner so continuous dialogue does not record noise.
+FOLLOWUP_VAD_SILENCE_SEC = float(os.environ.get("FOLLOWUP_VAD_SILENCE_SEC", "0.35"))
+FOLLOWUP_COMMAND_MAX_DURATION_SEC = float(
+    os.environ.get("FOLLOWUP_COMMAND_MAX_DURATION_SEC", "6.0")
+)
 # Segment-level quality gate after Silero (P1.3). Defaults are softer than the
 # old frame hard-zero path so quiet near-talk commands keep their first syllable.
 SPEECH_MIN_RMS = float(os.environ.get("SPEECH_MIN_RMS", "0.003"))
@@ -182,9 +192,11 @@ AUDIO_CHUNK_MS = int(os.environ.get("AUDIO_CHUNK_MS", "100"))
 ASR_TARGET_RMS = float(os.environ.get("ASR_TARGET_RMS", "0.08"))
 ASR_MAX_GAIN = float(os.environ.get("ASR_MAX_GAIN", "3.0"))
 
+# 与 /mnt/ssd/voice_control 老版 env 一致：默认 Matcha（快）；Kokoro 需显式配置
 PIPER_MODEL_DIR = _configured_alias(
     "PIPER_MODEL_DIR",
     "TTS_MODEL_DIR",
+    _project_asset("models", "tts", "matcha-icefall-zh-baker"),
     _project_asset("models", "tts", "kokoro-multi-lang-v1_0"),
 )
 TTS_MODEL_DIR = PIPER_MODEL_DIR
@@ -200,6 +212,64 @@ def robot_commands_enabled() -> bool:
     return os.environ.get("VOICE_ENABLE_ROBOT_COMMAND", "0").strip().lower() in {
         "1", "true", "yes", "on",
     }
+
+
+def assembly_enabled() -> bool:
+    """装配/拍照执行开关。VOICE_ENABLE_ASSEMBLY 未设时跟随机器人指令开关。"""
+    raw = os.environ.get("VOICE_ENABLE_ASSEMBLY")
+    if raw is None or not str(raw).strip():
+        return robot_commands_enabled()
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+# --- 装配演示：拍照节点 + auto_demo + /assembly_count ---
+VOICE_CONDA_SH = os.environ.get(
+    "VOICE_CONDA_SH",
+    "/mnt/ssd/miniforge3/etc/profile.d/conda.sh",
+).strip()
+VOICE_CONDA_ENV_6D = os.environ.get("VOICE_CONDA_ENV_6D", "6d").strip() or "6d"
+VOICE_CAMERA_WS = os.environ.get("VOICE_CAMERA_WS", "/mnt/ssd/ceshi/demo").strip()
+VOICE_CAMERA_RUN = os.environ.get(
+    "VOICE_CAMERA_RUN",
+    "ros2 run gemini_detector gemini_detector",
+).strip()
+VOICE_AUTO_DEMO_BIN = os.environ.get(
+    "VOICE_AUTO_DEMO_BIN",
+    "/mnt/ssd/lyz/install/tianlian_hardware/lib/tianlian_hardware/auto_demo",
+).strip()
+VOICE_LYZ_SETUP = os.environ.get(
+    "VOICE_LYZ_SETUP",
+    "/mnt/ssd/lyz/install/setup.bash",
+).strip()
+VOICE_ASSEMBLY_TOPIC = os.environ.get(
+    "VOICE_ASSEMBLY_TOPIC",
+    "/assembly_count",
+).strip() or "/assembly_count"
+VOICE_PHOTO_TIMEOUT_SEC = float(os.environ.get("VOICE_PHOTO_TIMEOUT_SEC", "45"))
+VOICE_ASSEMBLY_PUBLISH_REPEATS = int(os.environ.get("VOICE_ASSEMBLY_PUBLISH_REPEATS", "3"))
+VOICE_ASSEMBLY_PUBLISH_INTERVAL_SEC = float(
+    os.environ.get("VOICE_ASSEMBLY_PUBLISH_INTERVAL_SEC", "0.4")
+)
+VOICE_FASTRTPS_PROFILE = os.environ.get(
+    "VOICE_FASTRTPS_PROFILE",
+    "/mnt/ssd/lyz/fastdds_wifi.xml",
+).strip()
+PHOTO_DONE_TTS = os.environ.get(
+    "VOICE_PHOTO_DONE_TTS",
+    "拍照完成，可以开始下一步的装配指令了",
+).strip() or "拍照完成，可以开始下一步的装配指令了"
+PHOTO_START_TTS = os.environ.get(
+    "VOICE_PHOTO_START_TTS",
+    "好的，开始拍照",
+).strip() or "好的，开始拍照"
+PHOTO_FAIL_TTS = os.environ.get(
+    "VOICE_PHOTO_FAIL_TTS",
+    "拍照未完成，请检查相机后重试",
+).strip() or "拍照未完成，请检查相机后重试"
+ASSEMBLY_NEED_PHOTO_TTS = os.environ.get(
+    "VOICE_ASSEMBLY_NEED_PHOTO_TTS",
+    "请先说开始拍照，完成检测后再告诉我装配几个",
+).strip() or "请先说开始拍照，完成检测后再告诉我装配几个"
 
 
 def validate_runtime_config() -> None:
@@ -264,7 +334,10 @@ def validate_runtime_config() -> None:
         ("COMMAND_MAX_DURATION_SEC", COMMAND_MAX_DURATION_SEC),
         ("VAD_SILENCE_DURATION_SEC", VAD_SILENCE_DURATION_SEC),
         ("VAD_MIN_SPEECH_DURATION_SEC", VAD_MIN_SPEECH_DURATION_SEC),
+        ("VAD_MAX_SPEECH_DURATION_SEC", VAD_MAX_SPEECH_DURATION_SEC),
         ("VAD_PRE_ROLL_SEC", VAD_PRE_ROLL_SEC),
+        ("FOLLOWUP_VAD_SILENCE_SEC", FOLLOWUP_VAD_SILENCE_SEC),
+        ("FOLLOWUP_COMMAND_MAX_DURATION_SEC", FOLLOWUP_COMMAND_MAX_DURATION_SEC),
         ("WAKE_COOLDOWN_SEC", WAKE_COOLDOWN_SEC),
         ("PROMPT_GUARD_DURATION_SEC", PROMPT_GUARD_DURATION_SEC),
         ("POST_TTS_GUARD_DURATION_SEC", POST_TTS_GUARD_DURATION_SEC),

@@ -52,10 +52,15 @@ def make_wake_prompt_callback(speaker: Callable[[str], object] | None = None) ->
         text = wake_ack_text()
         if text and speaker is not None:
             try:
+                print(f"🔊 唤醒应答: {text!r}", flush=True)
                 if speaker(text) is not False:
                     return True
+                print("⚠️ 唤醒应答 TTS 返回失败，尝试提示音", flush=True)
             except Exception as exc:
                 print(f"⚠️ wake ack TTS failed, falling back to tone: {exc}", flush=True)
-        return play_prompt_tone()
+        ok = play_prompt_tone()
+        if not ok:
+            print("⚠️ 唤醒提示音播放失败（检查 aplay / APLAY_DEVICE）", flush=True)
+        return ok
 
     return _prompt
