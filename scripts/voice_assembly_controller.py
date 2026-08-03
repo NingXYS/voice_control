@@ -66,6 +66,7 @@ class AssemblyController:
         self._photo_ready = False
         self._photo_busy = False
         self._photo_thread: Optional[threading.Thread] = None
+        self._photo_gen = 0  # 每次开始拍照递增，旧线程发现 gen 变了就退出
         self._rclpy = None
         self._node = None
         self._int32_type = None
@@ -98,6 +99,12 @@ class AssemblyController:
         try:
             import rclpy
             from rclpy.node import Node
+            from rclpy.qos import (
+                DurabilityPolicy,
+                HistoryPolicy,
+                QoSProfile,
+                ReliabilityPolicy,
+            )
             from std_msgs.msg import Int32
         except ImportError as exc:
             print(f"⚠️ 装配话题发布需要 rclpy: {exc}", flush=True)
@@ -110,11 +117,18 @@ class AssemblyController:
         topic = str(_cfg("topic", "/assembly_count"))
         self._node = Node(f"voice_assembly_pub_{os.getpid()}")
         self._int32_type = Int32
-        self._assembly_pub = self._node.create_publisher(Int32, topic, 10)
+        # 与 auto_demo 一致：TRANSIENT_LOCAL，晚启动的订阅者也能拿到数量
+        qos = QoSProfile(
+            depth=1,
+            history=HistoryPolicy.KEEP_LAST,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self._assembly_pub = self._node.create_publisher(Int32, topic, qos)
         return True
 
     def publish_assembly_count(self, count: int, repeats: int | None = None) -> bool:
-        """Publish Arabic int to /assembly_count (reserved interface)."""
+        """Publish Arabic int to /assembly_count (TRANSIENT_LOCAL latched)."""
         count = int(count)
         if count < 1:
             count = 1
@@ -139,6 +153,39 @@ class AssemblyController:
             if i + 1 < max(1, repeats):
                 time.sleep(interval)
         return True
+
+    def _publish_assembly_count_background(
+        self, count: int, duration_sec: float = 90.0, interval_sec: float = 1.0
+    ) -> None:
+        """在 auto_demo 慢启动（MoveIt initialize）期间持续补发数量。"""
+
+        def _loop() -> None:
+            deadline = time.time() + max(5.0, duration_sec)
+            n = 0
+            while time.time() < deadline:
+                with self._lock:
+                    demo = self._auto_demo_proc
+                if demo is not None and demo.poll() is not None:
+                    print(
+                        f"🔩 auto_demo 已结束 (code={demo.returncode})，停止补发 /assembly_count",
+                        flush=True,
+                    )
+                    break
+                self.publish_assembly_count(count, repeats=1)
+                n += 1
+                if n == 1 or n % 10 == 0:
+                    print(
+                        f"🔩 后台补发 /assembly_count={count} (#{n})，"
+                        f"等待 auto_demo 订阅…",
+                        flush=True,
+                    )
+                time.sleep(interval_sec)
+
+        threading.Thread(
+            target=_loop,
+            name="assembly-count-republish",
+            daemon=True,
+        ).start()
 
     # ────────────────────── process helpers ──────────────────────
 
@@ -171,35 +218,73 @@ class AssemblyController:
             except Exception:
                 pass
 
-    def _popen_bash(self, script: str, cwd: str | None = None) -> subprocess.Popen:
+    def _popen_bash(
+        self,
+        script: str,
+        cwd: str | None = None,
+        *,
+        use_fastdds: bool = False,
+        log_path: str | None = None,
+    ) -> subprocess.Popen:
         env = os.environ.copy()
-        fastdds = str(_cfg("fastdds", "") or "")
-        if fastdds and os.path.isfile(fastdds):
-            env["FASTRTPS_DEFAULT_PROFILES_FILE"] = fastdds
-        # DEVNULL：避免子进程日志塞满 PIPE 导致阻塞；现场用 ros2/日志目录排查
-        return subprocess.Popen(
+        # 相机检测节点默认不套 FASTRTPS 配置，否则与语音进程 DDS 域不一致，
+        # 会「图存成功但 /target 话题永远发现不了」。
+        if use_fastdds:
+            fastdds = str(_cfg("fastdds", "") or "")
+            if fastdds and os.path.isfile(fastdds):
+                env["FASTRTPS_DEFAULT_PROFILES_FILE"] = fastdds
+        else:
+            env.pop("FASTRTPS_DEFAULT_PROFILES_FILE", None)
+
+        stdout = subprocess.DEVNULL
+        stderr = subprocess.DEVNULL
+        log_fh = None
+        if log_path:
+            try:
+                os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
+                log_fh = open(log_path, "w", encoding="utf-8")
+                stdout = log_fh
+                stderr = subprocess.STDOUT
+            except OSError:
+                log_fh = None
+
+        proc = subprocess.Popen(
             ["bash", "-lc", script],
             cwd=cwd or None,
             env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=stdout,
+            stderr=stderr,
             start_new_session=True,
             text=True,
         )
+        # 文件句柄交给子进程，父进程不关（子进程结束后 OS 回收）
+        if log_fh is not None:
+            try:
+                log_fh.close()
+            except Exception:
+                pass
+        return proc
 
     def _photo_launch_script(self) -> str:
         conda_sh = shlex.quote(str(_cfg("conda_sh", "/mnt/ssd/miniforge3/etc/profile.d/conda.sh")))
         conda_env = shlex.quote(str(_cfg("conda_env", "6d")))
         camera_ws = str(_cfg("camera_ws", "/mnt/ssd/ceshi/demo"))
-        camera_run = str(_cfg("camera_run", "ros2 run gemini_detector gemini_detector"))
+        # 默认 gemini_detector；用 exec 让检测进程成为会话主进程，避免 bash 退出带走节点
+        camera_run = str(
+            _cfg("camera_run", "ros2 run gemini_detector gemini_detector")
+        ).strip()
+        if not camera_run.startswith("exec "):
+            camera_run = f"exec {camera_run}"
         setup = shlex.quote(os.path.join(camera_ws, "install", "setup.bash"))
         return (
-            f"set -e\n"
             f"source {conda_sh}\n"
             f"conda activate {conda_env}\n"
             f"source /opt/ros/humble/setup.bash\n"
             f"source {setup}\n"
             f"cd {shlex.quote(camera_ws)}\n"
+            f"# 与语音 / auto_demo 同 DDS：必须清除 FASTRTPS 配置\n"
+            f"unset FASTRTPS_DEFAULT_PROFILES_FILE\n"
+            f"unset ROS_DOMAIN_ID\n"
             f"{camera_run}\n"
         )
 
@@ -212,92 +297,283 @@ class AssemblyController:
         )
         lyz_setup = str(_cfg("lyz_setup", "/mnt/ssd/lyz/install/setup.bash"))
         parts = [
-            "set -e",
             "source /opt/ros/humble/setup.bash",
+            # 必须与相机节点同一 DDS 域，否则看不到 /target/*
+            "unset FASTRTPS_DEFAULT_PROFILES_FILE",
+            "unset ROS_DOMAIN_ID",
         ]
         if lyz_setup and os.path.isfile(lyz_setup):
             parts.append(f"source {shlex.quote(lyz_setup)}")
         if os.path.isfile(bin_path):
-            parts.append(shlex.quote(bin_path))
+            parts.append(f"exec {shlex.quote(bin_path)}")
         else:
-            parts.append("ros2 run tianlian_hardware auto_demo")
+            parts.append("exec ros2 run tianlian_hardware auto_demo")
         return "\n".join(parts) + "\n"
+
+    def _photo_process_alive(self) -> bool:
+        with self._lock:
+            proc = self._photo_proc
+        return proc is not None and proc.poll() is None
 
     # ────────────────────── photo completion ──────────────────────
 
-    @staticmethod
-    def _target_topics_present(node) -> bool:
-        """True if any /target/target_N/xyz topic exists."""
+    def _capture_paths(self) -> list[str]:
+        """gemini_detector 成功时会写 captures/result_black_head.png 等。"""
+        camera_ws = str(_cfg("camera_ws", "/mnt/ssd/ceshi/demo"))
+        cap = os.path.join(camera_ws, "captures")
+        return [
+            os.path.join(cap, "result_black_head.png"),
+            os.path.join(camera_ws, "src", "captures", "result_black_head.png"),
+        ]
+
+    def _all_capture_watch_paths(self) -> list[str]:
+        """结果图 + debug_black_*.png 全部纳入基线，避免重拍误认旧图。"""
+        paths = list(self._capture_paths())
+        camera_ws = str(_cfg("camera_ws", "/mnt/ssd/ceshi/demo"))
+        for sub in ("captures", os.path.join("src", "captures")):
+            d = os.path.join(camera_ws, sub)
+            if not os.path.isdir(d):
+                continue
+            try:
+                for name in os.listdir(d):
+                    if name.startswith("debug_black_") and name.endswith(".png"):
+                        paths.append(os.path.join(d, name))
+            except OSError:
+                continue
+        # 去重
+        seen: set[str] = set()
+        out: list[str] = []
+        for p in paths:
+            if p not in seen:
+                seen.add(p)
+                out.append(p)
+        return out
+
+    def _snapshot_capture_mtimes(self) -> dict[str, float]:
+        """启动前快照：重拍必须看到比快照更新的 mtime。"""
+        snap: dict[str, float] = {}
+        for path in self._all_capture_watch_paths():
+            try:
+                snap[path] = os.path.getmtime(path)
+            except OSError:
+                snap[path] = 0.0
+        return snap
+
+    def _photo_files_newer_than(self, baseline: dict[str, float]) -> tuple[bool, str]:
+        """True only if some watched file is strictly newer than pre-start baseline."""
+        for path in self._all_capture_watch_paths():
+            try:
+                mtime = os.path.getmtime(path)
+            except OSError:
+                continue
+            prev = baseline.get(path, 0.0)
+            # 严格大于基线（新写入）；允许极小浮点误差
+            if mtime > prev + 0.05:
+                return True, path
+        return False, ""
+
+    def _stop_previous_photo(self) -> None:
+        """关闭上一次拍照节点并等待退出，避免旧话题/旧进程干扰重拍。"""
+        with self._lock:
+            proc = self._photo_proc
+            self._photo_proc = None
+            self._photo_ready = False
+        if proc is None:
+            return
+        self._terminate(proc, "上一次拍照节点")
+        # 等进程真正退出
         try:
-            names_and_types = node.get_topic_names_and_types()
+            proc.wait(timeout=3)
         except Exception:
-            return False
-        pattern = re.compile(r"^/target/target_\d+/xyz$")
-        for name, _types in names_and_types:
-            if pattern.match(name):
-                return True
-        return False
+            pass
+        # 给 DDS 图一点时间收敛（旧 publisher 从图上消失）
+        time.sleep(0.6)
+        print("📷 上一次拍照节点已关闭，准备重新拍照", flush=True)
 
-    def _wait_for_targets(self, timeout_sec: float) -> bool:
-        """Poll ROS graph for detector target topics."""
-        try:
-            import rclpy
-            from rclpy.node import Node
-        except ImportError:
-            print("⚠️ 等待拍照完成需要 rclpy，改为进程存活 + 固定等待", flush=True)
-            time.sleep(min(8.0, timeout_sec))
-            return self._photo_proc is not None and self._photo_proc.poll() is None
+    def _wait_for_targets(
+        self,
+        timeout_sec: float,
+        baseline: dict[str, float],
+    ) -> bool:
+        """Wait until THIS shot finishes: new image mtime OR new /target message.
 
-        owns = False
-        if not rclpy.ok():
-            rclpy.init(args=None)
-            owns = True
-        node = Node(f"voice_photo_wait_{os.getpid()}_{int(time.time())}")
+        不用「话题名是否存在」：重拍时旧 /target 话题残留会导致秒判完成。
+        """
         deadline = time.time() + max(1.0, timeout_sec)
+        node = None
+        rclpy = None
+        last_diag = 0.0
+        got_new_msg = {"ok": False}
+
+        try:
+            import rclpy as _rclpy
+            from rclpy.node import Node
+            from geometry_msgs.msg import PointStamped
+
+            rclpy = _rclpy
+            if not rclpy.ok():
+                rclpy.init(args=None)
+            node = Node(f"voice_photo_wait_{os.getpid()}_{int(time.time())}")
+
+            def _on_xyz(_msg) -> None:
+                got_new_msg["ok"] = True
+
+            # 订阅常见 target_0..9；新消息才算本轮成功
+            for i in range(10):
+                node.create_subscription(
+                    PointStamped,
+                    f"/target/target_{i}/xyz",
+                    _on_xyz,
+                    10,
+                )
+        except Exception as exc:
+            print(f"⚠️ 拍照完成判定：rclpy 不可用 ({exc})，仅用结果图", flush=True)
+
         ok = False
+        reason = ""
         try:
             while time.time() < deadline:
-                if self._photo_proc is not None and self._photo_proc.poll() is not None:
-                    # process exited early — still check topics once
-                    if self._target_topics_present(node):
-                        ok = True
-                    break
-                if self._target_topics_present(node):
+                # 1) 本轮新写的结果图（相对启动前基线）
+                file_ok, path = self._photo_files_newer_than(baseline)
+                if file_ok:
                     ok = True
+                    reason = f"本轮新结果图: {path}"
                     break
-                try:
-                    rclpy.spin_once(node, timeout_sec=0.2)
-                except Exception:
+
+                # 2) 本轮新到的 target 消息（不是旧话题名残留）
+                if got_new_msg["ok"]:
+                    ok = True
+                    reason = "收到本轮 /target/*/xyz 消息"
+                    break
+
+                # 进程过早退出
+                if self._photo_proc is not None and self._photo_proc.poll() is not None:
+                    file_ok, path = self._photo_files_newer_than(baseline)
+                    if file_ok:
+                        ok = True
+                        reason = f"节点已退出但本轮结果图已写: {path}"
+                    elif got_new_msg["ok"]:
+                        ok = True
+                        reason = "节点已退出但已收到本轮 target 消息"
+                    else:
+                        print(
+                            f"⚠️ gemini_detector 已退出 "
+                            f"code={self._photo_proc.returncode}，且无本轮新图",
+                            flush=True,
+                        )
+                    break
+
+                now = time.time()
+                if now - last_diag >= 5.0:
+                    last_diag = now
+                    alive = (
+                        self._photo_proc is not None
+                        and self._photo_proc.poll() is None
+                    )
+                    print(
+                        f"⏳ 等待本轮拍照… alive={alive} "
+                        f"remain={max(0, deadline - now):.0f}s",
+                        flush=True,
+                    )
+
+                if node is not None and rclpy is not None:
+                    try:
+                        rclpy.spin_once(node, timeout_sec=0.2)
+                    except Exception:
+                        time.sleep(0.2)
+                else:
                     time.sleep(0.2)
+
+            if ok:
+                print(f"✅ 拍照完成判定: {reason}", flush=True)
+            else:
+                file_ok, path = self._photo_files_newer_than(baseline)
+                print(
+                    f"❌ 拍照超时: 无本轮新图且无新 target 消息 "
+                    f"(file_ok={file_ok} path={path!r} msg={got_new_msg['ok']})",
+                    flush=True,
+                )
             return ok
         finally:
-            try:
-                node.destroy_node()
-            except Exception:
-                pass
-            if owns and rclpy.ok():
-                # Do not shut down global context if voice already uses rclpy.
-                pass
+            if node is not None:
+                try:
+                    node.destroy_node()
+                except Exception:
+                    pass
 
-    def _run_photo_pipeline(self, speaker: Optional[Speaker]) -> None:
+    def _is_current_photo_gen(self, gen: int) -> bool:
+        with self._lock:
+            return gen == self._photo_gen
+
+    def _run_photo_pipeline(
+        self, speaker: Optional[Speaker], gen: int = 0
+    ) -> None:
         try:
-            with self._lock:
-                self._terminate(self._photo_proc, "拍照节点")
-                self._photo_proc = None
-                self._photo_ready = False
+            # 已被更新的 start_photo 顶替
+            if not self._is_current_photo_gen(gen):
+                return
 
+            # 重拍：先关掉上一次节点，再拍基线，避免误认旧图/旧话题
+            self._stop_previous_photo()
+            if not self._is_current_photo_gen(gen):
+                return
+
+            baseline = self._snapshot_capture_mtimes()
+            print(
+                f"📷 已记录启动前结果图基线 ({len(baseline)} 个路径)，"
+                "仅本轮新文件算成功",
+                flush=True,
+            )
+
+            camera_ws = str(_cfg("camera_ws", "/mnt/ssd/ceshi/demo"))
+            log_path = os.path.join(camera_ws, "log", "voice_gemini_detector.log")
             script = self._photo_launch_script()
-            print("📷 启动拍照节点 (conda 6d + gemini_detector)...", flush=True)
-            proc = self._popen_bash(script, cwd=str(_cfg("camera_ws", "/mnt/ssd/ceshi/demo")))
+            print(
+                "📷 启动拍照节点 (conda 6d + gemini_detector，无 FASTRTPS 隔离)...",
+                flush=True,
+            )
+            if not self._is_current_photo_gen(gen):
+                return
+            proc = self._popen_bash(
+                script,
+                cwd=camera_ws,
+                use_fastdds=False,
+                log_path=log_path,
+            )
             with self._lock:
+                if gen != self._photo_gen:
+                    # 启动瞬间又被重拍：立刻杀掉刚起的进程
+                    self._terminate(proc, "作废的拍照节点")
+                    return
                 self._photo_proc = proc
+            print(f"📷 检测日志: {log_path}", flush=True)
 
             timeout = float(_cfg("photo_timeout", 45) or 45)
-            ok = self._wait_for_targets(timeout)
+            ok = self._wait_for_targets(timeout, baseline)
+            if not self._is_current_photo_gen(gen):
+                print("📷 本轮拍照已被更新的重拍取代，忽略结果", flush=True)
+                return
+
+            # 装配依赖检测节点持续发布 /target/*，节点不能在判定成功后退出
+            alive = self._photo_process_alive()
+            if ok and not alive:
+                print(
+                    "❌ 检测结果已写出，但 gemini_detector 进程已退出，"
+                    "无法持续发布 /target（装配会失败）。请查看日志并重拍。\n"
+                    f"   日志: {log_path}",
+                    flush=True,
+                )
+                ok = False
+
             if ok:
                 with self._lock:
                     self._photo_ready = True
-                print("✅ 拍照/检测完成，目标话题已出现", flush=True)
+                    pid = self._photo_proc.pid if self._photo_proc else "?"
+                print(
+                    f"✅ 拍照/检测完成；检测节点保持运行 PID={pid}，"
+                    "持续发布 /target/*（仅「开始拍照」重拍时才会重启节点）",
+                    flush=True,
+                )
                 self._safe_speak(
                     speaker,
                     self._tts("PHOTO_DONE", "拍照完成，可以开始下一步的装配指令了"),
@@ -305,22 +581,31 @@ class AssemblyController:
             else:
                 with self._lock:
                     self._photo_ready = False
-                print("❌ 拍照超时或未检测到目标话题", flush=True)
+                # 失败时关掉半死不活的节点，避免占相机
+                self._stop_previous_photo()
+                print(
+                    "❌ 拍照超时或检测节点未保持运行 "
+                    f"(详见 {log_path})",
+                    flush=True,
+                )
                 self._safe_speak(
                     speaker,
                     self._tts("PHOTO_FAIL", "拍照未完成，请检查相机后重试"),
                 )
         except Exception as exc:
             print(f"❌ 拍照流程异常: {exc}", flush=True)
-            with self._lock:
-                self._photo_ready = False
-            self._safe_speak(
-                speaker,
-                self._tts("PHOTO_FAIL", "拍照未完成，请检查相机后重试"),
-            )
+            if self._is_current_photo_gen(gen):
+                with self._lock:
+                    self._photo_ready = False
+                self._safe_speak(
+                    speaker,
+                    self._tts("PHOTO_FAIL", "拍照未完成，请检查相机后重试"),
+                )
         finally:
+            # 仅当前 gen 清除 busy，避免新一轮被旧线程清掉
             with self._lock:
-                self._photo_busy = False
+                if gen == self._photo_gen:
+                    self._photo_busy = False
 
     @staticmethod
     def _tts(key: str, default: str) -> str:
@@ -349,7 +634,10 @@ class AssemblyController:
             print(f"⚠️ 装配 TTS 失败: {exc}", flush=True)
 
     def start_photo(self, speaker: Optional[Speaker] = None) -> dict:
-        """Begin photo stage. Returns status dict for pipeline logging."""
+        """Begin photo stage. Returns status dict for pipeline logging.
+
+        再次说「开始拍照」会停掉上一次检测并重新拍（允许重拍直到满意）。
+        """
         if not self.is_enabled():
             print("ℹ️ 装配执行未启用（VOICE_ENABLE_ASSEMBLY / ROBOT_COMMAND）", flush=True)
             return {
@@ -358,20 +646,19 @@ class AssemblyController:
                 "reason": "disabled",
             }
         with self._lock:
+            # 重拍：若上一轮还在跑，递增 gen 使旧线程作废
             if self._photo_busy:
-                return {
-                    "action": "assembly_photo",
-                    "started": False,
-                    "reason": "busy",
-                }
+                print("📷 收到重拍，将中止当前拍照并重新开始", flush=True)
+            self._photo_gen += 1
+            gen = self._photo_gen
             self._photo_busy = True
             self._photo_ready = False
 
         self._safe_speak(speaker, self._tts("PHOTO_START", "好的，开始拍照"))
         t = threading.Thread(
             target=self._run_photo_pipeline,
-            args=(speaker,),
-            name="assembly-photo",
+            args=(speaker, gen),
+            name=f"assembly-photo-{gen}",
             daemon=True,
         )
         self._photo_thread = t
@@ -408,14 +695,45 @@ class AssemblyController:
                 "reason": "need_photo",
             }
 
+        # 装配前必须仍有检测节点在发 /target
+        if not self._photo_process_alive():
+            self._photo_ready = False
+            msg = "检测节点已停止，请重新说开始拍照"
+            print(f"⚠️ {msg}", flush=True)
+            self._safe_speak(speaker, msg)
+            return {
+                "action": "assembly_start",
+                "count": count,
+                "started": False,
+                "reason": "detector_dead",
+            }
+
         with self._lock:
             self._terminate(self._auto_demo_proc, "装配节点 auto_demo")
             self._auto_demo_proc = None
+            photo_pid = self._photo_proc.pid if self._photo_proc else None
 
+        print(
+            f"📷 装配时保持检测节点运行 PID={photo_pid}（不关闭相机话题）",
+            flush=True,
+        )
+
+        # 先发一次锁存数量，再起 auto_demo（initialize 可能很久）
+        print(f"🔩 预先发布锁存 /assembly_count={count}，再启动 auto_demo", flush=True)
+        self.publish_assembly_count(count, repeats=2)
+
+        camera_ws = str(_cfg("camera_ws", "/mnt/ssd/ceshi/demo"))
+        demo_log = os.path.join(camera_ws, "log", "voice_auto_demo.log")
         script = self._auto_demo_launch_script()
         print(f"🤖 启动 auto_demo，装配数量={count}", flush=True)
+        print(f"🤖 auto_demo 日志: {demo_log}", flush=True)
         try:
-            proc = self._popen_bash(script)
+            # 与相机同域：不使用独立 FASTRTPS 配置
+            proc = self._popen_bash(
+                script,
+                use_fastdds=False,
+                log_path=demo_log,
+            )
             with self._lock:
                 self._auto_demo_proc = proc
         except Exception as exc:
@@ -427,9 +745,31 @@ class AssemblyController:
                 "reason": "launch_failed",
             }
 
-        # Give auto_demo a moment to create subscription, then publish (reserved API)
-        time.sleep(0.8)
-        self.publish_assembly_count(count)
+        time.sleep(0.5)
+        if proc.poll() is not None:
+            print(
+                f"❌ auto_demo 启动后立即退出 code={proc.returncode}，"
+                f"请查看 {demo_log}",
+                flush=True,
+            )
+            self._safe_speak(speaker, "装配节点启动失败，请检查机械臂环境")
+            return {
+                "action": "assembly_start",
+                "count": count,
+                "started": False,
+                "reason": "launch_exited",
+            }
+
+        if not self._photo_process_alive():
+            print("⚠️ 启动 auto_demo 后检测节点意外退出", flush=True)
+
+        # MoveIt initialize 可能数十秒：后台持续补发，直到 auto_demo 结束
+        self._publish_assembly_count_background(count, duration_sec=120.0, interval_sec=1.0)
+        print(
+            f"🤖 auto_demo PID={proc.pid} 已启动；"
+            "数量将后台补发约 120s（等 initialize 完成后订阅）",
+            flush=True,
+        )
 
         reply = f"好的，开始装配{count}个"
         self._safe_speak(speaker, reply)
