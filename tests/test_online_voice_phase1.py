@@ -29,11 +29,15 @@ class OnlineVoicePhase1Tests(unittest.TestCase):
             dialogue=DialogueMustNotRun(),
         )
 
-        self.assertEqual(
-            result,
-            [{"reply": "我是施耐力双臂六关节机械臂，拥有左右两条手臂，各六个关节。"}],
-        )
-        speaker.assert_called_once_with(result[0]["reply"])
+        self.assertEqual(len(result), 1)
+        self.assertIn("reply", result[0])
+        self.assertIn("单臂按摩机器人", result[0]["reply"])
+        self.assertIn("点位示教", result[0]["reply"])
+        self.assertIn("安全", result[0]["reply"])
+        # Sentence-level TTS may split a long local reply into multiple speak() calls.
+        spoken = "".join(str(c.args[0]) for c in speaker.call_args_list)
+        self.assertIn("单臂按摩机器人", spoken)
+        self.assertGreaterEqual(speaker.call_count, 1)
 
     def test_hardware_qa_hits_local_knowledge(self):
         speaker = mock.Mock()
@@ -74,7 +78,8 @@ class OnlineVoicePhase1Tests(unittest.TestCase):
         self.assertIn("reply", result[0])
         self.assertIn("听清", result[0]["reply"])
 
-    def test_local_route_preserves_action_text_for_dialogue(self):
+    def test_local_action_parser_short_circuits_before_dialogue(self):
+        """Template cartesian commands parse locally and never call Dify."""
 
         class Executor:
             def __init__(self):
@@ -82,15 +87,32 @@ class OnlineVoicePhase1Tests(unittest.TestCase):
 
         executor = Executor()
 
+        class DialogueMustNotRun:
+            def run(self, _text):
+                raise AssertionError("local action must bypass Dify")
+
+        expected = {
+            "action": "move_cartesian",
+            "arm": "right",
+            "x": 0,
+            "y": 0.05,
+            "z": 0,
+            "relative": True,
+        }
+        result = voice_text_pipeline.process_text(
+            "右臂向前五厘米",
+            executor=executor,
+            dialogue=DialogueMustNotRun(),
+        )
+
+        self.assertEqual(result, [expected])
+        executor.execute.assert_called_once_with(expected)
+
+    def test_non_template_control_still_reaches_dialogue(self):
+        """Spoken home/status (not local action templates) still go to Dify."""
+
         class Dialogue:
-            response = [{
-                "action": "move_cartesian",
-                "arm": "right",
-                "x": 0.0,
-                "y": 0.05,
-                "z": 0.0,
-                "relative": True,
-            }]
+            response = [{"action": "home", "arm": "right"}]
 
             def __init__(self):
                 self.calls = []
@@ -100,16 +122,13 @@ class OnlineVoicePhase1Tests(unittest.TestCase):
                 return self.response
 
         dialogue = Dialogue()
-
         result = voice_text_pipeline.process_text(
-            "右臂向前五厘米",
-            executor=executor,
+            "右臂回零位",
+            executor=None,
             dialogue=dialogue,
         )
-
         self.assertEqual(result, dialogue.response)
-        self.assertEqual(dialogue.calls, ["右臂向前五厘米"])
-        executor.execute.assert_called_once_with(dialogue.response[0])
+        self.assertEqual(dialogue.calls, ["右臂回零位"])
 
     def test_dify_code_fence_output_is_parsed(self):
         self.assertEqual(
@@ -121,8 +140,9 @@ class OnlineVoicePhase1Tests(unittest.TestCase):
         executor = mock.Mock()
         speaker = mock.Mock()
         response = [{"action": "home", "arm": "left"}, {"action": "unknown"}]
-        with mock.patch.object(voice_text_pipeline, "run_dialogue", return_value=response):
-            self.assertIsNone(voice_text_pipeline.process_text("回家", executor, speaker))
+        with mock.patch.dict(os.environ, {"VOICE_THINKING_ACK": "0"}, clear=False):
+            with mock.patch.object(voice_text_pipeline, "run_dialogue", return_value=response):
+                self.assertIsNone(voice_text_pipeline.process_text("回家", executor, speaker))
         executor.execute.assert_not_called()
         speaker.assert_not_called()
 

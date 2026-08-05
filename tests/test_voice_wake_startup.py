@@ -12,7 +12,7 @@ PIP_INSTALL_COMMAND = (
     'env -i HOME="$HOME" USER="$USER" '
     'PATH="${VENV_DIR}/bin:/usr/bin:/bin" PYTHONNOUSERSITE=1 '
     '"$VENV_DIR/bin/python" -I -m pip install --isolated --ignore-installed '
-    '-r "${REPO_ROOT}/requirements/voice-wake.txt"'
+    '--require-hashes -r "${REPO_ROOT}/requirements/voice-wake.txt"'
 )
 POLLUTION_VARIABLES = (
     "CONDA_PREFIX",
@@ -68,19 +68,11 @@ class VoiceWakeStartupTests(unittest.TestCase):
         self.run_script_path = os.path.join(self.repo_root, "scripts", "run_voice_wake.sh")
 
     def test_cmakelists_structure(self):
-        """Verify that CMakeLists.txt has the VOICE_CONTROL_BUILD_ROBOT_CONTROLLER option and wraps robot_controller targets."""
+        """The migration package must not pretend to build the external controller."""
         self.assertTrue(os.path.exists(self.cmakelists_path), "CMakeLists.txt does not exist")
         with open(self.cmakelists_path, "r", encoding="utf-8") as f:
             content = f.read()
 
-        # 1. 声明 option(VOICE_CONTROL_BUILD_ROBOT_CONTROLLER ... ON)
-        self.assertIn("option(VOICE_CONTROL_BUILD_ROBOT_CONTROLLER", content)
-        # Check if option defaults to ON
-        self.assertTrue(any(line.strip().startswith("option(VOICE_CONTROL_BUILD_ROBOT_CONTROLLER") and "ON" in line for line in content.splitlines()), 
-                        "VOICE_CONTROL_BUILD_ROBOT_CONTROLLER option should be ON by default")
-
-        # 2. check that ament_cmake and Python install are outside the if-block (no condition wrapping them)
-        # We can just verify their presence in the file generally, and verify they are not inside if(VOICE_CONTROL_BUILD_ROBOT_CONTROLLER)
         self.assertIn("find_package(ament_cmake REQUIRED)", content)
         self.assertIn("install(PROGRAMS", content)
         self.assertIn("install(FILES", content)
@@ -89,32 +81,13 @@ class VoiceWakeStartupTests(unittest.TestCase):
         self.assertNotIn('set(TTS_ASSET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tts")', content)
         self.assertIn("ament_package()", content)
 
-        # 3. controller specific packages and targets must be inside the if block
-        # Let's verify that tf2, moveit etc are inside if(VOICE_CONTROL_BUILD_ROBOT_CONTROLLER) ... endif()
-        # We can parse blocks or check text containment. Let's do a simple check.
-        # Check if find_package(moveit_ros_planning_interface REQUIRED) is inside the condition
-        # We can do this by checking the lines between if(VOICE_CONTROL_BUILD_ROBOT_CONTROLLER) and matching endif().
-        if_index = content.find("if(VOICE_CONTROL_BUILD_ROBOT_CONTROLLER)")
-        self.assertNotEqual(if_index, -1, "if(VOICE_CONTROL_BUILD_ROBOT_CONTROLLER) block not found")
-        
-        # Simple stack-based brace matching or similar for nested if/endif is not strictly needed if we don't have nested ones.
-        # Let's count how many endif() or other statements are there. Or just verify the sub-strings are after the if and before its endif.
-        # Find the first endif() after if(VOICE_CONTROL_BUILD_ROBOT_CONTROLLER)
-        endif_index = content.find("endif()", if_index)
-        self.assertNotEqual(endif_index, -1, "endif() matching the option block not found")
-        
-        block_content = content[if_index:endif_index]
-        self.assertIn("moveit_ros_planning_interface", block_content)
-        self.assertIn("tf2", block_content)
-        self.assertIn("nlohmann_json", block_content)
-        self.assertIn("add_executable(robot_controller", block_content)
-        self.assertIn("target_link_libraries(robot_controller", block_content)
-        
-        # Verify that these controller packages are NOT found outside this block (except maybe inside comments or the check itself)
-        # Let's make sure the overall count in the file matches what is inside the block.
-        outer_content = content[:if_index] + content[endif_index:]
-        self.assertNotIn("add_executable(robot_controller", outer_content)
-        self.assertNotIn("moveit_ros_planning_interface REQUIRED", outer_content)
+        for stale in (
+            "VOICE_CONTROL_BUILD_ROBOT_CONTROLLER",
+            "add_executable(robot_controller",
+            "moveit_ros_planning_interface",
+            "nlohmann_json",
+        ):
+            self.assertNotIn(stale, content)
 
     def test_shell_scripts_syntax(self):
         """Verify that shell scripts pass bash -n check."""
@@ -140,13 +113,16 @@ class VoiceWakeStartupTests(unittest.TestCase):
         self.assertIn("install_online", content)
         self.assertIn("voice_control/lib/voice_control/voice_wake_entry.py", content)
         self.assertIn("TTS_MODEL_DIR", content)
-        self.assertIn('${REPO_ROOT}/models/tts/kokoro-multi-lang-v1_0', content)
+        # Models live under repo models/; Matcha is default, Kokoro kept as fallback.
+        self.assertIn("models/tts/matcha-icefall-zh-baker", content)
+        self.assertIn("models/tts/kokoro-multi-lang-v1_0", content)
         self.assertIn('${REPO_ROOT}/models/sherpa-onnx-paraformer-zh-2023-09-14', content)
         self.assertIn('${REPO_ROOT}/models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20', content)
         self.assertIn('${REPO_ROOT}/models/vad/silero_vad.onnx', content)
         self.assertNotIn('$HOME/model/', content)
-        self.assertIn('export TTS_MODEL_FILE="model.onnx"', content)
-        self.assertIn('TTS_SPEAKER_ID:-47', content)
+        self.assertIn('voice_control_online.env', content)
+        self.assertIn('export TTS_MODEL_FILE="model-steps-3.onnx"', content)
+        self.assertIn('TTS_SPEAKER_ID:-0', content)
         self.assertIn('TTS_SPEED:-1.0', content)
         self.assertIn("DIFY_API_KEY", content)
         self.assertIn("sherpa-onnx-paraformer-zh-2023-09-14", content)
@@ -156,6 +132,7 @@ class VoiceWakeStartupTests(unittest.TestCase):
         self.assertIn("voice_audio_frontend.py", content)
         self.assertIn('"${TTS_MODEL_DIR}/${TTS_MODEL_FILE}"', content)
         self.assertIn('for file in voices.bin lexicon-us-en.txt lexicon-zh.txt', content)
+        self.assertIn("vocos-22khz-univ.onnx", content)
         
         # Must only start voice_wake_entry.py (and not robot_controller)
         self.assertIn("voice_wake_entry.py", content)
@@ -168,7 +145,7 @@ class VoiceWakeStartupTests(unittest.TestCase):
             content = f.read()
 
         self.assertIn("/usr/bin/python3", content, "setup_voice_wake.sh must explicitly use /usr/bin/python3")
-        self.assertIn("-DVOICE_CONTROL_BUILD_ROBOT_CONTROLLER=OFF", content, "setup_voice_wake.sh must pass -DVOICE_CONTROL_BUILD_ROBOT_CONTROLLER=OFF")
+        self.assertNotIn("VOICE_CONTROL_BUILD_ROBOT_CONTROLLER", content)
         self.assertNotIn("sudo", content, "setup_voice_wake.sh must not contain sudo")
         
         self.assertIn("build_online", content)

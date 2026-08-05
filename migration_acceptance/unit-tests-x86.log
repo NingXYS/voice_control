@@ -1,0 +1,95 @@
+.........🔩 本地装配指令命中，数量: 2
+.⚡ 本地知识库命中，跳过 Dify
+✅ TTS disk phrase cache loaded (56 local replies, phrases cached=56)
+.📷 本地拍照/准备装配指令命中
+.🤖 启动 auto_demo，装配数量=2
+.........................Capture cards:
+  card 3: UGREEN USB MIC-CM581 id=MICCM581 device=0  << UGREEN candidate
+    native rates=[44100, 48000, 96000] channels=[2]
+    recommended env:
+      export AUDIO_DEVICE=hw:3,0
+      export AUDIO_CAPTURE_SAMPLE_RATE=48000
+      export AUDIO_CAPTURE_CHANNELS=2
+    note: prefer 48000 Hz (exact 3:1 to model 16 kHz); use hw: and exclusive access when possible.
+.Capture: device='hw:3,0' rate=48000 channels=2 chunk_ms=100 channel_mode=channel_0
+Adapter target: 16000 Hz mono float32, collect 2 chunks (~0.20s)
+Speak at 10–30 cm for a few seconds. Target peak roughly -12 to -6 dBFS.
+  chunk 1/2: peak=-14.0 dBFS rms=-14.0 dBFS
+  chunk 2/2: peak=-14.0 dBFS rms=-14.0 dBFS
+--- summary ---
+samples=3200  duration=0.200s
+format_ok=yes  sample_rate=16000  channels=1  dtype=float32
+peak=0.2000 (-14.0 dBFS)  rms=0.2000 (-14.0 dBFS)  clip_ratio=0.00%
+PASS: capture adapter path produced valid 16 kHz mono audio.
+Suggested runtime exports:
+  export AUDIO_DEVICE=hw:3,0
+  export AUDIO_CAPTURE_SAMPLE_RATE=48000
+  export AUDIO_CAPTURE_CHANNELS=2
+.⚡ 本地动作解析命中，跳过 Dify
+ℹ️ 已解析有效机械臂指令；机器人执行未启用，仅显示不执行
+.ℹ️ 已解析有效机械臂指令；机器人执行未启用，仅显示不执行
+........................................................................................................initialized dataset skeleton at /tmp/tmp4a_tmh8c/wake
+wrote /tmp/tmp4a_tmh8c/wake/README.md
+⚡ Dify 短时间内不可用（缓存），跳过
+⚠️ Dify 不可用，回退 Ollama 直连...
+⚡ 本地知识库命中，跳过 Dify
+❌ JSON 解析失败: hello, this is not json at all
+❌ 意外的返回类型: <class 'NoneType'>
+❌ 意外的返回类型: <class 'int'>
+❌ 意外的返回类型: <class 'str'>
+❌ 列表包含非 dict 元素，拒绝整个解析结果
+❌ 列表包含非 dict 元素，拒绝整个解析结果
+❌ 列表包含非 dict 元素，拒绝整个解析结果
+⚠️ 识别结果过长且无控制特征，疑似环境人声，已忽略
+..⚠️ Dify HTTP 401
+.⚠️ Dify request failed: invalid json
+.....⚡ 本地知识库命中，跳过 Dify
+⚡ 本地知识库命中，跳过 Dify
+⚡ 本地知识库命中，跳过 Dify
+⚡ 本地动作解析命中，跳过 Dify
+⚡ 本地知识库命中，跳过 Dify
+ℹ️ 已解析有效机械臂指令；机器人执行未启用，仅显示不执行
+..🗣️ 识别输入: ok
+🤖 处理输出: <无有效输出>
+.....🎤 录音中.........🗣️ 句级 TTS: 2 句
+⏱️ sentence[1/2] chars=4 ms=0
+⏱️ sentence[2/2] chars=4 ms=0
+.🌊 流式回复开启（句级 TTS）
+⏱️ stream first sentence after 0 ms: '机械臂有两条手臂。'
+⏱️ stream total 0 ms (replies already spoken)
+........⚡ 本地动作解析命中，跳过 Dify
+ℹ️ 已解析有效机械臂指令；机器人执行未启用，仅显示不执行
+........................⚡ 本地知识库命中，跳过 Dify
+⏳ TTS background preload started
+✅ TTS background preload ready
+........✅ TTS disk phrase cache loaded (1 local replies, phrases cached=1)
+.✅ TTS disk phrase cache loaded (56 local replies, phrases cached=56)
+ℹ️ Kokoro 未检测到 export 的 TTS_SPEAKER_ID，使用产品默认 speaker=47（请用 set -a; source voice_control_online.env）
+✅ TTS initialized: engine=kokoro, model=/tmp/tmpbj6nva9a/model.onnx, speaker=0, speed=1.0, num_threads=4, load_ms=0
+✅ TTS local replies ready (disk/memory hit, phrases cached=56)
+.✅ TTS disk phrase cache loaded (56 local replies, phrases cached=56)
+.....⚠️ DIFY_API_KEY is not configured
+..........................🔔 一级唤醒(高阈值直通): test high
+🗣️ 识别输入: 你好
+🤖 处理输出: [{'reply': 'ok'}]
+.🔔 一级候选(低阈值): test low reject
+⛔ 二级唤醒拒绝: no wake phrase
+.🔔 一级候选(低阈值): test low
+✅ 二级唤醒通过: asr ok asr='小西小西'
+🗣️ 识别输入: 指令
+🤖 处理输出: [{'reply': 'ok'}]
+.🔁 连续会话开启（空闲 60s 内可直接说话，无需再次唤醒）
+🗣️ 识别输入: 第一句
+🤖 处理输出: [{'reply': '答'}]
+🔁 继续聆听中（空闲 60s 内无需再次唤醒；可说「退出/再见」结束会话）
+🗣️ 识别输入: 第二句
+🤖 处理输出: [{'reply': '答'}]
+....🔁 连续会话开启（空闲 60s 内可直接说话，无需再次唤醒）
+🗣️ 识别输入: 再见
+🔇 收到结束语，结束连续会话
+🔇 已退出连续会话，等待唤醒词
+....
+----------------------------------------------------------------------
+Ran 250 tests in 0.556s
+
+OK

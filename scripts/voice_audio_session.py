@@ -4,6 +4,8 @@ import subprocess
 
 import numpy as np
 
+from voice_subprocess import sanitized_subprocess_env
+
 
 class PersistentAudioSession:
     def __init__(self, device="default", sample_rate=16000, chunk_ms=100, channels=1):
@@ -56,6 +58,7 @@ class PersistentAudioSession:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             bufsize=0,
+            env=sanitized_subprocess_env(),
         )
         # Fail fast when ALSA already rejected the device/format. Delayed failures
         # (busy device, late plug-path errors) still surface in read_chunk() with stderr.

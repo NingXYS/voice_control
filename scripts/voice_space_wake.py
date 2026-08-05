@@ -12,6 +12,7 @@ import numpy as np
 from latency_metrics import LatencyTracker, latency_logger
 from voice_runtime_config import AUDIO_DEVICE, SAMPLE_RATE
 from voice_runtime_container import VoiceRuntimeContainer
+from voice_subprocess import sanitized_subprocess_env
 
 AUDIO_FILE = Path(os.environ.get("SPACE_WAKE_AUDIO_FILE", "/tmp/voice_space_input.wav"))
 
@@ -65,6 +66,7 @@ class SpaceWakeRecorder:
                     ],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
+                    env=sanitized_subprocess_env(),
                 )
             except OSError as exc:
                 self._process = None

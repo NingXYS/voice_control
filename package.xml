@@ -3,23 +3,16 @@
 <package format="3">
   <name>voice_control</name>
   <version>0.1.0</version>
-  <description>Voice control for dual arm robot using MoveIt</description>
+  <description>Voice assistant and guarded ROS command publisher for an external robot controller</description>
   <maintainer email="user@example.com">user</maintainer>
   <license>BSD</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <depend>rclcpp</depend>
   <depend>rclpy</depend>
   <depend>std_msgs</depend>
-  <depend>moveit_ros_planning_interface</depend>
-  <depend>tf2</depend>
-  <depend>tf2_ros</depend>
-  <depend>tf2_geometry_msgs</depend>
   <depend>tianlian</depend>
 
-  <build_depend>nlohmann-json3-dev</build_depend>
-  <exec_depend>nlohmann-json3-dev</exec_depend>
   <exec_depend>python3-requests</exec_depend>
 
   <export>

@@ -1,0 +1,7 @@
+PYTHON_IMPORTS_OK
+numpy /home/li/VoiceOnline/.venv_online/lib/python3.10/site-packages/numpy/__init__.py
+soundfile /home/li/VoiceOnline/.venv_online/lib/python3.10/site-packages/soundfile.py
+sherpa_onnx /home/li/VoiceOnline/.venv_online/lib/python3.10/site-packages/sherpa_onnx/__init__.py
+pypinyin /home/li/VoiceOnline/.venv_online/lib/python3.10/site-packages/pypinyin/__init__.py
+requests /home/li/VoiceOnline/.venv_online/lib/python3.10/site-packages/requests/__init__.py
+rclpy /opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/__init__.py

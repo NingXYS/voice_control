@@ -13,6 +13,7 @@ import requests
 
 from latency_metrics import LatencyTracker  # Phase 0: 耗时追踪
 from voice_local_knowledge import match_fixed_reply
+from voice_network_policy import validate_service_origin
 
 warnings.filterwarnings("ignore")
 
@@ -26,7 +27,7 @@ DIFY_BASE_URL = os.environ.get("DIFY_BASE_URL", "http://localhost:80")
 DIFY_API_KEY = os.environ.get("DIFY_API_KEY", "")
 
 # ==================== System Prompt（仅兜底直连时使用）====================
-SYSTEM_PROMPT = """你是双臂机械臂控制助手，负责将用户的自然语言指令转换为JSON。
+SYSTEM_PROMPT = """你是单臂按摩机器人系统中的兼容机械臂控制助手，负责问答，并保留原有 left/right 自然语言控制指令到 JSON 的转换方法。
 
 【定位与路由说明】
 - 本系统仅在以下情况下使用 Ollama 直连兜底：当本地 fixed reply 未命中，且 Dify 工作流未配置、不可用、超时或输出不可用时。
@@ -77,9 +78,11 @@ SYSTEM_PROMPT = """你是双臂机械臂控制助手，负责将用户的自然�
 - 缺关键字段的输入如“左臂向上”、“右臂向前”、“左臂关节1旋转”、“回零”、“查询状态”等，必须输出澄清回复，禁止生成动作 JSON 默认执行。
 
 【能力边界约束】
-- 本系统仅支持左右臂在三维空间移动和关节旋转。
+- 当前机器人定位是单臂按摩机器人，支持点位示教、方案构建、按摩启动确认和状态查询。
+- 按摩机械臂上下左右的新接口由本地按摩控制器处理；真实适配器尚未接入时只能说明已识别、不得承诺执行。
+- 本提示词中的动作 JSON 是保留的兼容控制方法，仅支持 left/right 旧协议在三维空间移动和关节旋转。
 - 不得对用户承诺任何未实现的能力，例如：抓取、松开、拿、放、联网检索、云服务、物体识别或其它真实物理外设操控。
-- 机器人固定问答能力与本地 fixed reply 策略一致，优先描述双臂六关节机械臂，不提供未实现能力。
+- 机器人固定问答能力与本地 fixed reply 策略一致，优先描述单臂按摩流程和接口真实状态，不提供未实现能力或医疗效果。
 
 【示例 - 安全澄清】
 用户：抬起你的左手
@@ -96,10 +99,10 @@ SYSTEM_PROMPT = """你是双臂机械臂控制助手，负责将用户的自然�
 
 【示例 - 闲聊/问答】
 用户：你叫什么名字
-输出：{"reply": "我是双臂机械臂助手，可以在指令参数明确时帮助生成左右臂空间移动和关节旋转命令"}
+输出：{"reply": "我叫小西，是一款单臂按摩机器人，可以协助点位示教和按摩流程控制"}
 
 用户：你能做什么
-输出：{"reply": "我可以控制左右两条机械臂，支持关节旋转和空间移动，比如'左臂向前10厘米'"}
+输出：{"reply": "我可以协助按摩点位示教、方案构建、启动确认和状态查询；上下左右接口尚未接入真实控制端"}
 
 【示例 - 明确动作】
 用户：左臂向上10厘米
@@ -119,7 +122,7 @@ SYSTEM_PROMPT = """你是双臂机械臂控制助手，负责将用户的自然�
 
 【示例 - 混合/组合指令】
 用户：你是什么机器人然后右臂向上5厘米
-输出：[{"reply": "我是施耐力双臂六关节机械臂，拥有左右两条手臂，各六个关节"}, {"action": "move_cartesian", "arm": "right", "x": 0.0, "y": 0.0, "z": 0.05, "relative": true}]
+输出：[{"reply": "我是小西，一款单臂按摩机器人；原有机械臂控制方法仍作为兼容链路保留"}, {"action": "move_cartesian", "arm": "right", "x": 0.0, "y": 0.0, "z": 0.05, "relative": true}]
 
 用户：右臂向前5厘米左臂向上10厘米
 输出：[{"action": "move_cartesian", "arm": "right", "x": 0.0, "y": 0.05, "z": 0.0, "relative": true}, {"action": "move_cartesian", "arm": "left", "x": 0.0, "y": 0.0, "z": 0.1, "relative": true}]
@@ -136,15 +139,62 @@ SYSTEM_PROMPT = """你是双臂机械臂控制助手，负责将用户的自然�
 
 # ==================== 关键词 ====================
 GREET_KEYWORDS = ["敬礼", "致敬", "问好", "打招呼", "你好", "您好", "问候"]
-ASSEMBLY_KEYWORDS = ["装配", "组装", "装备", "装"]
+# 装配动作词：裸「装」过宽，仅在带数量/个/一下 等语境时匹配（见 check_assembly_command）
+ASSEMBLY_KEYWORDS = ["装配", "组装", "装备"]
+# 排除「安装」等：不能以「安」开头的「装…」
+ASSEMBLY_BARE_LOAD_RE = re.compile(
+    r"(?<!安)装(?:一?下|一?个|\d+|[一二两三四五六七八九十两]+)"
+)
+# 拍照 / 准备装配（无数量）触发词
+PHOTO_COMMAND_KEYWORDS = [
+    "开始拍照", "拍照检测", "拍一下", "来拍照", "准备拍照",
+    "开始装配", "准备装配", "启动装配",
+]
+# 短词较宽，需额外过滤（见 check_photo_command）
+PHOTO_SHORT_KEYWORDS = ["拍照"]
+# FAQ / 场景闲聊：命中则不当作装配执行指令
+ASSEMBLY_FAQ_EXCLUDE = [
+    "精密装配", "装配场景", "柔性装配", "能装配吗", "会装配吗",
+    "可以装配吗", "什么是装配", "装配训练", "装配演示",
+    "会不会装配", "能不能装配", "可不可以装配", "你会装配吗",
+]
+# 疑问/闲聊特征：有这些时，无「N个」明确数量则不执行装配
+ASSEMBLY_QUESTION_HINTS = (
+    "吗", "呢", "什么", "怎么", "如何", "会不会", "能不能",
+    "可不可以", "演示", "场景", "训练", "讲个", "介绍",
+)
+# 与机械臂位移/关节指令混说时，让位给动作解析（避免「十厘米」被当成数量 10）
+ASSEMBLY_ARM_MOTION_HINTS = (
+    "左臂", "右臂", "左手", "右手", "关节",
+    "厘米", "毫米", "向上", "向下", "向前", "向后", "向左", "向右",
+)
+PHOTO_PREP_PHRASES = (
+    "开始装配", "准备装配", "启动装配", "开始拍照", "准备拍照", "拍照检测",
+)
 INTRO_KEYWORDS = ["你是谁", "你叫什么", "自我介绍", "介绍一下自己", "介绍你自己", "你是什么", "介绍你"]
 
-INTRO_TEXT = "我是施耐力双臂六关节机械臂，拥有左右两条手臂，各六个关节。"
+_CN_NUM_MAP = {
+    "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
+    "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+}
+_CN_NUM_RE = re.compile(
+    r"(?:(?:[一二三四五六七八九]?十[一二三四五六七八九]?)|[一二两三四五六七八九十])"
+)
+_ARABIC_COUNT_RE = re.compile(r"(\d+)\s*(?:个|件|只|次)?")
+
+INTRO_TEXT = (
+    "我是小西，一款单臂按摩机器人。"
+    "我可以协助完成按摩点位示教、方案构建、启动确认和状态查询。"
+)
 
 # ==================== 本地 reply 意图常量 ====================
 _LOCAL_REPLY_IDENTITY_KW = [
     "你是谁", "你叫什么", "你是什么机器人", "介绍一下自己",
     "介绍你自己", "你是施耐力的吗", "你是施耐力机器人吗",
+    "自我介绍", "自适应阻抗", "阻抗控制", "强化学习", "视觉语言模型", "VLM",
+    "精密装配", "具身智能", "三大技术", "核心技术", "有什么技术",
+    "力觉响应", "柔顺力度", "毫秒级", "克级",
+    "按摩机器人", "单臂机器人", "按摩点位", "方向接口",
 ]
 
 _LOCAL_REPLY_CAPABILITY_KW = [
@@ -208,10 +258,12 @@ _CHINESE_UNITS = {"十": 10, "百": 100, "千": 1000, "万": 10000}
 _NUMBER_TOKEN = r"(?:\d+(?:\.\d+)?|[零〇一二两三四五六七八九十百千万点]+)"
 
 # 单个动作片段的匹配模式
-# 笛卡尔：左臂/右臂(+左手/右手 已在 repair 中归一) + 向/往?方向 + 可选动作词
-# + 数字 + 毫米|厘米|米
+# 笛卡尔：左臂/右臂(+左手/右手 已在 repair 中归一) + 可选「先」+ 向/往?方向
+# + 可选动作词 + 数字 + 毫米|厘米|米
+# 「右臂先向上移十厘米」
 _RE_CARTESIAN = re.compile(
     r'(左臂|右臂)'              # arm
+    r'(?:先)?'                 # optional spoken 「先」
     r'(?:向|往)?'               # optional 向/往
     r'([上下左右前后])'         # direction
     r'(?:抬|降|移动|移|走)?'    # optional spoken action word
@@ -219,16 +271,55 @@ _RE_CARTESIAN = re.compile(
     r'\s*(毫米|厘米|米)'         # distance unit
 )
 
-# 关节：左臂/右臂 + 关节数字 + (反转?)(旋转?) + 数字 + 度
+# 同臂多位置：首个带臂名，后续省略臂名。
+# 「右臂向下十厘米再向左十厘米」「右臂先向上移十厘米再向左移十厘米」
+_CART_DIR_BODY = (
+    r'(?:先)?'
+    r'(?:向|往)?'
+    r'([上下左右前后])'
+    r'(?:抬|降|移动|移|走)?'
+    rf'({_NUMBER_TOKEN})\s*(毫米|厘米|米)'
+)
+_RE_CARTESIAN_HEAD = re.compile(r'(左臂|右臂)' + _CART_DIR_BODY)
+_RE_CARTESIAN_CONT = re.compile(
+    r'(?:后|然后|再|接着|和|与|及|，|,)?' + _CART_DIR_BODY
+)
+
+# 关节：左臂/右臂 + 关节数字 + (反转?)(旋转|转动)? + 数字 + 度
 # 支持: "关节1旋转30度" / "关节3反转30度" / "关节1反转旋转30度"
+# 口语编号（第一关节 / 关节一）在 repair_asr_text → normalize_joint_refs 后变为 关节N。
+# 此处仍接受中文一位数字，避免绕过 repair 的调用点漏匹配。
 _RE_JOINT = re.compile(
     r'(左臂|右臂)'              # arm
-    r'关节(\d)'                # joint number
+    r'关节([1-6一二两三四五六])'  # joint 1-6 (Arabic or spoken Chinese)
     r'(反转)?'                 # reverse flag (optional)
-    r'(?:旋转)?'               # 旋转 (optional, "反转30度" 不需要此词)
+    r'(?:旋转|转动)?'          # 旋转/转动 (optional, "反转30度" 不需要此词)
     rf'({_NUMBER_TOKEN})'        # angle (Arabic or Chinese number)
     r'\s*度'                   # unit
 )
+
+# 同臂多关节：首个动作仍要求带臂名；后续可省略臂名，用连接词衔接。
+# 「左臂关节3旋转三十度后四关节旋转二十度五关节旋转六十度」
+_JOINT_ID_TOKEN = r'(?:关节([1-6一二两三四五六])|第([1-6一二两三四五六])个?关节|([1-6一二两三四五六])个?关节)'
+_RE_JOINT_HEAD = re.compile(
+    r'(左臂|右臂)'
+    + _JOINT_ID_TOKEN
+    + r'(反转)?'
+    + r'(?:旋转|转动)?'
+    + rf'({_NUMBER_TOKEN})\s*度'
+)
+_RE_JOINT_CONT = re.compile(
+    r'(?:后|然后|再|接着|和|与|及|，|,)?'
+    + _JOINT_ID_TOKEN
+    + r'(反转)?'
+    + r'(?:旋转|转动)?'
+    + rf'({_NUMBER_TOKEN})\s*度'
+)
+
+_JOINT_TOKEN_TO_INT = {
+    "1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6,
+    "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6,
+}
 
 _DISTANCE_SCALE_M = {
     "毫米": 0.001,
@@ -249,8 +340,11 @@ def check_simple_action_command(text, tracker=None):
     支持的首批模板：
     - 单动作：左臂向上10厘米 / 右臂向前5厘米 / 右臂向上一米
     - 关节：左臂关节1旋转30度 / 左臂关节3反转30度
+    - 口语关节：左臂第一关节旋转三十度 / 关节一 / 旋转左臂第一关节三十度
+    - 同臂多关节：左臂关节3旋转三十度后四关节旋转二十度五关节旋转六十度
+    - 同臂多位置：右臂向下十厘米再向左十厘米 / 右臂先向上移十厘米再向左移十厘米
     - 多动作：右臂向前5厘米左臂向上10厘米
-    - 口语：把你的右臂向后三十厘米（先经 repair_asr_text）
+    - 口语：把你的右臂向后三十厘米 / 拿你的左臂…（先经 repair_asr_text）
 
     不支持（返回 None）：
     - 省略臂、省略单位、省略数值
@@ -279,13 +373,39 @@ def check_simple_action_command(text, tracker=None):
             tracker.mark("local_action_parser_end")
         return None
 
-    if "".join(segments) != text:
-        if tracker:
-            tracker.mark("local_action_parser_end")
-        return None
+    joined = "".join(segments)
+    # Allow leading ASR junk before the first 左臂/右臂 (already often stripped by
+    # extract_control_span; keep a safety net here).
+    if joined != text:
+        if not (text.endswith(joined) or joined in text):
+            if tracker:
+                tracker.mark("local_action_parser_end")
+            return None
+        prefix = text[: text.find(segments[0])] if segments[0] in text else ""
+        # Mixed "question then command" must still miss local action.
+        if re.search(r"介绍|你是|你能|你会|什么机器人|谢谢", prefix):
+            if tracker:
+                tracker.mark("local_action_parser_end")
+            return None
+        # Reject if extra arm clauses exist outside segments (shouldn't happen).
+        if text.count("左臂") + text.count("右臂") != sum(
+            1 for s in segments if s.startswith(("左臂", "右臂"))
+        ):
+            if tracker:
+                tracker.mark("local_action_parser_end")
+            return None
 
     commands = []
     for seg in segments:
+        # 同臂多关节 / 多位置链：一个片段可产出多条 action
+        chain = _parse_joint_chain(seg)
+        if chain is not None:
+            commands.extend(chain)
+            continue
+        chain = _parse_cartesian_chain(seg)
+        if chain is not None:
+            commands.extend(chain)
+            continue
         cmd = _parse_one_segment(seg)
         if cmd is None:
             # 任一片段解析失败 → 整体 MISS，不冒险部分解析
@@ -323,6 +443,125 @@ def _split_arm_segments(text):
     return segments
 
 
+def _joint_token_from_groups(groups) -> int | None:
+    """Pick the first non-None joint id group and map to 1-6."""
+    for token in groups:
+        if token is None:
+            continue
+        joint = _JOINT_TOKEN_TO_INT.get(token)
+        if joint is not None and 1 <= joint <= 6:
+            return joint
+    return None
+
+
+def _joint_command(arm: str, joint: int, angle_deg: float, reverse: bool) -> dict:
+    value_rad = round(angle_deg * _math.pi / 180.0, 6)
+    if reverse:
+        value_rad = -value_rad
+    return {
+        "action": "move_joint",
+        "arm": arm,
+        "joint": joint,
+        "value": value_rad,
+        "type": "delta",
+    }
+
+
+def _cartesian_command(arm: str, direction: str, value_raw: float, unit: str) -> dict | None:
+    scale = _DISTANCE_SCALE_M.get(unit)
+    if scale is None:
+        return None
+    if direction not in _CARTESIAN_MAP:
+        return None
+    value_m = round(float(value_raw) * scale, 6)
+    axis, sign = _CARTESIAN_MAP[direction]
+    cmd = {
+        "action": "move_cartesian",
+        "arm": arm,
+        "x": 0,
+        "y": 0,
+        "z": 0,
+        "relative": True,
+    }
+    cmd[axis] = value_m * sign
+    return cmd
+
+
+def _parse_joint_chain(seg: str):
+    """Parse one or more same-arm joint moves from a single arm segment.
+
+    Returns list[dict] on full-span match; None if not a joint chain.
+    Single joint also returns a one-element list so callers can extend uniformly.
+    """
+    if not isinstance(seg, str) or not seg:
+        return None
+    m = _RE_JOINT_HEAD.match(seg)
+    if not m:
+        return None
+    arm = "left" if m.group(1) == "左臂" else "right"
+    # groups: 1=arm, 2/3/4=joint alts, 5=反转, 6=angle
+    joint = _joint_token_from_groups((m.group(2), m.group(3), m.group(4)))
+    if joint is None:
+        return None
+    angle_deg = _parse_number(m.group(6))
+    if angle_deg is None:
+        return None
+    reverse = m.group(5) is not None
+    commands = [_joint_command(arm, joint, angle_deg, reverse)]
+    pos = m.end()
+    while pos < len(seg):
+        m2 = _RE_JOINT_CONT.match(seg, pos)
+        if not m2:
+            # leftover non-joint text → not a clean joint chain
+            return None
+        joint = _joint_token_from_groups((m2.group(1), m2.group(2), m2.group(3)))
+        if joint is None:
+            return None
+        angle_deg = _parse_number(m2.group(5))
+        if angle_deg is None:
+            return None
+        reverse = m2.group(4) is not None
+        commands.append(_joint_command(arm, joint, angle_deg, reverse))
+        pos = m2.end()
+    return commands
+
+
+def _parse_cartesian_chain(seg: str):
+    """Parse one or more same-arm cartesian moves from a single arm segment.
+
+    Returns list[dict] on full-span match; None if not a cartesian chain.
+    """
+    if not isinstance(seg, str) or not seg:
+        return None
+    m = _RE_CARTESIAN_HEAD.match(seg)
+    if not m:
+        return None
+    arm = "left" if m.group(1) == "左臂" else "right"
+    # groups: 1=arm, 2=direction, 3=value, 4=unit
+    value_raw = _parse_number(m.group(3))
+    if value_raw is None:
+        return None
+    cmd = _cartesian_command(arm, m.group(2), value_raw, m.group(4))
+    if cmd is None:
+        return None
+    commands = [cmd]
+    pos = m.end()
+    while pos < len(seg):
+        m2 = _RE_CARTESIAN_CONT.match(seg, pos)
+        if not m2:
+            return None
+        # groups: 1=direction, 2=value, 3=unit
+        value_raw = _parse_number(m2.group(2))
+        if value_raw is None:
+            return None
+        cmd = _cartesian_command(arm, m2.group(1), value_raw, m2.group(3))
+        if cmd is None:
+            return None
+        commands.append(cmd)
+        pos = m2.end()
+    return commands
+
+
 def _parse_one_segment(seg):
     """解析单个动作片段，返回 dict 或 None。"""
     # 先试关节模式
@@ -330,50 +569,24 @@ def _parse_one_segment(seg):
     if m:
         arm_raw = m.group(1)
         arm = "left" if arm_raw == "左臂" else "right"
-        joint = int(m.group(2))
-        if joint < 1 or joint > 6:
+        joint = _JOINT_TOKEN_TO_INT.get(m.group(2))
+        if joint is None or joint < 1 or joint > 6:
             return None
         angle_deg = _parse_number(m.group(4))
         if angle_deg is None:
             return None
         reverse = m.group(3) is not None  # "反转" 存在
-        value_rad = round(angle_deg * _math.pi / 180.0, 6)
-        if reverse:
-            value_rad = -value_rad
-        return {
-            "action": "move_joint",
-            "arm": arm,
-            "joint": joint,
-            "value": value_rad,
-            "type": "delta",
-        }
+        return _joint_command(arm, joint, angle_deg, reverse)
 
     # 再试笛卡尔模式
     m = _RE_CARTESIAN.fullmatch(seg)
     if m:
         arm_raw = m.group(1)
         arm = "left" if arm_raw == "左臂" else "right"
-        direction = m.group(2)
         value_raw = _parse_number(m.group(3))
-        unit = m.group(4)
         if value_raw is None:
             return None
-        scale = _DISTANCE_SCALE_M.get(unit)
-        if scale is None:
-            return None
-        value_m = round(float(value_raw) * scale, 6)
-
-        axis, sign = _CARTESIAN_MAP[direction]
-        cmd = {
-            "action": "move_cartesian",
-            "arm": arm,
-            "x": 0,
-            "y": 0,
-            "z": 0,
-            "relative": True,
-        }
-        cmd[axis] = value_m * sign
-        return cmd
+        return _cartesian_command(arm, m.group(2), value_raw, m.group(4))
 
     return None
 
@@ -431,6 +644,7 @@ def _get_session():
     session = getattr(_session_local, "session", None)
     if session is None:
         session = requests.Session()
+        session.trust_env = False
         adapter = requests.adapters.HTTPAdapter(pool_connections=2, pool_maxsize=4)
         session.mount("http://", adapter)
         session.mount("https://", adapter)
@@ -458,7 +672,10 @@ def check_ollama_available():
                 return _health_cache["available"]
     try:
         r = _get_session().get(f"{OLLAMA_BASE}/api/tags", timeout=5)
-        available = r.status_code == 200
+        try:
+            available = r.status_code == 200
+        finally:
+            r.close()
     except requests.RequestException:
         available = False
     with _cache_lock:
@@ -500,20 +717,150 @@ def check_greet_keywords(text):
     return any(kw in text for kw in GREET_KEYWORDS)
 
 
-def check_assembly_command(text):
-    """检测装配指令，返回数量；无匹配返回 None"""
-    for kw in ASSEMBLY_KEYWORDS:
-        if kw in text:
-            match = re.search(r'(\d+)\s*个', text)
-            if match:
-                return int(match.group(1))
-            cn_map = {'一': 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5,
-                      '六': 6, '七': 7, '八': 8, '九': 9, '十': 10}
-            for cn, num in cn_map.items():
-                if cn in text:
-                    return num
-            return 1  # 没找到数字，默认 1 个
+def _parse_cn_number(token: str) -> int | None:
+    """解析常见中文数量词（1–99），失败返回 None。"""
+    if not token:
+        return None
+    if token in _CN_NUM_MAP:
+        return _CN_NUM_MAP[token]
+    if token == "十":
+        return 10
+    if token.startswith("十") and len(token) == 2:
+        ones = _CN_NUM_MAP.get(token[1])
+        return 10 + ones if ones is not None else None
+    if "十" in token:
+        parts = token.split("十", 1)
+        tens = _CN_NUM_MAP.get(parts[0], 1) if parts[0] else 1
+        ones = _CN_NUM_MAP.get(parts[1], 0) if parts[1] else 0
+        return tens * 10 + ones
     return None
+
+
+def _is_spurious_cn_number_span(text: str, start: int, end: int, token: str) -> bool:
+    """过滤「一下/十厘米」等不应当作装配数量的中文数字跨度。"""
+    # 「一」仅出现在「一下/一些/一点」中 → 不是数量
+    if token == "一":
+        tail = text[end : end + 1]
+        if tail in {"下", "些", "点"}:
+            return True
+    # 「十/二十…」紧跟长度单位 → 位移量不是装配个数
+    after = text[end : end + 2]
+    if after.startswith(("厘", "毫", "度", "米")):
+        return True
+    # 前面是「第」→ 序号
+    if start > 0 and text[start - 1] == "第":
+        return True
+    return False
+
+
+def _extract_assembly_count(text: str) -> int | None:
+    """从装配话术中提取明确个数；无明确数量返回 None（不默认 1）。
+
+    明确数量示例：两个、3个、装配5、装两。
+    非明确：请装配、现在装配、给我装配、装配一下。
+    """
+    # 1) 明确「N个/件」阿拉伯数字（最可靠）
+    m = re.search(r"(\d+)\s*(?:个|件|只|次)", text)
+    if m:
+        return max(1, int(m.group(1)))
+    # 2) 中文「两个/五个/十二个/一个」
+    m = re.search(
+        r"([一二两三四五六七八九]?十[一二三四五六七八九]?|[一二两三四五六七八九十])\s*(?:个|件|只|次)",
+        text,
+    )
+    if m:
+        n = _parse_cn_number(m.group(1))
+        if n is not None and n >= 1:
+            return n
+    # 3) 紧邻装配词的阿拉伯数字：装配3 / 装2
+    m = re.search(r"(?:装配|组装|装备|(?<!安)装)\s*(\d+)", text)
+    if m:
+        return max(1, int(m.group(1)))
+    # 4) 紧邻装配词的中文数字：装配两 / 装三（不含「装一下」）
+    m = re.search(
+        r"(?:装配|组装|装备|(?<!安)装)\s*"
+        r"([一二两三四五六七八九]?十[一二三四五六七八九]?|[一二两三四五六七八九十两])"
+        r"(?![下些点])",  # 排除 一下/一些/一点
+        text,
+    )
+    if m:
+        token = m.group(1)
+        n = _parse_cn_number(token)
+        if n is not None and n >= 1:
+            end = m.end(1)
+            if not _is_spurious_cn_number_span(text, m.start(1), end, token):
+                return n
+    return None
+
+
+def _has_explicit_assembly_count(text: str) -> bool:
+    """是否出现明确的装配个数（排除一下/十厘米等）。无默认。"""
+    return _extract_assembly_count(text) is not None
+
+
+def _has_assembly_action_word(text: str) -> bool:
+    if any(kw in text for kw in ASSEMBLY_KEYWORDS):
+        return True
+    return bool(ASSEMBLY_BARE_LOAD_RE.search(text))
+
+
+def check_photo_command(text):
+    """检测拍照/准备装配指令（两步流程的第一步）。True 表示应启动拍照节点。"""
+    if not isinstance(text, str):
+        return False
+    text = text.strip()
+    if not text:
+        return False
+    # 带明确数量的装配话术走装配指令，不走拍照
+    if check_assembly_command(text) is not None:
+        return False
+    if any(ex in text for ex in ASSEMBLY_FAQ_EXCLUDE):
+        return False
+    # 与手臂运动混说时不当作拍照
+    if any(h in text for h in ASSEMBLY_ARM_MOTION_HINTS):
+        return False
+    if any(kw in text for kw in PHOTO_COMMAND_KEYWORDS):
+        return True
+    # 短词「拍照」
+    if any(kw in text for kw in PHOTO_SHORT_KEYWORDS):
+        if "关节" in text or "左臂" in text or "右臂" in text:
+            return False
+        return True
+    return False
+
+
+def check_assembly_command(text):
+    """检测装配执行指令，返回数量（阿拉伯 int）；无匹配返回 None。
+
+    策略：仅当话术含**明确个数**时才执行（两个/3个/装配5/装两…）。
+    非明确指令（请装配、现在装配、给我装配、装配一下）一律不执行。
+    FAQ（精密装配、能装配吗）返回 None。
+    """
+    if not isinstance(text, str):
+        return None
+    text = text.strip()
+    if not text:
+        return None
+
+    # 场景/问答：不当作执行指令
+    if any(ex in text for ex in ASSEMBLY_FAQ_EXCLUDE):
+        return None
+
+    if not _has_assembly_action_word(text):
+        return None
+
+    # 与手臂位移/关节混说：让位给动作解析，避免「十厘米」→10
+    if any(h in text for h in ASSEMBLY_ARM_MOTION_HINTS):
+        return None
+
+    # 核心策略：无明确数量 → 不执行（不默认 1）
+    count = _extract_assembly_count(text)
+    if count is None:
+        return None
+
+    # 疑问句即使带了数字也偏问答时（极少）：仍允许「装配两个吗」执行
+    # 精密/场景类已在 FAQ_EXCLUDE 拦截
+    return count
 
 
 def check_intro_keywords(text):
@@ -557,10 +904,20 @@ def _match_ambiguous_control_reply(text):
         return None
 
     # --- Step 4.3: 明确可执行动作模板 → miss ---
-    if _RE_CARTESIAN.search(text) or _RE_JOINT.search(text):
+    if (
+        _RE_CARTESIAN.search(text)
+        or _RE_CARTESIAN_HEAD.search(text)
+        or _RE_JOINT.search(text)
+        or _RE_JOINT_HEAD.search(text)
+    ):
         segments = _split_arm_segments(text)
         if segments and "".join(segments) == text:
-            if all(_parse_one_segment(seg) is not None for seg in segments):
+            if all(
+                _parse_joint_chain(seg) is not None
+                or _parse_cartesian_chain(seg) is not None
+                or _parse_one_segment(seg) is not None
+                for seg in segments
+            ):
                 return None
 
     # --- Step 5: 高频模糊控制输入 → 返回澄清回复 ---
@@ -590,8 +947,17 @@ def _match_ambiguous_control_reply(text):
         # 手臂 + 移动一下："右臂移动一下"
         if re.match(r'^(左臂|右臂)移动一下$', text):
             return LOCAL_CONTROL_CLARIFICATION_REPLY
-        # 手臂 + 关节N + 旋转（缺少角度）："左臂关节1旋转"
-        if re.match(r'^(左臂|右臂)关节\d旋转$', text):
+        # 手臂 + 关节N + 旋转（缺少角度）："左臂关节1旋转" / "左臂第一关节旋转"
+        if re.match(
+            r'^(左臂|右臂)(?:关节[1-6一二两三四五六]|第[1-6一二两三四五六]个?关节)(?:旋转|转动)?$',
+            text,
+        ):
+            return LOCAL_CONTROL_CLARIFICATION_REPLY
+        # 手臂 + 旋转/转动 + 角度（缺少关节编号）："左臂旋转三十度"
+        if re.match(
+            rf'^(左臂|右臂)(?:旋转|转动|反转)(?:旋转|转动)?{_NUMBER_TOKEN}度$',
+            text,
+        ):
             return LOCAL_CONTROL_CLARIFICATION_REPLY
         # 手臂 + 转一下："右臂转一下"
         if re.match(r'^(左臂|右臂)转一下$', text):
@@ -687,72 +1053,10 @@ def check_local_reply_command(text, tracker=None):
 
 # ==================== 指令校验 ====================
 def validate_and_fix_command(cmd):
-    """校验并修正单条指令，返回 (修正后的指令, 错误列表)"""
-    errors = []
+    """兼容旧调用名，但只做严格校验，绝不补齐或修复动作参数。"""
+    from voice_command_validation import validate_and_fix_command as strict_validate
 
-    if not isinstance(cmd, dict):
-        return None, ["指令不是有效的JSON对象"]
-
-    fixed = cmd.copy()
-
-    # reply 类型：语音回复，不走机械臂控制
-    if "reply" in fixed:
-        if "action" in fixed:
-            return None, ["reply 和 action 不能同时存在，混合对象不安全"]
-        reply_text = fixed["reply"]
-        if not isinstance(reply_text, str) or not reply_text.strip():
-            return None, ["reply 字段为空"]
-        return fixed, []
-
-    action = fixed.get("action")
-    if action not in VALID_ACTIONS:
-        return None, [f"未知action: '{action}'，应为 {VALID_ACTIONS}"]
-
-    arm = fixed.get("arm")
-    if arm not in VALID_ARMS:
-        return None, [f"未知arm: '{arm}'，应为 'left' 或 'right'"]
-
-    if action == "home":
-        # home 只要求 action + arm；不补任何运动字段
-        return fixed, errors
-
-    if action == "get_status":
-        # get_status 只要求 action + arm；不补任何运动字段，不默认手臂
-        return fixed, errors
-
-    if action == "move_joint":
-        missing = MOVE_JOINT_REQUIRED - set(fixed.keys())
-        if missing:
-            errors.append(f"move_joint 缺少字段: {missing}")
-        joint = fixed.get("joint")
-        if joint is None or not isinstance(joint, int) or joint not in VALID_JOINTS:
-            return None, [f"关节编号无效: {joint}，应为 1-6"]
-        value = fixed.get("value")
-        if value is None or not isinstance(value, (int, float)):
-            fixed["value"] = 0.1
-            errors.append("缺少value，已自动设为0.1")
-        cmd_type = fixed.get("type")
-        if cmd_type not in ("delta", "absolute"):
-            fixed["type"] = "delta"
-            errors.append("缺少type或无效，已自动设为delta")
-
-    elif action == "move_cartesian":
-        missing = MOVE_CARTESIAN_REQUIRED - set(fixed.keys())
-        if missing:
-            errors.append(f"move_cartesian 缺少字段: {missing}")
-        for axis in ("x", "y", "z"):
-            val = fixed.get(axis)
-            if val is not None and not isinstance(val, (int, float)):
-                errors.append(f"{axis}轴值类型错误: {val}，已设为0")
-                fixed[axis] = 0.0
-            elif axis not in fixed:
-                fixed[axis] = 0.0
-                errors.append(f"缺少{axis}，已自动补0")
-        if "relative" not in fixed or not isinstance(fixed["relative"], bool):
-            fixed["relative"] = True
-            errors.append("缺少relative，已自动设为true")
-
-    return fixed, errors
+    return strict_validate(cmd)
 
 
 # ==================== JSON 响应解析 ====================
@@ -833,11 +1137,14 @@ def _llm_parse_via_ollama(text, tracker=None):
                 "max_tokens": 512,
             }
         }
-        r = _get_session().post(OLLAMA_URL, json=payload, timeout=60)
-        r.raise_for_status()
-        output = r.json()
-        response = output["message"]["content"]
-        print(f"🧠 LLM 响应 (Ollama): {response}")
+        r = _get_session().post(OLLAMA_URL, json=payload, timeout=(5, 60))
+        try:
+            r.raise_for_status()
+            output = r.json()
+            response = output["message"]["content"]
+        finally:
+            r.close()
+        print("🧠 LLM 响应 (Ollama): 已接收")
         _mark_service_ok("ollama")
         if tracker:
             tracker.mark("ollama_end")
@@ -864,8 +1171,16 @@ def _llm_parse_via_dify(text, tracker=None):
         return None
 
     try:
+        allow_insecure = os.environ.get("VOICE_ALLOW_INSECURE_DIFY", "0").strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+        base_url = validate_service_origin(
+            DIFY_BASE_URL,
+            setting="DIFY_BASE_URL",
+            allow_insecure_remote=allow_insecure,
+        )
         resp = _get_session().post(
-            f"{DIFY_BASE_URL}/v1/workflows/run",
+            f"{base_url}/v1/workflows/run",
             headers={
                 "Authorization": f"Bearer {DIFY_API_KEY}",
                 "Content-Type": "application/json",
@@ -875,17 +1190,20 @@ def _llm_parse_via_dify(text, tracker=None):
                 "response_mode": "blocking",
                 "user": "voice_robot",
             },
-            timeout=60,
+            timeout=(5, 60),
         )
-        if resp.status_code != 200:
-            print(f"⚠️ Dify 返回 {resp.status_code}: {resp.text}")
-            _mark_service_failing("dify")
-            if tracker:
-                tracker.mark("dify_end")
-            return None
-        data = resp.json()
-        raw_output = data["data"]["outputs"]["result"]
-        print(f"🧠 LLM 响应 (Dify): {raw_output}")
+        try:
+            if resp.status_code != 200:
+                print(f"⚠️ Dify 返回 HTTP {resp.status_code}")
+                _mark_service_failing("dify")
+                if tracker:
+                    tracker.mark("dify_end")
+                return None
+            data = resp.json()
+            raw_output = data["data"]["outputs"]["result"]
+        finally:
+            resp.close()
+        print("🧠 LLM 响应 (Dify): 已接收")
         _mark_service_ok("dify")
         if tracker:
             tracker.mark("dify_end")

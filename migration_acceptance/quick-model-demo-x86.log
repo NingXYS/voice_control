@@ -1,0 +1,11 @@
+DIFY_PYTHON_CLIENT_OK
+[{'reply': '我是一款面向精密装配场景的具身智能双臂机器人，深度融合了自适应阻抗控制、强化学习与视觉语言模型三大技术，能实现毫秒级的力觉响应与克级柔顺力度控制。'}]
+✅ TTS disk phrase cache loaded (5 local replies, phrases cached=5)
+✅ TTS initialized: engine=matcha, model=/home/li/VoiceOnline/models/tts/matcha-icefall-zh-baker/model-steps-3.onnx, speaker=0, speed=1.0, num_threads=8, load_ms=1214
+✅ TTS warmup done (0 ms, phrases cached=5)
+⏳ TTS local reply precache started (missing=51, short=51, long=0)
+⚡ 本地知识库命中，跳过 Dify
+⏱️ TTS timing: cache=hit stream=0 gen_ms=0 play_ms=1134 total_ms=1134 chars=4 rate=22050 ttfb_ms=0
+⏱️ TTS timing: cache=miss stream=1 gen_ms=2612 play_ms=14789 total_ms=14790 chars=73 rate=22050 ttfb_ms=2612
+QUICK_MODEL_DEMO_OK
+[{'reply': '我是一款面向精密装配场景的具身智能双臂机器人，深度融合了自适应阻抗控制、强化学习与视觉语言模型三大技术，能实现毫秒级的力觉响应与克级柔顺力度控制。'}]

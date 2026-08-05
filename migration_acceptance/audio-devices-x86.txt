@@ -1,0 +1,34 @@
+**** CAPTURE 硬體裝置清單 ****
+card 1: PCH [HDA Intel PCH], device 0: ALC289 Analog [ALC289 Analog]
+  子设备: 1/1
+  子设备 #0: subdevice #0
+**** PLAYBACK 硬體裝置清單 ****
+card 0: NVidia [HDA NVidia], device 3: HDMI 0 [HDMI 0]
+  子设备: 1/1
+  子设备 #0: subdevice #0
+card 0: NVidia [HDA NVidia], device 7: HDMI 1 [HDMI 1]
+  子设备: 1/1
+  子设备 #0: subdevice #0
+card 0: NVidia [HDA NVidia], device 8: HDMI 2 [HDMI 2]
+  子设备: 1/1
+  子设备 #0: subdevice #0
+card 0: NVidia [HDA NVidia], device 9: HDMI 3 [HDMI 3]
+  子设备: 1/1
+  子设备 #0: subdevice #0
+card 1: PCH [HDA Intel PCH], device 0: ALC289 Analog [ALC289 Analog]
+  子设备: 0/1
+  子设备 #0: subdevice #0
+card 1: PCH [HDA Intel PCH], device 3: HDMI 0 [HDMI 0]
+  子设备: 1/1
+  子设备 #0: subdevice #0
+card 1: PCH [HDA Intel PCH], device 7: HDMI 1 [HDMI 1]
+  子设备: 1/1
+  子设备 #0: subdevice #0
+card 1: PCH [HDA Intel PCH], device 8: HDMI 2 [HDMI 2]
+  子设备: 1/1
+  子设备 #0: subdevice #0
+card 1: PCH [HDA Intel PCH], device 9: HDMI 3 [HDMI 3]
+  子设备: 1/1
+  子设备 #0: subdevice #0
+Capture cards:
+  card 1: HDA Intel PCH id=PCH device=0

@@ -11,65 +11,227 @@ import re
 import string
 from pathlib import Path
 
-# 不可变或只读使用的固定 reply 规则表
+# 完整自我介绍（“介绍一下/你是谁”等一次性播完）
+# 展示文案保持原词；TTS 多音字在 voice_tts.normalize_tts_text 中做最小替换。
+FULL_SELF_INTRO = (
+    "我是小西，一款单臂按摩机器人。"
+    "我可以通过语音协助完成按摩点位示教、方案构建、启动确认和状态查询。"
+    "开始按摩前需要完成点位记录，并由现场人员确认环境安全。"
+)
+INTRO_IDENTITY = "我是小西，一款单臂按摩机器人。"
+INTRO_TECHS = "我的核心流程是单臂拖动示教、按摩点位保存、程序构建和安全确认启动。"
+INTRO_FORCE = "按摩力度和运动参数由下层机械臂程序管理，语音系统不会擅自修改。"
+SHORT_SELF_ID = INTRO_IDENTITY
+IMPEDANCE_REPLY = "当前语音层不直接设置阻抗参数，具体力控策略由下层机械臂控制程序负责。"
+RL_REPLY = "当前按摩流程不依赖语音层的强化学习控制，动作由已示教的按摩点位和下层程序执行。"
+VLM_REPLY = "当前语音层负责指令理解和流程控制，不直接用视觉语言模型驱动机械臂运动。"
+TECH_LOOP_REPLY = INTRO_TECHS
+FORCE_REPLY = INTRO_FORCE
+SCENE_REPLY = "我用于单臂按摩场景，支持点位示教、按摩流程控制和安全确认。"
+CAPABILITY_REPLY = (
+    "我可以协助记录按摩点位、构建按摩方案、启动按摩和查询状态。"
+    "我还可以回答日期、节日、天气、历史、科学和生活常识，并对时效问题进行联网搜索。"
+    "上下左右方向指令已经预留接口，但当前尚未接入真实机械臂，不会执行移动。"
+)
+JOKE_REDIRECT_REPLY = "机械臂问扳手：你为什么总拧巴？扳手说：因为这是我的工作呀。"
+SING_REDIRECT_REPLY = (
+    "我用普通语音为你朗读一小段原创歌："
+    "轻轻的风，慢慢地走，小西陪你放松双手。"
+    "星光温柔，心也自由，愿你今天好心情长久。"
+)
+ASSEMBLY_DEMO_REPLY = "我现在用于单臂按摩，不再提供装配场景介绍或装配演示。"
+CHAT_REDIRECT_REPLY = "我主要负责单臂按摩机器人的介绍、点位示教和按摩流程控制。"
+
 LOCAL_REPLY_RULES = [
     {
-        "keywords": ["你是谁", "你叫什么", "你是什么", "介绍一下自己", "介绍自己", "介绍一下你", "你是施耐力吗", "你是施耐力机器人吗", "自我介绍", "介绍你"],
-        "reply": "我是施耐力双臂六关节机械臂，拥有左右两条手臂，各六个关节。"
+        "keywords": [
+            "自适应阻抗控制", "阻抗控制", "什么是阻抗", "什么是自适应阻抗",
+            "阻抗",
+        ],
+        "reply": IMPEDANCE_REPLY,
     },
     {
-        "keywords": ["你能做什么", "你会做什么", "你会干什么", "你有什么功能", "你支持哪些指令", "你能控制什么", "你能干什么", "你支持哪些动作", "功能"],
-        "reply": "我可以控制左右两条机械臂，支持关节旋转和空间移动。"
+        "keywords": [
+            "力觉响应", "力觉", "柔顺度", "柔顺力度", "柔顺力", "柔顺",
+            "力度控制", "力觉控制", "按摩力度", "力度怎么调",
+        ],
+        "reply": FORCE_REPLY,
+    },
+    {
+        "keywords": [
+            "强化学习", "什么是强化学习",
+        ],
+        "reply": RL_REPLY,
+    },
+    {
+        "keywords": [
+            "视觉语言模型", "什么是VLM", "VLM是什么", "VLM", "跨模态认知",
+            "跨模态",
+        ],
+        "reply": VLM_REPLY,
+    },
+    {
+        "keywords": [
+            "三大技术", "你有什么技术", "有什么技术", "你有哪些技术",
+            "哪些技术", "核心技术", "你的核心技术", "融合了什么技术",
+            "什么技术", "技术有哪些", "用了什么技术", "采用什么技术",
+            "你有什么技术啊", "有什么技术啊", "技术啊",
+        ],
+        "reply": TECH_LOOP_REPLY,
+    },
+    {
+        "keywords": [
+            "适用什么场景", "应用场景", "按摩场景", "什么场景", "面向什么",
+        ],
+        "reply": SCENE_REPLY,
+    },
+    {
+        "keywords": [
+            "单臂机器人", "按摩机器人", "是什么机器人", "什么机器人", "具身智能",
+        ],
+        "reply": INTRO_IDENTITY,
+    },
+    {
+        "keywords": [
+            "你是谁", "你是什么", "你是什么机器人", "介绍一下自己", "介绍自己",
+            "介绍一下你", "介绍你自己", "自我介绍", "介绍你", "请自我介绍",
+            "请介绍一下自己", "告诉我你是谁",
+            "你是按摩机器人吗", "你是小西吗", "你是施耐力吗",
+            "你是施耐力机器人吗", "你是施耐力的吗",
+        ],
+        "reply": FULL_SELF_INTRO,
+    },
+    {
+        "keywords": ["你叫什么", "你叫什么名字", "你的名字是什么", "你叫啥"],
+        "reply": SHORT_SELF_ID,
+    },
+    {
+        "keywords": [
+            "你能做什么", "你会做什么", "你会干什么", "你有什么功能",
+            "你支持哪些指令", "你能控制什么", "你能干什么", "你支持哪些动作",
+            "你会干些什么", "你像我觉得你会干什么", "你能做些什么",
+            "功能",
+        ],
+        "reply": CAPABILITY_REPLY,
+    },
+    {
+        "keywords": [
+            "讲个笑话", "讲笑话", "说个笑话", "来个笑话", "给我讲个笑话",
+            "讲段笑话", "逗我笑",
+        ],
+        "reply": JOKE_REDIRECT_REPLY,
+    },
+    {
+        "keywords": [
+            "唱首歌", "唱个歌", "唱歌", "给我唱首歌", "来首歌", "你会唱歌吗",
+            "能唱歌吗",
+        ],
+        "reply": SING_REDIRECT_REPLY,
+    },
+    {
+        "keywords": [
+            "能装配吗", "会装配吗", "可以装配吗", "装配演示", "精密装配",
+        ],
+        "reply": ASSEMBLY_DEMO_REPLY,
+    },
+    {
+        "keywords": [
+            "做个自我介绍", "来个自我介绍", "给我自我介绍", "介绍一下吧",
+        ],
+        "reply": FULL_SELF_INTRO,
+    },
+    {
+        "keywords": [
+            "无聊", "好玩吗", "你真笨", "在吗在吗", "哈喽啊",
+        ],
+        "reply": CHAT_REDIRECT_REPLY,
     },
     {
         "keywords": [
             "你有几条手臂", "有几条手臂", "几条手臂", "几个手臂", "几只手臂",
             "多少条手臂", "有几个手臂", "有几只手臂", "机械臂有几个手臂",
         ],
-        "reply": "我有左右两条手臂，是双臂机械臂。",
+        "reply": "我只有一条手臂，是单臂按摩机械臂。",
     },
     {
         "keywords": [
             "你有几个关节", "有几个关节", "几个关节", "多少个关节",
-            "每只手臂有几个关节", "每条手臂有几个关节", "一共几个关节",
+            "机械臂有几个关节", "一共几个关节",
         ],
-        "reply": "左右两条手臂，各六个关节，一共十二个关节。",
+        "reply": "这条按摩机械臂有六个关节。",
     },
     {
         "keywords": [
             "你有几个自由度", "有几个自由度", "几个自由度", "多少自由度",
             "自由度是多少", "几自由度",
         ],
-        "reply": "每条手臂六个自由度，左右双臂各六个关节。",
+        "reply": "这条按摩机械臂有六个自由度。",
     },
     {
-        "keywords": ["左臂可以怎么动", "右臂可以怎么动", "你的左手可以怎么活动", "左臂怎么动", "右臂怎么动", "左手怎么活动"],
-        "reply": "我可以控制左臂或右臂进行空间移动和关节旋转。"
+        "keywords": [
+            "按摩机械臂可以怎么动", "机械臂可以怎么动", "按摩臂怎么动",
+            "可以上下左右吗", "怎么调整位置", "方向控制",
+            "左臂可以怎么动", "右臂可以怎么动", "你的左手可以怎么活动",
+            "左臂怎么动", "右臂怎么动", "左手怎么活动",
+        ],
+        "reply": "上下左右方向控制已经预留软件接口，但尚未接入真实控制端，当前只识别指令，不执行移动。",
+    },
+    {
+        "keywords": ["左臂", "右臂", "左手", "右手"],
+        "reply": "当前是单臂按摩机器人。原有左右臂控制方法仅作为兼容链路保留，请说明具体动作参数。",
     },
     {
         "keywords": ["有什么限制", "限制"],
-        "reply": "下达指令时请提供明确的手臂名称、方向和距离。模糊指令将被要求补充信息，不会默认执行。"
+        "reply": "方向调整必须包含方向、距离和单位。接口未接入时只会确认识别结果，不会执行移动。",
     },
     {
         "keywords": ["怎么下指令", "下指令", "指令格式", "指令要求"],
-        "reply": "你可以说，左臂向上10厘米，或者左臂关节1旋转30度。"
+        "reply": "流程指令可以说开始记录点位、记录完成、开始按摩、确认开始或按摩状态。方向指令可以说按摩机械臂向上五厘米。",
     },
     {
         "keywords": ["能不能联网", "联网", "在线"],
-        "reply": "本地语音控制不主动联网。是否可用取决于本地配置，不支持在线检索。"
+        "reply": "我可以联网查询实时天气，也可以通过Dify模型自带的联网搜索回答实时问题。",
     },
     {
         "keywords": ["谢谢", "感谢", "辛苦了"],
-        "reply": "不客气，很高兴能帮到你。"
+        "reply": "不客气，很高兴能帮到你。",
     },
     {
         "keywords": ["早上好", "下午好", "晚上好"],
-        "reply": "你好！我是机械臂控制助手，请问有什么可以帮您？"
+        "reply": "你好！我是小西，单臂按摩机器人，请问需要示教、启动按摩还是查询状态？",
     },
     {
         "keywords": ["没听清", "没听懂", "听不懂", "再说一遍", "重复一下", "请重复"],
-        "reply": "请再说一次，说明具体的动作、方向和距离。"
-    }
+        "reply": "请再说一次。流程控制请说明示教、启动或状态；方向调整请说明上下左右、距离和单位。",
+    },
+    {
+        "keywords": ["怎么示教", "如何示教", "怎么记录点位", "如何记录点位", "点位怎么记录"],
+        "reply": "请先说开始记录点位，在终端按回车依次记录安全点和按摩点，至少记录两个点，完成后说记录完成。",
+    },
+    {
+        "keywords": ["怎么开始按摩", "如何开始按摩", "按摩怎么启动", "启动流程"],
+        "reply": "请先完成点位示教并等待程序构建完成，再说开始按摩；确认现场安全后说确认开始。",
+    },
+    {
+        "keywords": ["能按摩吗", "会按摩吗", "按摩功能", "你会按摩"],
+        "reply": "可以在完成点位示教和程序构建后启动按摩。真正运动前还需要现场安全确认。",
+    },
+    {
+        "keywords": ["停止按摩", "怎么停止", "如何停止", "暂停按摩", "急停"],
+        "reply": "当前没有语音停止按摩接口。如有不适或危险，请立即使用实体急停，并由现场人员处理。",
+    },
+    {
+        "keywords": ["安全要求", "按摩安全吗", "注意事项", "安全确认"],
+        "reply": "启动前请确认人员、机械臂和周围环境安全，并确保实体急停随时可用。出现不适或异常应立即急停。",
+    },
+    {
+        "keywords": ["第一个点是什么", "安全点是什么", "为什么要安全点"],
+        "reply": "示教记录的第一个点是安全点，后续点位才是按摩点。至少要有一个安全点和一个按摩点。",
+    },
+    {
+        "keywords": ["接口完成了吗", "方向接口完成了吗", "移动接口完成了吗", "接口状态"],
+        "reply": "按摩机械臂上下左右移动接口已经预留，但真实控制适配器尚未接入。",
+    },
 ]
 
 # 模块级缓存
@@ -77,7 +239,9 @@ _CSV_RULES_CACHE = None
 
 # 这些短语表示用户只说了手臂名称，只允许整句匹配。
 # 若继续使用子串匹配，知识库中的“右臂”会吞掉所有包含右臂的控制指令。
-_EXACT_MATCH_ONLY_PHRASES = frozenset({"左臂", "右臂", "左手", "右手"})
+_EXACT_MATCH_ONLY_PHRASES = frozenset({
+    "左臂", "右臂", "左手", "右手", "机械臂", "按摩臂", "按摩机械臂",
+})
 
 # 极短关键词（≤2 字）只允许整句匹配，避免环境闲聊误触发。
 _SHORT_EXACT_PHRASE_LEN = 2
@@ -107,11 +271,71 @@ def normalize_text(text: str) -> str:
     return normalized.lower()
 
 
+# Only fold *known* ASR onset stutters. The old "any prefix ×2" rule corrupted
+# numbers (六十六十六→六十六) and random chatter; keep this allowlist tight.
+# Include conversational openers seen in field ASR (你会你会 / 早上早上好).
+_ONSET_STUTTER_PHRASES = (
+    "把你的",
+    "将你的",
+    "拿你的",
+    "左臂",
+    "右臂",
+    "左手",
+    "右手",
+    "你有",
+    "你会",
+    "你能",
+    "你是",
+    "你叫",
+    "你好",
+    "早上",
+    "下午",
+    "晚上",
+    "谢谢",
+    "把右",
+    "把左",
+    "将右",
+    "将左",
+    "旋转",
+    "转动",
+    # Lab ASR often doubles short openers even in quiet rooms.
+    "给我",
+    "帮我",
+    "做个",
+    "来个",
+    "退出",
+    "结束",
+    "再见",
+    "不用",
+    "可以",
+    "但是",
+    "然后",
+    "就是",
+    "那个",
+    "什么",
+    "怎么",
+    "自我",
+    "介绍",
+    "向前",
+    "向后",
+    "向上",
+    "向下",
+    "向左",
+    "向右",
+    "关节",
+)
+# Longest first so 「把你的」wins over shorter fragments when matching.
+_ONSET_STUTTER_PHRASES_SORTED = tuple(
+    sorted(_ONSET_STUTTER_PHRASES, key=len, reverse=True)
+)
+
+
 def collapse_repeated_prefix(text: str) -> str:
     """Fold duplicated ASR onsets: 你有你有…→你有…, 左臂左臂…→左臂…, 左左臂…→左臂…
 
-    Prefer longer prefixes first so 「左臂」wins over single 「左」.
-    Repeat until stable for triple-ish stutters.
+    Allowlisted phrases only — never collapse arbitrary Chinese numbers or free text.
+    Also folds first-char stutters of allowlisted phrases:
+    旋旋转→旋转, 你你会→你会, 左左臂→左臂, 早早上好→早上.
     """
     if not isinstance(text, str) or not text:
         return text if isinstance(text, str) else ""
@@ -119,18 +343,303 @@ def collapse_repeated_prefix(text: str) -> str:
     changed = True
     while changed and out:
         changed = False
-        max_width = min(6, len(out) // 2)
-        for width in range(max_width, 0, -1):
-            prefix = out[:width]
-            if out.startswith(prefix + prefix):
-                out = prefix + out[2 * width :]
+        for prefix in _ONSET_STUTTER_PHRASES_SORTED:
+            doubled = prefix + prefix
+            if out.startswith(doubled):
+                out = prefix + out[len(doubled) :]
                 changed = True
                 break
+            # First syllable of an allowlisted phrase repeated once at onset.
+            if len(prefix) >= 2 and out.startswith(prefix[0] + prefix):
+                out = prefix + out[len(prefix) + 1 :]
+                changed = True
+                break
+        if changed:
+            continue
+        # 有有臂 / 我我臂 / 又又臂 (later mapped to 左/右臂)
+        if re.match(r"^[有我又]{2}臂", out):
+            out = out[0] + out[2:]
+            changed = True
+            continue
+        # 把把你的 / 把把左臂
+        if out.startswith("把把") and len(out) > 2 and out[2] in "你左将右":
+            out = "把" + out[2:]
+            changed = True
+            continue
+        # Latin "bb" / "b b" onset stutters only (臂 misheard as letter b)
+        m = re.match(r"^([bB])(?:\s*\1)+", out)
+        if m and len(out) > m.end():
+            rest = out[m.end() :]
+            if rest[0] in "臂第一二两三四五六123456":
+                out = rest
+                changed = True
+                continue
+        # Bare leading letter b before joint/arm (「b关节3…」).
+        if re.match(r"^[bB]\s*(?=关节|第|左|右|臂)", out):
+            out = re.sub(r"^[bB]\s*", "", out, count=1)
+            changed = True
+            continue
+    # Also collapse allowlisted doubles anywhere once (退出退出啊 / 可以可以).
+    for prefix in _ONSET_STUTTER_PHRASES_SORTED:
+        doubled = prefix + prefix
+        if doubled in out:
+            out = out.replace(doubled, prefix)
     return out
 
 
 # Back-compat alias used by older call sites / tests.
 _collapse_repeated_prefix = collapse_repeated_prefix
+
+
+# Spoken joint indices → Arabic 1-6 (field ASR almost always says 第一关节 / 关节一).
+_JOINT_SPOKEN_TO_DIGIT = {
+    "一": "1",
+    "二": "2",
+    "两": "2",
+    "三": "3",
+    "四": "4",
+    "五": "5",
+    "六": "6",
+    "1": "1",
+    "2": "2",
+    "3": "3",
+    "4": "4",
+    "5": "5",
+    "6": "6",
+}
+
+
+def normalize_joint_refs(text: str) -> str:
+    """Normalize spoken joint refs to 关节N so local/Dify templates can match.
+
+    Examples:
+      第一关节 → 关节1
+      第六关节 → 关节6
+      关节一 → 关节1
+      关节三 → 关节3
+      一关节 / 膝关节 (field mishears) → 关节1 when arm context exists
+      后四关节 / 度五关节 (same-arm multi-joint chains) → 后关节4 / 度关节5
+      右臂四关节二十度 → 右臂关节4二十度  (must NOT become 关节42十度)
+    """
+    if not isinstance(text, str) or not text:
+        return text if isinstance(text, str) else ""
+
+    def _ord_repl(match: re.Match) -> str:
+        digit = _JOINT_SPOKEN_TO_DIGIT.get(match.group(1))
+        return f"关节{digit}" if digit else match.group(0)
+
+    # 第N关节 / 第N个关节 (N = 1-6 or 一..六)
+    out = re.sub(r"第([一二两三四五六1-6])个?关节", _ord_repl, text)
+
+    # Bare "N关节" forms MUST run before "关节N". Otherwise:
+    #   四关节二十度 → false match on 关节二 → 四关节2十度 → 关节42十度
+    # Bare "一关节" / "二关节" (missing 第) after arm-ish context
+    out = re.sub(
+        r"(?<=[左右臂手])([一二两三四五六1-6])个?关节",
+        _ord_repl,
+        out,
+    )
+    # Same-arm multi-joint chains often drop the arm word:
+    # 「左臂关节3旋转三十度后四关节旋转二十度」→「…后关节4…」
+    # Lookbehind tokens: connectors / previous unit / rotation verbs.
+    # Exclude bare 转 inside 旋转 when the next token is N关节 for angle text —
+    # connectors 后/再/… already cover multi-joint chains.
+    out = re.sub(
+        r"(?<=[后度再和与及,，])([一二两三四五六1-6])个?关节",
+        _ord_repl,
+        out,
+    )
+    # Also allow continuation after a completed 度 or 转 (…度四关节 / …转转四关节 rare).
+    # Require that N关节 is not the start of a Chinese teens number (N十…).
+    out = re.sub(
+        r"(?<=[度转])([一二两三四五六1-6])个?关节(?![十百千万])",
+        _ord_repl,
+        out,
+    )
+
+    # 关节一 / 关节六 — only a standalone joint index, not mid-number glue.
+    # Negative lookbehind: skip when a digit already prefixes 关节 (N关节 form).
+    # Negative lookahead: skip 关节二 inside …关节二十度 (angle starts with 二/三…).
+    out = re.sub(
+        r"(?<![一二两三四五六1-6])关节([一二两三四五六])(?![十百千万])",
+        _ord_repl,
+        out,
+    )
+    # Noisy field mishear: 膝关节 ≈ 第一关节 when an arm word is present
+    if re.search(r"[左右]臂|有臂|我臂|又臂|臂", out):
+        out = out.replace("膝关节", "关节1")
+    return out
+
+
+_NUMBER_TOKEN_CTRL = r"(?:\d+(?:\.\d+)?|[零〇一二两三四五六七八九十百千万点]+)"
+# Complete local-action spans used to drop trailing ambient chatter after ASR.
+# Optional 「先」: 「右臂先向上十厘米」
+_CONTROL_SPAN_RE = re.compile(
+    rf"(?:"
+    rf"(?:左臂|右臂)(?:先)?(?:向|往)?[上下左右前后](?:抬|降|移动|移|走)?"
+    rf"{_NUMBER_TOKEN_CTRL}\s*(?:毫米|厘米|米)"
+    rf"|"
+    rf"(?:左臂|右臂)关节[1-6一二两三四五六](?:反转)?(?:旋转|转动)?"
+    rf"{_NUMBER_TOKEN_CTRL}\s*度"
+    rf"|"
+    rf"(?:左臂|右臂)第[1-6一二两三四五六]个?关节(?:反转)?(?:旋转|转动)?"
+    rf"{_NUMBER_TOKEN_CTRL}\s*度"
+    rf")"
+)
+# Same-arm multi-joint continuation after the first arm-prefixed joint command.
+# Example: 「后四关节旋转二十度」「关节5旋转六十度」「再第三关节反转十度」
+_JOINT_CHAIN_CONT_RE = re.compile(
+    rf"(?:后|然后|再|接着|和|与|及|，|,)?"
+    rf"(?:关节[1-6一二两三四五六]|第[1-6一二两三四五六]个?关节|[1-6一二两三四五六]个?关节)"
+    rf"(?:反转)?(?:旋转|转动)?"
+    rf"{_NUMBER_TOKEN_CTRL}\s*度"
+)
+# Same-arm multi-cartesian continuation (omit arm after first clause).
+# Example: 「再向左十厘米」「然后再向左移十厘米」「向前五厘米」
+_CARTESIAN_CHAIN_CONT_RE = re.compile(
+    rf"(?:后|然后|再|接着|和|与|及|，|,)?"
+    rf"(?:先)?"
+    rf"(?:向|往)?[上下左右前后](?:抬|降|移动|移|走)?"
+    rf"{_NUMBER_TOKEN_CTRL}\s*(?:毫米|厘米|米)"
+)
+# Short leading ASR garbage before a clear arm command (e.g. 「气人左臂…」).
+# Keep intentional leading content (先/请/再/你是…) so mixed intents still miss.
+_LEADING_NOISE_MAX = 4
+_LEADING_INTENTIONAL_RE = re.compile(
+    r"先|请|再|把|将|拿|帮|给|你|我|介绍|什么|怎么|几|哪|吗|呢"
+)
+
+
+def _extend_span_with_action_chain(text: str, end: int) -> int:
+    """Extend a control span end through consecutive same-arm joint/cartesian clauses."""
+    pos = end
+    while pos < len(text):
+        m = _JOINT_CHAIN_CONT_RE.match(text, pos) or _CARTESIAN_CHAIN_CONT_RE.match(
+            text, pos
+        )
+        if not m:
+            break
+        pos = m.end()
+    return pos
+
+
+def extract_control_span(text: str) -> str:
+    """If ASR glued a clear arm command to ambient speech, keep only the command.
+
+    Examples:
+      「左臂向前五厘米我感觉它现在…」→「左臂向前五厘米」
+      「改着改着又改回来了左臂关节3旋转六十度」→「左臂关节3旋转六十度」
+    """
+    if not isinstance(text, str) or not text:
+        return text if isinstance(text, str) else ""
+    matches = list(_CONTROL_SPAN_RE.finditer(text))
+    if not matches:
+        return text
+    first = matches[0]
+    last = matches[-1]
+    span_end = _extend_span_with_action_chain(text, last.end())
+
+    core = text[first.start() : span_end]
+    leading = text[: first.start()]
+    trailing_raw = text[span_end:]
+    trailing = trailing_raw.strip()
+
+    # Leading: drop pure junk/chatter; keep polite/Q&A prefixes (mixed intent).
+    drop_leading = False
+    if leading.strip():
+        keep_leading = bool(
+            _LEADING_INTENTIONAL_RE.search(leading)
+            or re.search(r"(?:左臂|右臂|介绍|你是|你能|你会|什么机器人)", leading)
+        )
+        short_junk = (
+            len(leading) <= _LEADING_NOISE_MAX
+            and not _LEADING_INTENTIONAL_RE.search(leading)
+        )
+        # Chatter like 「改着改着又…」→ drop; 「先/请/你是…」→ keep full text.
+        drop_leading = short_junk or not keep_leading
+
+    # Trailing: keep Q&A mixed intents; strip long ambient only.
+    drop_trailing = False
+    keep_trailing_qa = bool(
+        trailing
+        and re.search(r"介绍|你是|你能|你会|谢谢|什么机器人|吗|呢\b", trailing)
+    )
+    if trailing and not keep_trailing_qa and len(trailing) >= 4:
+        drop_trailing = True
+
+    if not drop_leading and not drop_trailing:
+        return text
+    if drop_leading and drop_trailing:
+        return core
+    if drop_leading:
+        return core + (
+            trailing_raw
+            if keep_trailing_qa or (trailing and len(trailing) < 4)
+            else ""
+        )
+    # drop trailing only
+    return text[:span_end]
+
+
+# Leading control clause without 左臂/右臂 (VAD/ASR often swallows soft 左/右).
+_BARE_LEADING_CTRL_RE = re.compile(
+    rf"^(?:"
+    rf"(?:第?[1-6一二两三四五六]个?关节|关节[1-6一二两三四五六])"
+    rf"(?:反转)?(?:旋转|转动)?"
+    rf"{_NUMBER_TOKEN_CTRL}\s*度"
+    rf"|"
+    rf"(?:向|往)?[上下左右前后](?:抬|降|移动|移|走)?"
+    rf"{_NUMBER_TOKEN_CTRL}\s*(?:毫米|厘米|米)"
+    rf")"
+)
+
+
+def recover_dropped_leading_arm(text: str) -> str:
+    """Recover a swallowed leading 左臂/右臂 when the rest names the other arm.
+
+    Field pattern (wake→command onset clip)::
+
+      口说: 左臂三关节旋转二十度右臂向上十厘米
+      ASR : 三关节旋转二十度右臂向上十厘米
+
+    Only repairs when:
+    - text does **not** already start with 左臂/右臂
+    - a complete bare joint/cartesian clause leads the utterance
+    - exactly one of 左臂/右臂 appears later (the surviving second arm)
+
+    Does **not** invent an arm for single-clause bare joint (「三关节旋转二十度」alone).
+    """
+    if not isinstance(text, str) or not text:
+        return text if isinstance(text, str) else ""
+    if text.startswith("左臂") or text.startswith("右臂"):
+        return text
+
+    has_left = "左臂" in text
+    has_right = "右臂" in text
+
+    # Soft clip: only the 左/右 syllable was lost → leading bare 「臂…」.
+    if text.startswith("臂") and has_left != has_right:
+        if has_right and not has_left:
+            return "左" + text
+        if has_left and not has_right:
+            return "右" + text
+
+    # Need exactly one named arm later to infer the missing opposite leading arm.
+    if has_left == has_right:
+        return text
+
+    bare = _BARE_LEADING_CTRL_RE.match(text)
+    if not bare:
+        return text
+
+    named = "右臂" if has_right else "左臂"
+    named_at = text.find(named)
+    # Named arm must be a *later* clause, not inside the bare lead.
+    if named_at < bare.end():
+        return text
+
+    missing = "左臂" if has_right else "右臂"
+    return missing + text
 
 
 def repair_asr_text(text: str) -> str:
@@ -143,20 +652,55 @@ def repair_asr_text(text: str) -> str:
     stripped = text.strip()
     if not stripped:
         return ""
-    out = collapse_repeated_prefix(stripped)
+    # Chinese command ASR almost never needs whitespace; strip for "b b" / "把 右".
+    out = re.sub(r"\s+", "", stripped)
+
+    out = collapse_repeated_prefix(out)
     # Spoken arm aliases → parser vocabulary.
     out = out.replace("左手", "左臂").replace("右手", "右臂")
+    # Field near-misses for 左/右臂 (noisy rooms).
+    # 有臂/又臂 ≈ 右臂；我臂 ≈ 左臂（现场高频误识别，不做句中误伤：仅未带左右时）
+    out = re.sub(r"(?<![左右])有臂", "右臂", out)
+    out = re.sub(r"(?<![左右])又臂", "右臂", out)
+    out = re.sub(r"(?<![左右])我臂", "左臂", out)
+    # After mapping, collapse again so 我臂我臂→左臂左臂→左臂.
+    out = collapse_repeated_prefix(out)
+    # "右b" / "左b" → 右臂/左臂
+    out = re.sub(r"([左右])[bB]", r"\1臂", out)
     # Common ASR truncations / near-homophones (avoid rewriting 自由度 → 自自由度).
     out = re.sub(r"(?<!自)由度", "自由度", out)
     out = out.replace("游度", "自由度")
-    # Drop polite fillers so local action templates can fullmatch.
-    # Only strip a leading filler once; keep the rest of the utterance intact so
-    # mixed "动作+问答" still misses the conservative action parser.
+    # VAD/ASR swallowed soft leading 左/右 before a dual-arm sentence.
+    out = recover_dropped_leading_arm(out)
+    # Drop spoken fillers / interjections so local action templates can fullmatch.
+    # Field ASR often yields: 把左臂… / 把你的右臂… / 哇你的右臂… / 你的左臂…
+    # / 拿你的左臂… / 旋转左臂第一关节…
+    # Only strip a leading run; keep the rest so mixed "动作+问答" still misses
+    # the conservative action parser.
+    _leading_filler = (
+        r"(?:哇+|啊+|呃+|那个|就是)?"
+        r"(?:把你的|将你的|拿你的|请你把|请你|请把|帮我|给我|麻烦你|麻烦|你的|请|把|将|拿)"
+    )
     out = re.sub(
-        r"^(?:把你的|请你|请|帮我|给我|麻烦你|麻烦)(?=左臂|右臂|左手|右手)",
+        rf"^(?:{_leading_filler})+(?=左臂|右臂|左手|右手)",
         "",
         out,
     )
+    # Leading rotate verb before arm: "旋转左臂关节1三十度" → arm-first template.
+    # Do not strip leading 反转 — that is the reverse flag, not a filler.
+    out = re.sub(
+        r"^(?:请)?(?:旋转|转动)(?=左臂|右臂)",
+        "",
+        out,
+    )
+    # Spoken joint numbering → 关节N (第一关节 / 关节一).
+    out = normalize_joint_refs(out)
+    # 「右臂先向上」→「右臂向上」（「先」只是语序助词，不改变动作）
+    out = re.sub(r"(左臂|右臂)先(?=向|往|[上下左右前后])", r"\1", out)
+    # Drop trailing ambient speech after a complete control template.
+    out = extract_control_span(out)
+    # Colloquial 往X → 向X (Dify templates historically only listed 向X).
+    out = re.sub(r"往([上下左右前后])", r"向\1", out)
     # Motion distance: bare 「厘」 after a number is almost always 「厘米」.
     out = re.sub(
         r"([0-9零〇一二两三四五六七八九十百千]+)\s*厘(?!米)",
@@ -256,6 +800,31 @@ def get_csv_reply_rules(csv_path: Path | None = None) -> list[dict[str, object]]
         return list(_CSV_RULES_CACHE)
     else:
         return list(load_csv_reply_rules(csv_path))
+
+
+def list_all_local_replies() -> list[str]:
+    """All fixed local reply strings that TTS should pre-render for <1s playback.
+
+    Includes in-code LOCAL_REPLY_RULES and knowledge_base CSV reply payloads.
+    Order is stable; duplicates removed.
+    """
+    replies: list[str] = []
+    seen: set[str] = set()
+
+    def _add(text: object) -> None:
+        if not isinstance(text, str):
+            return
+        cleaned = text.strip()
+        if not cleaned or cleaned in seen:
+            return
+        seen.add(cleaned)
+        replies.append(cleaned)
+
+    for rule in LOCAL_REPLY_RULES:
+        _add(rule.get("reply"))
+    for rule in get_csv_reply_rules():
+        _add(rule.get("reply"))
+    return replies
 
 
 def _reset_local_knowledge_cache_for_test() -> None:

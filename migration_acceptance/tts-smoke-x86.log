@@ -1,0 +1,8 @@
+✅ TTS disk phrase cache loaded (1 local replies, phrases cached=1)
+✅ TTS initialized: engine=matcha, model=/home/li/VoiceOnline/models/tts/matcha-icefall-zh-baker/model-steps-3.onnx, speaker=0, speed=1.0, num_threads=8, load_ms=1238
+✅ TTS warmup done (178 ms, phrases cached=4)
+⏳ TTS local reply precache started (missing=52, short=52, long=0)
+⏱️ TTS timing: cache=hit stream=0 gen_ms=0 play_ms=1508 total_ms=1508 chars=7 rate=22050 ttfb_ms=0
+⏱️ TTS timing: cache=hit stream=0 gen_ms=0 play_ms=1507 total_ms=1507 chars=7 rate=22050 ttfb_ms=0
+✅ TTS local replies ready (added=1, still_missing=56, phrases cached=0)
+TTS_SMOKE_OK

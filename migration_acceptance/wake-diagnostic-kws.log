@@ -1,0 +1,4 @@
+high=0.35 low=0.15 hits=[(4.9, 'high', 'high-threshold KWS (#0.35) direct accept'), (6.0, 'low', 'low-threshold KWS (#0.15) needs ASR verify'), (7.1, 'high', 'high-threshold KWS (#0.35) direct accept')]
+high=0.18 low=0.1 hits=[(4.9, 'high', 'high-threshold KWS (#0.18) direct accept'), (6.0, 'low', 'low-threshold KWS (#0.1) needs ASR verify'), (7.1, 'high', 'high-threshold KWS (#0.18) direct accept')]
+high=0.1 low=0.05 hits=[(4.9, 'high', 'high-threshold KWS (#0.1) direct accept'), (6.0, 'low', 'low-threshold KWS (#0.05) needs ASR verify'), (7.1, 'high', 'high-threshold KWS (#0.1) direct accept')]
+high=0.05 low=0.02 hits=[(4.9, 'high', 'high-threshold KWS (#0.05) direct accept'), (6.0, 'low', 'low-threshold KWS (#0.02) needs ASR verify'), (7.1, 'high', 'high-threshold KWS (#0.05) direct accept')]
