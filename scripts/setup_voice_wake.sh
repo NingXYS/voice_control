@@ -64,14 +64,15 @@ env -i \
   "$VENV_DIR/bin/python" -I -m pip install --isolated --upgrade --no-cache-dir \
   "pip>=23.2" "setuptools>=68,<80" "wheel" "packaging>=24.0"
 
-echo "Installing pinned direct python dependencies..."
+echo "Installing the platform-pinned, hash-checked Python dependency closure..."
 # Install with PYTHONNOUSERSITE=1, clearing PYTHONHOME/PYTHONPATH
 env -i \
   HOME="$HOME" \
   USER="$USER" \
   PATH="${VENV_DIR}/bin:/usr/bin:/bin" \
   PYTHONNOUSERSITE=1 \
-  "$VENV_DIR/bin/python" -I -m pip install --isolated --ignore-installed -r "${REPO_ROOT}/requirements/voice-wake.txt"
+  "$VENV_DIR/bin/python" -I -m pip install --isolated --ignore-installed \
+  --require-hashes -r "${REPO_ROOT}/requirements/voice-wake.txt"
 
 echo "Building package in a clean subshell..."
 # Run in clean subshell via env -i, passing HOME, USER, PATH, PYTHONNOUSERSITE=1, and necessary paths
@@ -94,7 +95,6 @@ env -i \
       --build-base "$BUILD_DIR" \
       --install-base "$INSTALL_DIR" \
       --cmake-args \
-        -DVOICE_CONTROL_BUILD_ROBOT_CONTROLLER=OFF \
         -DPython3_EXECUTABLE=/usr/bin/python3
   '
 

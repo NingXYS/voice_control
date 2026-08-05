@@ -1,0 +1,8 @@
+# Direct runtime dependencies. Compile voice-wake.txt with Python 3.10 on x86_64.
+numpy==2.2.6
+soundfile==0.14.0
+sherpa-onnx==1.13.3
+pypinyin==0.55.0
+requests==2.34.2
+pynput==1.8.2
+aiohttp==3.14.3

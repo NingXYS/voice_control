@@ -15,6 +15,7 @@ from __future__ import annotations
 from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import datetime
+import os
 from pathlib import Path
 import wave
 
@@ -157,6 +158,21 @@ class NoiseSuppressingAudioFrontend(AudioFrontend):
         self._noise_power = 0.0
         self._warmup_frames = 0
 
+    def reset_stream_buffers(self) -> None:
+        """Drop STFT latency queues but keep the adaptive noise floor.
+
+        Used after capture discard so the next speech onset is not learned as
+        silence (full ``reset``) and is not wiped by pure zero-pad.
+        """
+        if self._frame_size > 0:
+            self._in_buf = np.empty(0, dtype=np.float32)
+            self._out_buf = np.empty(0, dtype=np.float32)
+            self._ola = np.zeros(self._frame_size, dtype=np.float32)
+        else:
+            self._in_buf = np.empty(0, dtype=np.float32)
+            self._out_buf = np.empty(0, dtype=np.float32)
+            self._ola = np.empty(0, dtype=np.float32)
+
     def _configure(self, sample_rate: int) -> None:
         rate = int(sample_rate)
         if rate <= 0:
@@ -250,12 +266,14 @@ class NoiseSuppressingAudioFrontend(AudioFrontend):
             out = self._out_buf[:needed].copy()
             self._out_buf = self._out_buf[needed:]
         else:
-            # Start-up latency / incomplete hop: pad trailing zeros so callers
-            # always receive a shape-preserving chunk for KWS/VAD.
-            pad = needed - self._out_buf.size
-            out = np.concatenate(
-                (self._out_buf, np.zeros(pad, dtype=np.float32)),
-            )
+            # Cold start / after buffer flush: never emit pure zeros over speech.
+            # STFT has hop latency — fill the unavailable tail with dry input so
+            # VAD/ASR still hear first syllables (左/右) instead of silence.
+            n_enh = int(self._out_buf.size)
+            out = np.empty(needed, dtype=np.float32)
+            if n_enh:
+                out[:n_enh] = self._out_buf
+            out[n_enh:] = audio[n_enh:needed]
             self._out_buf = np.empty(0, dtype=np.float32)
 
         return np.clip(out, -1.0, 1.0).astype(np.float32, copy=False)
@@ -265,15 +283,20 @@ class NoiseSuppressingAudioFrontend(AudioFrontend):
 class DebugAudioConfig:
     enabled: bool = False
     directory: str = "debug_audio"
+    retention_files: int = 20
 
 
 class _WavPairWriter:
-    def __init__(self, directory: str, sample_rate: int):
+    def __init__(self, directory: str, sample_rate: int, retention_files: int = 20):
         root = Path(directory)
         raw_dir = root / "raw"
         frontend_dir = root / "frontend"
         raw_dir.mkdir(parents=True, exist_ok=True)
         frontend_dir.mkdir(parents=True, exist_ok=True)
+        for directory_path in (root, raw_dir, frontend_dir):
+            directory_path.chmod(0o700)
+        self._prune(raw_dir, retention_files - 1)
+        self._prune(frontend_dir, retention_files - 1)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         with ExitStack() as cleanup:
             raw = self._open(raw_dir / f"{stamp}.wav", sample_rate)
@@ -286,11 +309,23 @@ class _WavPairWriter:
 
     @staticmethod
     def _open(path: Path, sample_rate: int):
-        handle = wave.open(str(path), "wb")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        binary = os.fdopen(fd, "wb")
+        try:
+            handle = wave.open(binary, "wb")
+        except Exception:
+            binary.close()
+            raise
         handle.setnchannels(1)
         handle.setsampwidth(2)
         handle.setframerate(sample_rate)
         return handle
+
+    @staticmethod
+    def _prune(directory: Path, keep: int) -> None:
+        files = sorted(directory.glob("*.wav"), key=lambda path: path.stat().st_mtime, reverse=True)
+        for path in files[max(0, keep):]:
+            path.unlink(missing_ok=True)
 
     @staticmethod
     def _pcm16(samples: np.ndarray) -> bytes:
@@ -309,17 +344,42 @@ class _WavPairWriter:
 
 
 class FrontendAudioSession:
-    """Wrap a capture session while preserving its runtime-facing API."""
+    """Wrap a capture session while preserving its runtime-facing API.
 
-    def __init__(self, source, frontend: AudioFrontend,
-                 debug: DebugAudioConfig | None = None):
+    ``read_chunk()`` returns frontend-processed audio (for VAD/ASR).
+    ``last_raw_chunk`` is the pre-frontend mono PCM (after channel pick / resample)
+    used for KWS when ``kws_use_raw`` is True so NS does not blunt wake sensitivity.
+    """
+
+    def __init__(
+        self,
+        source,
+        frontend: AudioFrontend,
+        debug: DebugAudioConfig | None = None,
+        kws_use_raw: bool = True,
+    ):
         self.source = source
         self.frontend = frontend
         self.sample_rate = int(source.sample_rate)
         self.chunk_samples = int(source.chunk_samples)
         self.debug = debug or DebugAudioConfig()
+        self.kws_use_raw = bool(kws_use_raw)
         self._debug_writer = None
         self._opened = False
+        self._last_raw: np.ndarray | None = None
+        self._last_processed: np.ndarray | None = None
+
+    @property
+    def last_raw_chunk(self) -> np.ndarray | None:
+        """Most recent pre-frontend mono chunk (16 kHz), or None before first read."""
+        return self._last_raw
+
+    @property
+    def last_kws_chunk(self) -> np.ndarray | None:
+        """Audio that should be fed to the wake detector for this hop."""
+        if self.kws_use_raw:
+            return self._last_raw
+        return self._last_processed if self._last_processed is not None else self._last_raw
 
     def open(self) -> None:
         if self._opened:
@@ -332,16 +392,20 @@ class FrontendAudioSession:
                 self._debug_writer = _WavPairWriter(
                     self.debug.directory,
                     self.sample_rate,
+                    self.debug.retention_files,
                 )
             self._opened = True
             cleanup.pop_all()
 
     def read_chunk(self) -> np.ndarray:
         raw = self.source.read_chunk()
+        raw = np.asarray(raw, dtype=np.float32)
+        self._last_raw = raw.copy()
         processed = self.frontend.process(raw, self.sample_rate)
         processed = np.asarray(processed, dtype=np.float32)
-        if processed.shape != np.asarray(raw).shape:
+        if processed.shape != raw.shape:
             raise RuntimeError("audio frontend must preserve chunk shape")
+        self._last_processed = processed
         if self._debug_writer is not None:
             self._debug_writer.write(raw, processed)
         return processed
@@ -350,7 +414,13 @@ class FrontendAudioSession:
         discard = getattr(self.source, "discard_buffered", None)
         discarded = int(discard() or 0) if callable(discard) else 0
         if discarded > 0:
-            self.frontend.reset()
+            # Prefer stream-buffer flush over full frontend reset: NS zero-pad /
+            # noise re-learn after full reset was wiping soft first syllables.
+            soft = getattr(self.frontend, "reset_stream_buffers", None)
+            if callable(soft):
+                soft()
+            else:
+                self.frontend.reset()
         return discarded
 
     def close(self) -> None:

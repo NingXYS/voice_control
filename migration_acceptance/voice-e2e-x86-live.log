@@ -1,0 +1,25 @@
+Import OK: rclpy -> /opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/__init__.py
+Import OK: numpy -> /home/li/VoiceOnline/.venv_online/lib/python3.10/site-packages/numpy/__init__.py
+Import OK: soundfile -> /home/li/VoiceOnline/.venv_online/lib/python3.10/site-packages/soundfile.py
+Import OK: sherpa_onnx -> /home/li/VoiceOnline/.venv_online/lib/python3.10/site-packages/sherpa_onnx/__init__.py
+Import OK: pypinyin -> /home/li/VoiceOnline/.venv_online/lib/python3.10/site-packages/pypinyin/__init__.py
+Import OK: requests -> /home/li/VoiceOnline/.venv_online/lib/python3.10/site-packages/requests/__init__.py
+Capture: DEVICE=default 16000Hz/1ch channel_mode=channel_0
+Frontend: VOICE_AUDIO_FRONTEND=passthrough VOICE_KWS_USE_RAW=1
+Wake: TWO_STAGE=1 high=0.35 low=0.15 session=60s
+Reply: STREAM=1 SENTENCE_TTS=1 DIFY_API_MODE=workflow
+Tip: override any export before launch; smoke: .venv_online/bin/python scripts/voice_capture_smoke.py --free-device --seconds 5
+All checks passed successfully.
+Starting voice_wake_entry.py...
+✅ TTS disk phrase cache loaded (56 local replies, phrases cached=56)
+⏳ TTS background preload started
+🎧 Capture: device=default 16000Hz/1ch → 16k mono channel_mode=channel_0
+🎚️ Audio frontend (VAD/ASR path): passthrough (target_rms=0.05, max_gain=2.0, debug_audio=False)
+🎛️ Command VAD gate: segment (segment=keep onsets; frame=legacy hard-zero)
+🔔 KWS two-stage: high=#0.35 (direct) low=#0.15→ASR verify window=2s match>=0.82 score=1.5 audio=raw pre-frontend mono (recommended; NS does not hit KWS)
+🔁 Continuous session: idle 60s without re-wake (set VOICE_SESSION_TIMEOUT_SEC=0 to disable)
+🎙️ Voice runtime started. Wake word: 小西小西
+✅ TTS initialized: engine=matcha, model=/home/li/VoiceOnline/models/tts/matcha-icefall-zh-baker/model-steps-3.onnx, speaker=0, speed=1.0, num_threads=8, load_ms=1253
+✅ TTS warmup done (0 ms, phrases cached=56)
+✅ TTS local replies ready (disk/memory hit, phrases cached=56)
+✅ TTS background preload ready

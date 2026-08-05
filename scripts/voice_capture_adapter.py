@@ -6,6 +6,16 @@ from typing import Protocol
 
 import numpy as np
 
+# How multi-channel capture is reduced to mono for KWS/VAD/ASR.
+CHANNEL_MODES = frozenset(
+    {
+        "channel_0",
+        "channel_1",
+        "mean",
+        "best_channel",
+    }
+)
+
 
 @dataclass(frozen=True, slots=True)
 class AudioFormat:
@@ -40,12 +50,132 @@ class CaptureFormatError(ValueError):
     """Raised when capture data cannot satisfy the declared format contract."""
 
 
+def normalize_channel_mode(mode: str | None) -> str:
+    """Return a canonical multi-channel downmix mode name."""
+    value = (mode or "channel_0").strip().lower()
+    aliases = {
+        "0": "channel_0",
+        "ch0": "channel_0",
+        "left": "channel_0",
+        "1": "channel_1",
+        "ch1": "channel_1",
+        "right": "channel_1",
+        "avg": "mean",
+        "average": "mean",
+        "best": "best_channel",
+    }
+    value = aliases.get(value, value)
+    if value not in CHANNEL_MODES:
+        raise CaptureFormatError(
+            f"unsupported channel mode {mode!r}; "
+            f"expected one of {sorted(CHANNEL_MODES)}"
+        )
+    return value
+
+
+class MultiChannelDownmix:
+    """Reduce multi-channel frames to mono without always averaging.
+
+    Modes
+    -----
+    channel_0 / channel_1
+        Fixed channel pick (recommended after a short A/B listen test).
+    mean
+        Legacy average of all channels (may phase-cancel on some mics).
+    best_channel
+        Periodically pick the cleaner channel by RMS with clipping penalty
+        and switch hysteresis so KWS state is not thrashing every hop.
+    """
+
+    def __init__(
+        self,
+        channels: int,
+        mode: str = "channel_0",
+        *,
+        best_hold_chunks: int = 5,
+        clip_threshold: float = 0.98,
+    ) -> None:
+        if channels <= 0:
+            raise CaptureFormatError("channel count must be positive")
+        self.channels = int(channels)
+        self.mode = normalize_channel_mode(mode)
+        if self.mode == "channel_1" and self.channels < 2:
+            raise CaptureFormatError("channel_1 requires at least 2 capture channels")
+        self.best_hold_chunks = max(1, int(best_hold_chunks))
+        self.clip_threshold = float(clip_threshold)
+        self._active_channel = 0
+        self._hold_left = 0
+        self._chunk_index = 0
+
+    @property
+    def active_channel(self) -> int:
+        """Index of the channel currently selected (mean reports -1)."""
+        if self.mode == "mean":
+            return -1
+        if self.mode == "channel_0":
+            return 0
+        if self.mode == "channel_1":
+            return 1
+        return int(self._active_channel)
+
+    def reset(self) -> None:
+        self._active_channel = 0
+        self._hold_left = 0
+        self._chunk_index = 0
+
+    def process(self, frames: np.ndarray) -> np.ndarray:
+        """Convert shaped ``(n_samples, channels)`` float PCM to mono ``(n,)``."""
+        audio = np.asarray(frames, dtype=np.float32)
+        if audio.ndim != 2 or audio.shape[1] != self.channels:
+            raise CaptureFormatError(
+                f"expected shape (n, {self.channels}), got {getattr(audio, 'shape', None)}"
+            )
+        if self.channels == 1:
+            return audio[:, 0].copy()
+
+        if self.mode == "mean":
+            return np.mean(audio, axis=1, dtype=np.float64).astype(np.float32)
+        if self.mode == "channel_0":
+            return audio[:, 0].copy()
+        if self.mode == "channel_1":
+            return audio[:, 1].copy()
+        return self._best_channel(audio)
+
+    def _channel_score(self, mono: np.ndarray) -> float:
+        if mono.size == 0:
+            return -1e9
+        rms = float(np.sqrt(np.mean(np.square(mono, dtype=np.float64))))
+        clip_ratio = float(np.mean(np.abs(mono) >= self.clip_threshold))
+        # Prefer energy (near-talk) but heavily penalize hard clipping.
+        return rms - 2.0 * clip_ratio
+
+    def _best_channel(self, frames: np.ndarray) -> np.ndarray:
+        self._chunk_index += 1
+        if self._hold_left <= 0:
+            scores = [
+                self._channel_score(frames[:, index])
+                for index in range(self.channels)
+            ]
+            candidate = int(np.argmax(np.asarray(scores, dtype=np.float64)))
+            # Hysteresis: only switch when the new channel is clearly better.
+            if candidate != self._active_channel:
+                current = scores[self._active_channel]
+                if scores[candidate] > current * 1.15 + 1e-4:
+                    self._active_channel = candidate
+            self._hold_left = self.best_hold_chunks
+        self._hold_left -= 1
+        return frames[:, self._active_channel].copy()
+
+
 class CaptureFormatAdapter:
     """Convert a capture source into fixed-rate mono float32 chunks.
 
     The adapter owns the stream buffers because source and model chunk sizes do
     not have to match. Resampling uses linear interpolation as a dependency-free
     baseline until the deployment audio stack selects a platform resampler.
+
+    Multi-channel capture is reduced via :class:`MultiChannelDownmix` (default
+    ``channel_0`` — not forced mean).
     """
 
     def __init__(
@@ -53,9 +183,14 @@ class CaptureFormatAdapter:
         source: CaptureSource,
         target_format: AudioFormat,
         chunk_ms: int,
+        *,
+        channel_mode: str = "channel_0",
+        best_hold_chunks: int = 5,
     ) -> None:
         if chunk_ms <= 0:
             raise CaptureFormatError("chunk duration must be positive")
+        if target_format.channels != 1:
+            raise CaptureFormatError("target format must be mono (channels=1)")
         self.source = source
         self.source_format = AudioFormat(source.sample_rate, source.channels)
         self.target_format = target_format
@@ -64,6 +199,12 @@ class CaptureFormatAdapter:
         self.chunk_samples = target_format.sample_rate * chunk_ms // 1000
         if self.chunk_samples <= 0:
             raise CaptureFormatError("chunk duration is shorter than one output sample")
+        self.downmix = MultiChannelDownmix(
+            self.source_format.channels,
+            channel_mode,
+            best_hold_chunks=best_hold_chunks,
+        )
+        self.channel_mode = self.downmix.mode
         self._output = np.empty(0, dtype=np.float32)
         self._input = np.empty(0, dtype=np.float32)
         self._input_position = 0.0
@@ -100,6 +241,7 @@ class CaptureFormatAdapter:
         self._output = np.empty(0, dtype=np.float32)
         self._input = np.empty(0, dtype=np.float32)
         self._input_position = 0.0
+        self.downmix.reset()
 
     def _to_mono(self, samples: np.ndarray) -> np.ndarray:
         audio = np.asarray(samples, dtype=np.float32)
@@ -111,9 +253,7 @@ class CaptureFormatAdapter:
             audio = audio.reshape(-1, self.source_format.channels)
         if audio.ndim != 2 or audio.shape[1] != self.source_format.channels:
             raise CaptureFormatError("capture shape does not match declared channels")
-        if self.source_format.channels == 1:
-            return audio[:, 0]
-        return np.mean(audio, axis=1, dtype=np.float64).astype(np.float32)
+        return self.downmix.process(audio)
 
     def _append_converted(self, mono: np.ndarray) -> None:
         if self.source_format.sample_rate == self.target_format.sample_rate:

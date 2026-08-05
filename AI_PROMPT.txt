@@ -1,0 +1,20 @@
+请严格执行本项目目录下的 plan.md（VoiceOnline 迁移到 Ubuntu 22.04 x86_64）。
+
+固定要求：
+1. 目标架构必须是 x86_64（uname -m），系统 Ubuntu 22.04，/usr/bin/python3 为 3.10。
+2. 需要 ROS 2 Humble；若未安装先按 plan.md 任务 2 安装，再继续。
+3. 禁止安装或使用 Ollama、llama.cpp、GGUF 作为主对话链路。
+4. 禁止复制/复用源机 .venv_online、build_online、install_online；必须在本机执行 scripts/setup_voice_wake.sh。
+5. 先保持 VOICE_ENABLE_ROBOT_COMMAND=0，只做语音与 Dify/TTS 验收。
+6. 按 plan.md 任务 0→8 顺序执行；每步输出写入 migration_acceptance/。
+7. 任何失败或未执行项不得标记为“迁移完成”。
+8. 日志与 acceptance-summary.md 中不得出现 DIFY_API_KEY 明文。
+
+用户提供（请替换）：
+- 项目目录：<例如 /opt/VoiceOnline>
+- DIFY_BASE_URL=<例如 http://127.0.0.1:80 或局域网 IP>
+- DIFY_API_KEY=<安全注入，勿回显>
+- 麦克风/扬声器是否已连接：是/否
+- 是否已在 Dify 导入 scripts/voice_ros2_dify_v06.yml 并发布：是/否
+
+完成后提交 migration_acceptance/acceptance-summary.md，逐项 PASS/FAIL。

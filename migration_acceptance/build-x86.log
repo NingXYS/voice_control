@@ -1,0 +1,126 @@
+Using Python 3.10 at /usr/bin/python3
+Creating/updating virtual environment at /home/li/VoiceOnline/.venv_online...
+Verifying pip location in virtual environment...
+Updating isolated Python build tools...
+Collecting pip>=23.2
+  Downloading pip-26.2-py3-none-any.whl (1.8 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.8/1.8 MB 49.9 kB/s eta 0:00:00
+Collecting setuptools<80,>=68
+  Downloading setuptools-79.0.1-py3-none-any.whl (1.3 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.3/1.3 MB 1.1 MB/s eta 0:00:00
+Collecting wheel
+  Downloading wheel-0.47.0-py3-none-any.whl (32 kB)
+Collecting packaging>=24.0
+  Downloading packaging-26.2-py3-none-any.whl (100 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100.2/100.2 KB 17.0 MB/s eta 0:00:00
+Installing collected packages: setuptools, pip, packaging, wheel
+  Attempting uninstall: setuptools
+    Found existing installation: setuptools 59.6.0
+    Uninstalling setuptools-59.6.0:
+      Successfully uninstalled setuptools-59.6.0
+  Attempting uninstall: pip
+    Found existing installation: pip 22.0.2
+    Uninstalling pip-22.0.2:
+      Successfully uninstalled pip-22.0.2
+  Attempting uninstall: packaging
+    Found existing installation: packaging 21.3
+    Not uninstalling packaging at /usr/lib/python3/dist-packages, outside environment /home/li/VoiceOnline/.venv_online
+    Can't uninstall 'packaging'. No files were found to uninstall.
+Successfully installed packaging-26.2 pip-26.2 setuptools-79.0.1 wheel-0.47.0
+Installing pinned direct python dependencies...
+Collecting numpy==2.2.6 (from -r /home/li/VoiceOnline/requirements/voice-wake.txt (line 1))
+  Downloading numpy-2.2.6-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (62 kB)
+Collecting soundfile==0.14.0 (from -r /home/li/VoiceOnline/requirements/voice-wake.txt (line 2))
+  Downloading soundfile-0.14.0-py2.py3-none-manylinux_2_28_x86_64.whl.metadata (18 kB)
+  WARNING: Connection interrupted while downloading.
+  WARNING: Attempting to resume incomplete download (0 bytes/18 kB, attempt 1)
+  Downloading soundfile-0.14.0-py2.py3-none-manylinux_2_28_x86_64.whl.metadata (18 kB)
+Collecting sherpa-onnx==1.13.3 (from -r /home/li/VoiceOnline/requirements/voice-wake.txt (line 3))
+  Downloading sherpa_onnx-1.13.3-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (49 kB)
+Collecting pypinyin==0.55.0 (from -r /home/li/VoiceOnline/requirements/voice-wake.txt (line 4))
+  Downloading pypinyin-0.55.0-py2.py3-none-any.whl.metadata (12 kB)
+Collecting requests==2.25.1 (from -r /home/li/VoiceOnline/requirements/voice-wake.txt (line 5))
+  Downloading requests-2.25.1-py2.py3-none-any.whl.metadata (4.2 kB)
+Collecting pynput==1.8.2 (from -r /home/li/VoiceOnline/requirements/voice-wake.txt (line 6))
+  Downloading pynput-1.8.2-py2.py3-none-any.whl.metadata (32 kB)
+Collecting cffi>=1.0 (from soundfile==0.14.0->-r /home/li/VoiceOnline/requirements/voice-wake.txt (line 2))
+  Downloading cffi-2.1.0-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (2.5 kB)
+Collecting typing-extensions (from soundfile==0.14.0->-r /home/li/VoiceOnline/requirements/voice-wake.txt (line 2))
+  Downloading typing_extensions-4.16.0-py3-none-any.whl.metadata (3.3 kB)
+Collecting sherpa-onnx-core==1.13.3 (from sherpa-onnx==1.13.3->-r /home/li/VoiceOnline/requirements/voice-wake.txt (line 3))
+  Downloading sherpa_onnx_core-1.13.3-py3-none-manylinux2014_x86_64.whl.metadata (628 bytes)
+Collecting chardet<5,>=3.0.2 (from requests==2.25.1->-r /home/li/VoiceOnline/requirements/voice-wake.txt (line 5))
+  Downloading chardet-4.0.0-py2.py3-none-any.whl.metadata (3.5 kB)
+Collecting idna<3,>=2.5 (from requests==2.25.1->-r /home/li/VoiceOnline/requirements/voice-wake.txt (line 5))
+  Downloading idna-2.10-py2.py3-none-any.whl.metadata (9.1 kB)
+Collecting urllib3<1.27,>=1.21.1 (from requests==2.25.1->-r /home/li/VoiceOnline/requirements/voice-wake.txt (line 5))
+  Downloading urllib3-1.26.20-py2.py3-none-any.whl.metadata (50 kB)
+Collecting certifi>=2017.4.17 (from requests==2.25.1->-r /home/li/VoiceOnline/requirements/voice-wake.txt (line 5))
+  Downloading certifi-2026.7.22-py3-none-any.whl.metadata (2.5 kB)
+Collecting six (from pynput==1.8.2->-r /home/li/VoiceOnline/requirements/voice-wake.txt (line 6))
+  Downloading six-1.17.0-py2.py3-none-any.whl.metadata (1.7 kB)
+Collecting evdev>=1.3 (from pynput==1.8.2->-r /home/li/VoiceOnline/requirements/voice-wake.txt (line 6))
+  Downloading evdev-1.9.3.tar.gz (32 kB)
+  Installing build dependencies: started
+  Installing build dependencies: still running...
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Collecting python-xlib>=0.17 (from pynput==1.8.2->-r /home/li/VoiceOnline/requirements/voice-wake.txt (line 6))
+  Downloading python_xlib-0.33-py2.py3-none-any.whl.metadata (6.2 kB)
+Collecting pycparser (from cffi>=1.0->soundfile==0.14.0->-r /home/li/VoiceOnline/requirements/voice-wake.txt (line 2))
+  Downloading pycparser-3.0-py3-none-any.whl.metadata (8.2 kB)
+Downloading numpy-2.2.6-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (16.8 MB)
+   ━╸                                       0.8/16.8 MB ? eta -:--:--
+WARNING: Connection interrupted while downloading.
+WARNING: Attempting to resume incomplete download (786 kB/16.8 MB, attempt 1)
+Resuming download numpy-2.2.6-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (786 kB/16.8 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 16.8/16.8 MB 3.2 MB/s  0:00:30
+Downloading soundfile-0.14.0-py2.py3-none-manylinux_2_28_x86_64.whl (1.3 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.3/1.3 MB 3.8 MB/s  0:00:00
+Downloading sherpa_onnx-1.13.3-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (4.4 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4.4/4.4 MB 4.6 MB/s  0:00:00
+Downloading pypinyin-0.55.0-py2.py3-none-any.whl (840 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 840.2/840.2 kB 12.0 MB/s  0:00:00
+Downloading requests-2.25.1-py2.py3-none-any.whl (61 kB)
+Downloading pynput-1.8.2-py2.py3-none-any.whl (92 kB)
+Downloading sherpa_onnx_core-1.13.3-py3-none-manylinux2014_x86_64.whl (9.9 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 9.9/9.9 MB 5.5 MB/s  0:00:01
+Downloading chardet-4.0.0-py2.py3-none-any.whl (178 kB)
+Downloading idna-2.10-py2.py3-none-any.whl (58 kB)
+Downloading urllib3-1.26.20-py2.py3-none-any.whl (144 kB)
+Downloading certifi-2026.7.22-py3-none-any.whl (136 kB)
+Downloading cffi-2.1.0-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (218 kB)
+Downloading python_xlib-0.33-py2.py3-none-any.whl (182 kB)
+Downloading six-1.17.0-py2.py3-none-any.whl (11 kB)
+Downloading pycparser-3.0-py3-none-any.whl (48 kB)
+Downloading typing_extensions-4.16.0-py3-none-any.whl (45 kB)
+Building wheels for collected packages: evdev
+  Building wheel for evdev (pyproject.toml): started
+  Building wheel for evdev (pyproject.toml): finished with status 'done'
+  Created wheel for evdev: filename=evdev-1.9.3-cp310-cp310-linux_x86_64.whl size=112128 sha256=ec859bbc7c01eddcb3399726c67ec009bcc4c8534ea05d38b73f0c6c608222c9
+  Stored in directory: /home/li/.cache/pip/wheels/68/70/b4/3fc7b36d0009ccf99b44add24b4bb0427f802ca6f9e525c3be
+Successfully built evdev
+Installing collected packages: sherpa-onnx-core, urllib3, typing-extensions, six, sherpa-onnx, pypinyin, pycparser, numpy, idna, evdev, chardet, certifi, requests, python-xlib, cffi, soundfile, pynput
+
+Successfully installed certifi-2026.7.22 cffi-2.1.0 chardet-4.0.0 evdev-1.9.3 idna-2.10 numpy-2.2.6 pycparser-3.0 pynput-1.8.2 pypinyin-0.55.0 python-xlib-0.33 requests-2.25.1 sherpa-onnx-1.13.3 sherpa-onnx-core-1.13.3 six-1.17.0 soundfile-0.14.0 typing-extensions-4.16.0 urllib3-1.26.20
+Building package in a clean subshell...
+Starting >>> voice_control
+Finished <<< voice_control [0.98s]
+
+Summary: 1 package finished [1.19s]
+Build successful. Running launcher check...
+Import OK: rclpy -> /opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/__init__.py
+Import OK: numpy -> /home/li/VoiceOnline/.venv_online/lib/python3.10/site-packages/numpy/__init__.py
+Import OK: soundfile -> /home/li/VoiceOnline/.venv_online/lib/python3.10/site-packages/soundfile.py
+Import OK: sherpa_onnx -> /home/li/VoiceOnline/.venv_online/lib/python3.10/site-packages/sherpa_onnx/__init__.py
+Import OK: pypinyin -> /home/li/VoiceOnline/.venv_online/lib/python3.10/site-packages/pypinyin/__init__.py
+Import OK: requests -> /home/li/VoiceOnline/.venv_online/lib/python3.10/site-packages/requests/__init__.py
+Capture: DEVICE=default 16000Hz/1ch channel_mode=channel_0
+Frontend: VOICE_AUDIO_FRONTEND=passthrough VOICE_KWS_USE_RAW=1
+Wake: TWO_STAGE=1 high=0.35 low=0.15 session=60s
+Reply: STREAM=1 SENTENCE_TTS=1 DIFY_API_MODE=workflow
+Tip: override any export before launch; smoke: .venv_online/bin/python scripts/voice_capture_smoke.py --free-device --seconds 5
+All checks passed successfully.

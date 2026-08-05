@@ -1,70 +1,33 @@
-# Python
-.venv_online/
+# Local secrets and machine-specific configuration
+voice_control_online.env
+*.env.local
+
+# Python/runtime state
+.venv*/
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
-build/
-build_online/
-install_online/
-log_online/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
-# Logs
-logs/
-*.log
+# ROS/colcon output
+build*/
+install*/
+log*/
 
-# IDE
-.vscode/
+# Runtime and privacy-sensitive artifacts
+debug_audio*/
+models/tts/phrase_cache/
+massage_data/logs/
+massage_data/_rokae_log_/
+massage_data/*.candidate.h
+
+# Downloaded model artifacts (keep only usage documentation in Git)
+/models/*
+!/models/README.md
+
+# Local editor/OS state
 .idea/
-*.swp
-*.swo
-*~
-
-# OS
+.vscode/
 .DS_Store
-Thumbs.db
-
-# Temporary files
-*.tmp
-*.bak
-*.swp
-
-# Reference code (external case studies)
-reference/
-
-# AI local/private notes
-CLAUDE.local.md
-.ai/scratch/
-.ai/runs/*.local.md
-
-# AI temporary files
-.ai/tmp/
-.ai/cache/
-
-# Optional local Codex/Claude logs
-.codex-log/
-.claude-local/
-scripts/vits-piper-zh_CN-huayan-medium/
-.gitignore
-
-tts/
-
-voice_online/
-models/
-
-datasets/

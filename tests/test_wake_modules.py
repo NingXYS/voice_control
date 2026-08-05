@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
+from pathlib import Path
 from unittest import mock
 import numpy as np
 
@@ -140,6 +141,40 @@ class FakeVad:
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_prompt_guard_drains_speaker_tail_before_vad(self):
+        class Clock:
+            now = 10.0
+
+            def __call__(self):
+                return self.now
+
+        class Audio:
+            def __init__(self, clock):
+                self.clock = clock
+                self.reads = 0
+                self.discards = 0
+
+            def read_chunk(self):
+                self.reads += 1
+                self.clock.now += 0.1
+                return np.zeros(1600, dtype=np.float32)
+
+            def discard_buffered(self):
+                self.discards += 1
+                return 160
+
+        clock = Clock()
+        audio = Audio(clock)
+        vad = mock.Mock()
+        runtime = WakeWordRuntime(
+            audio, mock.Mock(), vad, lambda *_: "", lambda *_: None,
+            lambda: True, 1, 1, 0, prompt_guard=0.25, clock=clock,
+        )
+        runtime._guard_prompt_tail()
+        self.assertGreaterEqual(audio.reads, 3)
+        self.assertGreaterEqual(audio.discards, 2)
+        vad.reset.assert_called_once()
+
     def test_post_tts_guard_discards_chunk_overlapping_guard_boundary(self):
         class Clock:
             def __init__(self):
@@ -310,7 +345,8 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(processed, ["自我介绍"])
         self.assertEqual(runtime.state, VoiceState.STOPPED)
         self.assertTrue(audio.closed)
-        self.assertIn("🗣️ 识别输入: 自我介绍", output.getvalue())
+        self.assertIn("🗣️ 识别输入: <已隐藏>", output.getvalue())
+        self.assertNotIn("🗣️ 识别输入: 自我介绍", output.getvalue())
         self.assertIn("🤖 处理输出: [{'reply': '回答'}]", output.getvalue())
 
     def test_reply_speaker_uses_cached_tts_function(self):
@@ -332,6 +368,389 @@ class RuntimeTests(unittest.TestCase):
         runtime._tts_speak = lambda text: calls.append(text)
         runtime._reply_speaker("请说明左臂还是右臂")
         self.assertEqual(calls, ["请说明左臂还是右臂"])
+
+    def test_continuous_session_allows_second_turn_without_wake(self):
+        """After wake, a second utterance is accepted without another wake hit."""
+        from voice_wake_runtime import is_session_end_phrase
+
+        self.assertTrue(is_session_end_phrase("好的再见"))
+        self.assertFalse(is_session_end_phrase("右臂向上十厘米"))
+
+        # Enough chunks: wake path + turn1 VAD + followup turn2 VAD + stop drain
+        chunks = [np.zeros(1600, dtype=np.float32) for _ in range(20)]
+        audio = FakeAudio(chunks)
+        processed = []
+        wake = FakeWake()
+
+        class MultiVad:
+            """Each turn: first chunk starts speech, second pops segment."""
+
+            def __init__(self):
+                self.n = 0
+
+            def reset(self):
+                self.n = 0
+
+            def accept_audio(self, _):
+                self.n += 1
+                return np.asarray(_, dtype=np.float32)
+
+            @property
+            def speech_started(self):
+                return self.n >= 1
+
+            def pop_segment(self):
+                return np.ones(1600, dtype=np.float32) if self.n >= 2 else None
+
+        texts = iter(["第一句", "第二句"])
+
+        def asr(*_):
+            return next(texts)
+
+        def process(text, speaker):
+            processed.append(text)
+            speaker("答")
+            if len(processed) >= 2:
+                runtime.request_stop()
+            return [{"reply": "答"}]
+
+        runtime = WakeWordRuntime(
+            audio,
+            wake,
+            MultiVad(),
+            asr,
+            process,
+            lambda: True,
+            3,
+            10,
+            0,
+            prompt_guard=0,
+            post_tts_guard=0,
+            session_timeout=60.0,
+        )
+        runtime.run()
+        self.assertEqual(processed, ["第一句", "第二句"])
+        # Only the initial wake detection should fire.
+        self.assertEqual(wake.calls, 1)
+
+    def test_session_end_phrase_returns_to_wake(self):
+        chunks = [np.zeros(1600, dtype=np.float32) for _ in range(12)]
+        audio = FakeAudio(chunks)
+        processed = []
+        wake = FakeWake()
+
+        def asr(*_):
+            return "再见"
+
+        def process(text, speaker):
+            processed.append(text)
+            return None
+
+        class Clock:
+            def __init__(self):
+                self.now = 0.0
+
+            def __call__(self):
+                return self.now
+
+            def advance(self, dt):
+                self.now += dt
+
+        clock = Clock()
+
+        class TimedAudio(FakeAudio):
+            def read_chunk(self):
+                clock.advance(0.1)
+                return super().read_chunk()
+
+        audio = TimedAudio(chunks)
+        runtime = WakeWordRuntime(
+            audio,
+            wake,
+            FakeVad(),
+            asr,
+            process,
+            lambda: True,
+            3,
+            10,
+            0,
+            prompt_guard=0,
+            post_tts_guard=0,
+            session_timeout=60.0,
+            clock=clock,
+        )
+
+        # Stop after session ends and runtime waits for wake again.
+        original_accept = wake.accept_audio
+
+        def accept_then_maybe_stop(chunk):
+            result = original_accept(chunk)
+            if wake.calls >= 2:
+                runtime.request_stop()
+            return result
+
+        wake.accept_audio = accept_then_maybe_stop
+        runtime.run()
+        # End phrase must not be sent to process_callback as a normal command.
+        self.assertEqual(processed, [])
+        self.assertEqual(runtime.state, VoiceState.STOPPED)
+
+
+class WakeAckPhraseTests(unittest.TestCase):
+    def test_wake_ack_variants_from_field_logs(self):
+        from voice_wake_runtime import is_wake_ack_only
+
+        should_ack = [
+            "小西小西",
+            "小溪小溪",
+            "小小溪小溪",
+            "小溪小溪小溪",
+            "小小西小西",
+            "小西小西啊",
+            "嘻嘻",
+        ]
+        should_not = [
+            "你是小西小西",
+            "小西小西帮我抬左臂",
+            "右臂向上十厘米",
+            "你能做什么",
+            "再见",
+        ]
+        for text in should_ack:
+            with self.subTest(text=text):
+                self.assertTrue(is_wake_ack_only(text), text)
+        for text in should_not:
+            with self.subTest(text=text):
+                self.assertFalse(is_wake_ack_only(text), text)
+
+
+class DualStageWakeTests(unittest.TestCase):
+    def test_keywords_file_with_threshold_rewrites_hash(self):
+        from voice_wake_word import keywords_file_with_threshold
+
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "keywords.txt"
+            src.write_text(
+                "x iǎo x ī :2.5 #0.18 @小西小西\n",
+                encoding="utf-8",
+            )
+            dest = Path(tmp) / "out.txt"
+            keywords_file_with_threshold(src, 0.28, dest)
+            text = dest.read_text(encoding="utf-8")
+            self.assertIn("#0.28", text)
+            self.assertNotIn("#0.18", text)
+
+    def test_runtime_high_candidate_skips_verifier(self):
+        from voice_wake_word import WakeCandidate
+
+        chunks = [np.zeros(1600, dtype=np.float32) for _ in range(8)]
+        audio = FakeAudio(chunks)
+        verified = []
+
+        class HighOnlyWake:
+            def __init__(self):
+                self.calls = 0
+
+            def accept_audio(self, _chunk, _sr=16000):
+                self.calls += 1
+                if self.calls == 1:
+                    return WakeCandidate(
+                        keyword="小西小西",
+                        detected_at=0.0,
+                        level="high",
+                        score=1.0,
+                        detector_name="kws_high",
+                        audio_window=np.zeros(1600, dtype=np.float32),
+                        sample_rate=16000,
+                        reason="test high",
+                    )
+                return None
+
+            def reset(self):
+                pass
+
+        class Verifier:
+            def verify(self, candidate):
+                verified.append(candidate)
+                raise AssertionError("high path must not call verifier")
+
+        processed = []
+
+        def process(text, speaker):
+            processed.append(text)
+            runtime.request_stop()
+            return [{"reply": "ok"}]
+
+        runtime = WakeWordRuntime(
+            audio,
+            HighOnlyWake(),
+            FakeVad(),
+            lambda *_: "你好",
+            process,
+            lambda: True,
+            3,
+            10,
+            0,
+            prompt_guard=0,
+            post_tts_guard=0,
+            session_timeout=0,
+            wake_verifier=Verifier(),
+        )
+        runtime.run()
+        self.assertEqual(processed, ["你好"])
+        self.assertEqual(verified, [])
+
+    def test_runtime_low_candidate_requires_verifier_accept(self):
+        from voice_wake_word import WakeCandidate
+        from voice_wake_verifier import WakeVerificationResult
+
+        chunks = [np.zeros(1600, dtype=np.float32) for _ in range(10)]
+        audio = FakeAudio(chunks)
+
+        class LowWake:
+            def __init__(self):
+                self.calls = 0
+
+            def accept_audio(self, _chunk, _sr=16000):
+                self.calls += 1
+                if self.calls == 1:
+                    return WakeCandidate(
+                        keyword="小西小西",
+                        detected_at=0.0,
+                        level="low",
+                        score=0.5,
+                        detector_name="kws_low",
+                        audio_window=np.ones(3200, dtype=np.float32),
+                        sample_rate=16000,
+                        reason="test low",
+                    )
+                return None
+
+            def reset(self):
+                pass
+
+        class Verifier:
+            def __init__(self):
+                self.calls = 0
+
+            def verify(self, candidate):
+                self.calls += 1
+                return WakeVerificationResult(
+                    accepted=True,
+                    reason="asr ok",
+                    asr_text="小西小西",
+                    match_score=1.0,
+                )
+
+        verifier = Verifier()
+        processed = []
+
+        def process(text, speaker):
+            processed.append(text)
+            runtime.request_stop()
+            return [{"reply": "ok"}]
+
+        runtime = WakeWordRuntime(
+            audio,
+            LowWake(),
+            FakeVad(),
+            lambda *_: "指令",
+            process,
+            lambda: True,
+            3,
+            10,
+            0,
+            prompt_guard=0,
+            post_tts_guard=0,
+            session_timeout=0,
+            wake_verifier=verifier,
+        )
+        runtime.run()
+        self.assertEqual(verifier.calls, 1)
+        self.assertEqual(processed, ["指令"])
+
+    def test_runtime_low_candidate_reject_stays_asleep(self):
+        from voice_wake_word import WakeCandidate
+        from voice_wake_verifier import WakeVerificationResult
+
+        chunks = [np.zeros(1600, dtype=np.float32) for _ in range(6)]
+        audio = FakeAudio(chunks)
+
+        class LowThenStop:
+            def __init__(self):
+                self.calls = 0
+
+            def accept_audio(self, _chunk, _sr=16000):
+                self.calls += 1
+                if self.calls == 1:
+                    return WakeCandidate(
+                        keyword="小西小西",
+                        detected_at=0.0,
+                        level="low",
+                        score=0.5,
+                        detector_name="kws_low",
+                        audio_window=np.ones(3200, dtype=np.float32),
+                        sample_rate=16000,
+                        reason="test low reject",
+                    )
+                runtime.request_stop()
+                return None
+
+            def reset(self):
+                pass
+
+        class RejectVerifier:
+            def verify(self, _candidate):
+                return WakeVerificationResult(
+                    accepted=False,
+                    reason="no wake phrase",
+                    asr_text="今天天气不错",
+                    match_score=0.1,
+                )
+
+        processed = []
+        runtime = WakeWordRuntime(
+            audio,
+            LowThenStop(),
+            FakeVad(),
+            lambda *_: "不应进入",
+            lambda text, speaker: processed.append(text),
+            lambda: True,
+            3,
+            10,
+            0,
+            prompt_guard=0,
+            post_tts_guard=0,
+            session_timeout=0,
+            wake_verifier=RejectVerifier(),
+        )
+        runtime.run()
+        self.assertEqual(processed, [])
+
+    def test_asr_verifier_accepts_alias_and_rejects_unrelated(self):
+        from voice_wake_verifier import WakeAsrVerifier
+        from voice_wake_word import WakeCandidate
+
+        def asr_ok(audio, sr):
+            return "你好小溪小溪在吗"
+
+        def asr_bad(audio, sr):
+            return "右臂向上十厘米"
+
+        window = np.ones(16000, dtype=np.float32)
+        cand = WakeCandidate(
+            keyword="小西小西",
+            detected_at=0.0,
+            level="low",
+            score=0.5,
+            detector_name="kws_low",
+            audio_window=window,
+            sample_rate=16000,
+        )
+        ok = WakeAsrVerifier(asr_ok, "小西小西", match_threshold=0.82).verify(cand)
+        bad = WakeAsrVerifier(asr_bad, "小西小西", match_threshold=0.82).verify(cand)
+        self.assertTrue(ok.accepted)
+        self.assertFalse(bad.accepted)
 
 
 class WakeWordDetectorApiTests(unittest.TestCase):

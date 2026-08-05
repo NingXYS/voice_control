@@ -31,13 +31,20 @@ from voice_runtime_config import (
     COMMAND_VAD_GATE,
     SPEECH_MIN_RMS,
     SPEECH_MIN_SNR_DB,
+    VAD_MAX_SPEECH_DURATION_SEC,
     VAD_PRE_ROLL_SEC,
     VAD_THRESHOLD,
 )
 
 
 class CommandVadDetector:
-    def __init__(self, model_path: str, min_speech_sec: float, min_silence_sec: float):
+    def __init__(
+        self,
+        model_path: str,
+        min_speech_sec: float,
+        min_silence_sec: float,
+        max_speech_sec: float | None = None,
+    ):
         try:
             import sherpa_onnx
         except ImportError as exc:
@@ -49,13 +56,20 @@ class CommandVadDetector:
                 "VOICE_COMMAND_VAD_GATE must be segment, frame, or off "
                 f"(got {COMMAND_VAD_GATE!r})"
             )
+        # Cap utterance length so follow-up mode does not glue long ambient chat.
+        max_speech = float(
+            max_speech_sec
+            if max_speech_sec is not None
+            else VAD_MAX_SPEECH_DURATION_SEC
+        )
+        max_speech = max(1.0, min(max_speech, 30.0))
         config = sherpa_onnx.VadModelConfig()
         config.silero_vad = sherpa_onnx.SileroVadModelConfig(
             model=model_path,
             threshold=VAD_THRESHOLD,
             min_silence_duration=min_silence_sec,
             min_speech_duration=min_speech_sec,
-            max_speech_duration=30.0,
+            max_speech_duration=max_speech,
         )
         config.sample_rate = 16000
         config.num_threads = 1
@@ -130,21 +144,36 @@ class CommandVadDetector:
         return data
 
     def _with_pre_roll(self, segment: np.ndarray) -> np.ndarray:
-        """Prepend onset pre-roll if Silero's segment starts after a weak syllable."""
+        """Prepend onset pre-roll only when Silero likely missed the first syllable.
+
+        In quiet near-talk rooms Silero often already keeps the onset; prepending
+        then makes ASR hear 「你能你能 / 右右臂」. We skip pre-roll when the
+        segment head already overlaps the pre-roll tail (exact or highly similar).
+        """
         if self._onset_pre_roll is None or self._onset_pre_roll.size == 0:
             return segment
         if segment.size == 0:
             return self._onset_pre_roll.copy()
         pre = self._onset_pre_roll
-        # Avoid double-prepending when Silero already kept the same onset frames.
-        # Compare a short tail of pre-roll against the head of the segment.
-        probe = min(int(0.05 * self._sample_rate), pre.size, segment.size)
-        if probe > 0:
-            pre_tail = pre[-probe:]
-            seg_head = segment[:probe]
-            # Correlation-like equality for near-identical float PCM.
-            if float(np.max(np.abs(pre_tail - seg_head))) < 1e-4:
+        # 50–80 ms probe: enough for one Chinese syllable onset.
+        probe = min(int(0.08 * self._sample_rate), pre.size, segment.size)
+        if probe >= 16:
+            pre_tail = pre[-probe:].astype(np.float64, copy=False)
+            seg_head = segment[:probe].astype(np.float64, copy=False)
+            # Exact / near-exact copy (old path).
+            if float(np.max(np.abs(pre_tail - seg_head))) < 1e-3:
                 return segment
+            # Mean-centered correlation: flat low-level noise must NOT look like
+            # "already covered" speech (constants correlate as 1.0 without centering).
+            pre_c = pre_tail - float(np.mean(pre_tail))
+            seg_c = seg_head - float(np.mean(seg_head))
+            pre_std = float(np.sqrt(np.mean(np.square(pre_c))))
+            seg_std = float(np.sqrt(np.mean(np.square(seg_c))))
+            if pre_std > 1e-3 and seg_std > 1e-3:
+                corr = float(np.dot(pre_c, seg_c) / (pre_std * seg_std * probe + 1e-12))
+                # Overlapping real speech onset usually correlates strongly.
+                if corr >= 0.60:
+                    return segment
         return np.concatenate((pre, segment)).astype(np.float32, copy=False)
 
     def _segment_is_valid(self, segment: np.ndarray) -> bool:

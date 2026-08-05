@@ -1,0 +1,7 @@
+-r voice-wake.in
+# ROS 2 Humble launch_testing still uses the pre-pytest-9 collection hook.
+pytest==8.4.2
+pip-audit==2.10.1
+pip-tools==7.6.0
+# pip 26.2 changed an internal API used by pip-tools 7.6.0.
+pip==25.3

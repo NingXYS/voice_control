@@ -10,6 +10,7 @@ from typing import Any
 
 VALID_ACTIONS = {"move_joint", "move_cartesian", "home", "get_status"}
 VALID_ARMS = {"left", "right"}
+MAX_REPLY_CHARS = 20_000
 COMMAND_FIELDS = {
     "home": {"action", "arm"},
     "get_status": {"action", "arm"},
@@ -34,10 +35,13 @@ def validate_and_fix_command(command: Any):
     checked = command.copy()
     if "reply" in checked:
         if set(checked) != {"reply"}:
-            return None, ["reply payload must not contain extra fields"]
+            extra = sorted(set(checked) - {"reply"})
+            return None, [f"reply payload must not contain extra fields: {extra}"]
         reply = checked.get("reply")
         if not isinstance(reply, str) or not reply.strip():
             return None, ["reply must be a non-empty string"]
+        if len(reply) > MAX_REPLY_CHARS:
+            return None, [f"reply exceeds {MAX_REPLY_CHARS} characters"]
         return checked, []
 
     action = checked.get("action")
@@ -53,7 +57,7 @@ def validate_and_fix_command(command: Any):
     if unexpected:
         errors.append(f"unexpected fields: {unexpected}")
     if checked.get("arm") not in VALID_ARMS:
-        errors.append("arm must be left or right")
+        errors.append(f"arm must be left or right, got {checked.get('arm')!r}")
 
     if action == "move_joint":
         joint = checked.get("joint")

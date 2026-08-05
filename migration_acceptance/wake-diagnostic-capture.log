@@ -1,0 +1,20 @@
+Freeing desktop holds on capture device...
+  - no USB-mic PulseAudio card/source found to free
+Capture: device='default' rate=16000 channels=1 chunk_ms=100 channel_mode=channel_0
+Adapter target: 16000 Hz mono float32, collect 80 chunks (~8.00s)
+Speak at 10–30 cm for a few seconds. Target peak roughly -12 to -6 dBFS.
+  chunk 16/80: peak=-22.7 dBFS rms=-37.6 dBFS
+  chunk 32/80: peak=-22.7 dBFS rms=-34.0 dBFS
+  chunk 48/80: peak=-5.6 dBFS rms=-18.4 dBFS
+  chunk 64/80: peak=-7.6 dBFS rms=-18.3 dBFS
+  chunk 80/80: peak=-8.9 dBFS rms=-20.9 dBFS
+--- summary ---
+samples=128000  duration=8.000s
+format_ok=yes  sample_rate=16000  channels=1  dtype=float32
+peak=1.0000 (0.0 dBFS)  rms=0.0832 (-21.6 dBFS)  clip_ratio=0.00%
+wrote migration_acceptance/wake_diagnostic_x86/adapter_16k_mono.wav
+PASS: capture adapter path produced valid 16 kHz mono audio.
+Suggested runtime exports:
+  export AUDIO_DEVICE=default
+  export AUDIO_CAPTURE_SAMPLE_RATE=16000
+  export AUDIO_CAPTURE_CHANNELS=1

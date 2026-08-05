@@ -67,6 +67,124 @@ class LocalActionParserTests(unittest.TestCase):
                     "relative": True,
                 },
             ],
+            # Same-arm multi-cartesian (omit arm after first clause).
+            "右臂向下十厘米再向左十厘米": [
+                {
+                    "action": "move_cartesian",
+                    "arm": "right",
+                    "x": 0,
+                    "y": 0,
+                    "z": -0.1,
+                    "relative": True,
+                },
+                {
+                    "action": "move_cartesian",
+                    "arm": "right",
+                    "x": -0.1,
+                    "y": 0,
+                    "z": 0,
+                    "relative": True,
+                },
+            ],
+            "右臂向下移十厘米再向左移十厘米": [
+                {
+                    "action": "move_cartesian",
+                    "arm": "right",
+                    "x": 0,
+                    "y": 0,
+                    "z": -0.1,
+                    "relative": True,
+                },
+                {
+                    "action": "move_cartesian",
+                    "arm": "right",
+                    "x": -0.1,
+                    "y": 0,
+                    "z": 0,
+                    "relative": True,
+                },
+            ],
+            "右臂先向上移十厘米再向左移十厘米": [
+                {
+                    "action": "move_cartesian",
+                    "arm": "right",
+                    "x": 0,
+                    "y": 0,
+                    "z": 0.1,
+                    "relative": True,
+                },
+                {
+                    "action": "move_cartesian",
+                    "arm": "right",
+                    "x": -0.1,
+                    "y": 0,
+                    "z": 0,
+                    "relative": True,
+                },
+            ],
+            "左臂向前5厘米再向上10厘米": [
+                {
+                    "action": "move_cartesian",
+                    "arm": "left",
+                    "x": 0,
+                    "y": 0.05,
+                    "z": 0,
+                    "relative": True,
+                },
+                {
+                    "action": "move_cartesian",
+                    "arm": "left",
+                    "x": 0,
+                    "y": 0,
+                    "z": 0.1,
+                    "relative": True,
+                },
+            ],
+            "右臂向上十厘米再向左移十厘米再向前五厘米": [
+                {
+                    "action": "move_cartesian",
+                    "arm": "right",
+                    "x": 0,
+                    "y": 0,
+                    "z": 0.1,
+                    "relative": True,
+                },
+                {
+                    "action": "move_cartesian",
+                    "arm": "right",
+                    "x": -0.1,
+                    "y": 0,
+                    "z": 0,
+                    "relative": True,
+                },
+                {
+                    "action": "move_cartesian",
+                    "arm": "right",
+                    "x": 0,
+                    "y": 0.05,
+                    "z": 0,
+                    "relative": True,
+                },
+            ],
+            # ASR stutter 右右臂 + multi-cartesian tail.
+            "右右臂向下十厘米再向左十厘米": [
+                {
+                    "action": "move_cartesian",
+                    "arm": "right",
+                    "x": 0,
+                    "y": 0,
+                    "z": -0.1,
+                    "relative": True,
+                },
+                {
+                    "action": "move_cartesian",
+                    "arm": "right",
+                    "x": -0.1,
+                    "y": 0,
+                    "z": 0,
+                    "relative": True,
+                },
+            ],
             "左臂关节1旋转30度": [
                 {
                     "action": "move_joint",
@@ -85,6 +203,51 @@ class LocalActionParserTests(unittest.TestCase):
                     "type": "delta",
                 }
             ],
+            "左臂第一关节旋转三十度": [
+                {
+                    "action": "move_joint",
+                    "arm": "left",
+                    "joint": 1,
+                    "value": 0.523599,
+                    "type": "delta",
+                }
+            ],
+            "左臂关节一旋转30度": [
+                {
+                    "action": "move_joint",
+                    "arm": "left",
+                    "joint": 1,
+                    "value": 0.523599,
+                    "type": "delta",
+                }
+            ],
+            "右臂第六关节旋转三十度": [
+                {
+                    "action": "move_joint",
+                    "arm": "right",
+                    "joint": 6,
+                    "value": 0.523599,
+                    "type": "delta",
+                }
+            ],
+            "旋转左臂第一关节三十度": [
+                {
+                    "action": "move_joint",
+                    "arm": "left",
+                    "joint": 1,
+                    "value": 0.523599,
+                    "type": "delta",
+                }
+            ],
+            "拿你的左臂第一关节旋转二十度": [
+                {
+                    "action": "move_joint",
+                    "arm": "left",
+                    "joint": 1,
+                    "value": 0.349066,
+                    "type": "delta",
+                }
+            ],
             "左臂关节3反转30度": [
                 {
                     "action": "move_joint",
@@ -93,6 +256,175 @@ class LocalActionParserTests(unittest.TestCase):
                     "value": -0.523599,
                     "type": "delta",
                 }
+            ],
+            # Same-arm multi-joint: arm named once, subsequent joints omit arm.
+            "左臂关节3旋转三十度后四关节旋转二十度五关节旋转六十度": [
+                {
+                    "action": "move_joint",
+                    "arm": "left",
+                    "joint": 3,
+                    "value": 0.523599,
+                    "type": "delta",
+                },
+                {
+                    "action": "move_joint",
+                    "arm": "left",
+                    "joint": 4,
+                    "value": 0.349066,
+                    "type": "delta",
+                },
+                {
+                    "action": "move_joint",
+                    "arm": "left",
+                    "joint": 5,
+                    "value": 1.047198,
+                    "type": "delta",
+                },
+            ],
+            "左臂关节3旋转三十度关节4旋转二十度关节5旋转六十度": [
+                {
+                    "action": "move_joint",
+                    "arm": "left",
+                    "joint": 3,
+                    "value": 0.523599,
+                    "type": "delta",
+                },
+                {
+                    "action": "move_joint",
+                    "arm": "left",
+                    "joint": 4,
+                    "value": 0.349066,
+                    "type": "delta",
+                },
+                {
+                    "action": "move_joint",
+                    "arm": "left",
+                    "joint": 5,
+                    "value": 1.047198,
+                    "type": "delta",
+                },
+            ],
+            "左臂三关节旋转三十度后四关节旋转二十度五关节旋转六十度": [
+                {
+                    "action": "move_joint",
+                    "arm": "left",
+                    "joint": 3,
+                    "value": 0.523599,
+                    "type": "delta",
+                },
+                {
+                    "action": "move_joint",
+                    "arm": "left",
+                    "joint": 4,
+                    "value": 0.349066,
+                    "type": "delta",
+                },
+                {
+                    "action": "move_joint",
+                    "arm": "left",
+                    "joint": 5,
+                    "value": 1.047198,
+                    "type": "delta",
+                },
+            ],
+            # Field ASR junk prefix + spoken multi-joint chain.
+            "气人左臂三关节旋转三十度后四关节旋转二十度五关节旋转六十度": [
+                {
+                    "action": "move_joint",
+                    "arm": "left",
+                    "joint": 3,
+                    "value": 0.523599,
+                    "type": "delta",
+                },
+                {
+                    "action": "move_joint",
+                    "arm": "left",
+                    "joint": 4,
+                    "value": 0.349066,
+                    "type": "delta",
+                },
+                {
+                    "action": "move_joint",
+                    "arm": "left",
+                    "joint": 5,
+                    "value": 1.047198,
+                    "type": "delta",
+                },
+            ],
+            # Explicit arm repeated per joint (already supported via arm split).
+            "左臂关节3旋转三十度左臂关节4旋转二十度左臂关节5旋转六十度": [
+                {
+                    "action": "move_joint",
+                    "arm": "left",
+                    "joint": 3,
+                    "value": 0.523599,
+                    "type": "delta",
+                },
+                {
+                    "action": "move_joint",
+                    "arm": "left",
+                    "joint": 4,
+                    "value": 0.349066,
+                    "type": "delta",
+                },
+                {
+                    "action": "move_joint",
+                    "arm": "left",
+                    "joint": 5,
+                    "value": 1.047198,
+                    "type": "delta",
+                },
+            ],
+            "右臂关节1旋转10度再关节2反转20度": [
+                {
+                    "action": "move_joint",
+                    "arm": "right",
+                    "joint": 1,
+                    "value": 0.174533,
+                    "type": "delta",
+                },
+                {
+                    "action": "move_joint",
+                    "arm": "right",
+                    "joint": 2,
+                    "value": -0.349066,
+                    "type": "delta",
+                },
+            ],
+            # Field: leading 左臂 swallowed by VAD/ASR; recover from later 右臂.
+            "三关节旋转二十度右臂向上十厘米": [
+                {
+                    "action": "move_joint",
+                    "arm": "left",
+                    "joint": 3,
+                    "value": 0.349066,
+                    "type": "delta",
+                },
+                {
+                    "action": "move_cartesian",
+                    "arm": "right",
+                    "x": 0,
+                    "y": 0,
+                    "z": 0.1,
+                    "relative": True,
+                },
+            ],
+            "三关节旋转二十度右臂向上三十厘米": [
+                {
+                    "action": "move_joint",
+                    "arm": "left",
+                    "joint": 3,
+                    "value": 0.349066,
+                    "type": "delta",
+                },
+                {
+                    "action": "move_cartesian",
+                    "arm": "right",
+                    "x": 0,
+                    "y": 0,
+                    "z": 0.3,
+                    "relative": True,
+                },
             ],
         }
 
@@ -132,6 +464,46 @@ class LocalActionParserTests(unittest.TestCase):
             "把你的右臂向后三十厘米": {
                 "action": "move_cartesian",
                 "arm": "right",
+                "x": 0,
+                "y": -0.3,
+                "z": 0,
+                "relative": True,
+            },
+            "把你的右臂往后三十厘米": {
+                "action": "move_cartesian",
+                "arm": "right",
+                "x": 0,
+                "y": -0.3,
+                "z": 0,
+                "relative": True,
+            },
+            "右臂往后三十厘米": {
+                "action": "move_cartesian",
+                "arm": "right",
+                "x": 0,
+                "y": -0.3,
+                "z": 0,
+                "relative": True,
+            },
+            "把左臂向上十厘米": {
+                "action": "move_cartesian",
+                "arm": "left",
+                "x": 0,
+                "y": 0,
+                "z": 0.1,
+                "relative": True,
+            },
+            "哇你的右臂往后三十厘米": {
+                "action": "move_cartesian",
+                "arm": "right",
+                "x": 0,
+                "y": -0.3,
+                "z": 0,
+                "relative": True,
+            },
+            "把把你的左臂向后三十厘米": {
+                "action": "move_cartesian",
+                "arm": "left",
                 "x": 0,
                 "y": -0.3,
                 "z": 0,
@@ -179,7 +551,8 @@ class LocalActionParserTests(unittest.TestCase):
             "和我握手",
             "左臂旋转一圈",
             "抬起左臂和右臂",
-            "左臂关节一旋转30度",
+            "左臂旋转三十度",  # 有臂+角度但缺关节编号
+            "第一关节旋转三十度",  # 有关节+角度但缺手臂
         ]
 
         for text in cases:
@@ -448,32 +821,19 @@ class HomeAndGetStatusValidationTests(unittest.TestCase):
             self.assertNotIn(key, fixed)
 
 
-class AutoFillBaselineTests(unittest.TestCase):
-    """当前 validate_and_fix_command() 对已有动作自动补全行为的回归基线测试。"""
+class FailClosedMotionValidationTests(unittest.TestCase):
+    """动作字段不完整时必须失败关闭，禁止推测会导致运动的参数。"""
 
-    def test_move_cartesian_missing_fields_auto_filled_with_defaults_and_errors(self):
-        """move_cartesian 缺少 x/y/z/relative 时会补默认值并返回 errors。"""
+    def test_move_cartesian_missing_fields_is_rejected(self):
         cmd = {"action": "move_cartesian", "arm": "left"}
         fixed, errors = validate_and_fix_command(cmd)
-        self.assertIsNotNone(fixed)
-        self.assertEqual(fixed["action"], "move_cartesian")
-        self.assertEqual(fixed["arm"], "left")
-        self.assertEqual(fixed["x"], 0.0)
-        self.assertEqual(fixed["y"], 0.0)
-        self.assertEqual(fixed["z"], 0.0)
-        self.assertEqual(fixed["relative"], True)
+        self.assertIsNone(fixed)
         self.assertTrue(len(errors) > 0)
 
-    def test_move_joint_missing_value_and_type_auto_filled_with_defaults_and_errors(self):
-        """move_joint 缺少 value/type 时会补默认值并返回 errors。"""
+    def test_move_joint_missing_value_and_type_is_rejected(self):
         cmd = {"action": "move_joint", "arm": "left", "joint": 1}
         fixed, errors = validate_and_fix_command(cmd)
-        self.assertIsNotNone(fixed)
-        self.assertEqual(fixed["action"], "move_joint")
-        self.assertEqual(fixed["arm"], "left")
-        self.assertEqual(fixed["joint"], 1)
-        self.assertEqual(fixed["value"], 0.1)
-        self.assertEqual(fixed["type"], "delta")
+        self.assertIsNone(fixed)
         self.assertTrue(len(errors) > 0)
 
 
@@ -497,6 +857,11 @@ class CommandValidationBoundaryTests(unittest.TestCase):
         fixed, errors = validate_and_fix_command({"reply": 123})
         self.assertIsNone(fixed)
         self.assertTrue(len(errors) > 0)
+
+    def test_validate_oversized_reply_fails(self):
+        fixed, errors = validate_and_fix_command({"reply": "x" * 20_001})
+        self.assertIsNone(fixed)
+        self.assertTrue(errors)
 
     def test_validate_unknown_action_fails(self):
         """未知 action 应校验失败，错误消息包含 action 名。"""
@@ -565,12 +930,14 @@ class LocalReplyCommandTests(unittest.TestCase):
                 self.assertIn("reply", result[0])
                 self.assertNotIn("action", result[0])
                 reply = result[0]["reply"]
-                # 必须声明的能力
-                self.assertIn("左右", reply)
-                self.assertIn("关节旋转", reply)
-                self.assertIn("空间移动", reply)
-                # 不得声明的未对齐能力
-                forbidden = ["回零", "零位", "状态", "查询状态", "home", "get_status"]
+                self.assertIn("按摩", reply)
+                self.assertIn("点位", reply)
+                self.assertIn("联网搜索", reply)
+                self.assertIn("接口", reply)
+                self.assertIn("尚未接入", reply)
+                # 不得把旧控制协议的回零/API 字段宣称为按摩能力；
+                # 按摩状态查询本身已经由 MassageController 实现。
+                forbidden = ["回零", "零位", "home", "get_status"]
                 for word in forbidden:
                     self.assertNotIn(word, reply)
 
@@ -666,6 +1033,8 @@ class LocalReplyCommandTests(unittest.TestCase):
             "左臂向上",
             "右臂移动一下",
             "左臂关节1旋转",
+            "左臂第一关节旋转",
+            "左臂旋转三十度",  # 有臂+角度但缺关节
         ]
         for text in cases:
             with self.subTest(text=text):
@@ -794,8 +1163,7 @@ class LocalReplyCommandTests(unittest.TestCase):
         reply = merged["reply"]
         self.assertIn("手臂", reply)
         self.assertIn("自由度", reply)
-        # Should not be arms-only (previous first-hit behavior).
-        self.assertNotEqual(reply, "我有左右两条手臂，是双臂机械臂。")
+        self.assertIn("单臂", reply)
 
         result = check_local_reply_command(text)
         self.assertIsInstance(result, list)
@@ -822,6 +1190,27 @@ class LocalReplyCommandTests(unittest.TestCase):
             local_knowledge.repair_asr_text("你有你有几个关节"),
             "你有几个关节",
         )
+        # Field quiet-room stutters: phrase double + first-char of phrase.
+        self.assertEqual(
+            local_knowledge.repair_asr_text("你会你会干什么"),
+            "你会干什么",
+        )
+        self.assertEqual(
+            local_knowledge.repair_asr_text("你会你会干些什么"),
+            "你会干些什么",
+        )
+        self.assertEqual(
+            local_knowledge.repair_asr_text("你你会干什么"),
+            "你会干什么",
+        )
+        self.assertEqual(
+            local_knowledge.repair_asr_text("早上早上好"),
+            "早上好",
+        )
+        self.assertEqual(
+            local_knowledge.repair_asr_text("旋旋转左臂第一关节三十度"),
+            "左臂关节1三十度",
+        )
         self.assertEqual(
             local_knowledge.repair_asr_text("左臂左臂向下二十厘米"),
             "左臂向下二十厘米",
@@ -838,8 +1227,144 @@ class LocalReplyCommandTests(unittest.TestCase):
             local_knowledge.repair_asr_text("应该是由度"),
             "应该是自由度",
         )
+        # Filler strip / 往→向 is repair, not only onset collapse.
+        self.assertEqual(
+            local_knowledge.repair_asr_text("把你的右臂往后三十厘米"),
+            "右臂向后三十厘米",
+        )
+        self.assertEqual(
+            local_knowledge.repair_asr_text("把把你的左臂向后三十厘米"),
+            "左臂向后三十厘米",
+        )
+        self.assertEqual(
+            local_knowledge.repair_asr_text("哇你的右臂往后三十厘米"),
+            "右臂向后三十厘米",
+        )
+        self.assertEqual(
+            local_knowledge.repair_asr_text("把左臂向上十厘米"),
+            "左臂向上十厘米",
+        )
+        # Spoken joint numbering + leading rotate/拿 fillers.
+        self.assertEqual(
+            local_knowledge.repair_asr_text("左臂第一关节旋转三十度"),
+            "左臂关节1旋转三十度",
+        )
+        self.assertEqual(
+            local_knowledge.repair_asr_text("右臂第六个关节旋转三十度"),
+            "右臂关节6旋转三十度",
+        )
+        self.assertEqual(
+            local_knowledge.repair_asr_text("左臂关节一旋转30度"),
+            "左臂关节1旋转30度",
+        )
+        self.assertEqual(
+            local_knowledge.repair_asr_text("旋转左臂第一关节三十度"),
+            "左臂关节1三十度",
+        )
+        self.assertEqual(
+            local_knowledge.repair_asr_text("拿你的左臂第一关节旋转二十度"),
+            "左臂关节1旋转二十度",
+        )
+        # Regression: 「四关节二十度」must not glue into 「关节42十度」
+        # (旧规则误把「关节二」从「四关节二十度」里抠出来).
+        self.assertEqual(
+            local_knowledge.repair_asr_text("旋旋转右臂四关节二十度"),
+            "右臂关节4二十度",
+        )
+        self.assertEqual(
+            local_knowledge.repair_asr_text("右臂四关节二十度"),
+            "右臂关节4二十度",
+        )
+        parsed = check_simple_action_command("旋旋转右臂四关节二十度")
+        self.assertIsNotNone(parsed)
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0]["action"], "move_joint")
+        self.assertEqual(parsed[0]["arm"], "right")
+        self.assertEqual(parsed[0]["joint"], 4)
+        self.assertEqual(parsed[0]["type"], "delta")
+        self.assertAlmostEqual(parsed[0]["value"], 20 * 3.141592653589793 / 180.0, places=5)
+        # Same-arm multi-joint chain must not be truncated to the first joint only.
+        self.assertEqual(
+            local_knowledge.repair_asr_text(
+                "左臂关节3旋转三十度后四关节旋转二十度五关节旋转六十度"
+            ),
+            "左臂关节3旋转三十度后关节4旋转二十度关节5旋转六十度",
+        )
+        self.assertEqual(
+            local_knowledge.repair_asr_text(
+                "气人左臂三关节旋转三十度后四关节旋转二十度五关节旋转六十度"
+            ),
+            "左臂关节3旋转三十度后关节4旋转二十度关节5旋转六十度",
+        )
+        # Onset clip: soft leading 左臂 swallowed; later 右臂 still present.
+        self.assertEqual(
+            local_knowledge.repair_asr_text("三关节旋转二十度右臂向上十厘米"),
+            "左臂关节3旋转二十度右臂向上十厘米",
+        )
+        self.assertEqual(
+            local_knowledge.repair_asr_text("三关节旋转二十度右臂向上三十厘米"),
+            "左臂关节3旋转二十度右臂向上三十厘米",
+        )
+        self.assertEqual(
+            local_knowledge.repair_asr_text("关节3旋转二十度右臂向上十厘米"),
+            "左臂关节3旋转二十度右臂向上十厘米",
+        )
+        self.assertEqual(
+            local_knowledge.repair_asr_text("臂三关节旋转二十度右臂向上十厘米"),
+            "左臂关节3旋转二十度右臂向上十厘米",
+        )
+        # Opposite clip: leading 右臂 lost, later 左臂 present.
+        self.assertEqual(
+            local_knowledge.repair_asr_text("三关节旋转二十度左臂向上十厘米"),
+            "右臂关节3旋转二十度左臂向上十厘米",
+        )
+        # Single bare joint without a second arm → do not invent 左/右.
+        self.assertEqual(
+            local_knowledge.repair_asr_text("三关节旋转二十度"),
+            "三关节旋转二十度",
+        )
+        # Same-arm multi-cartesian must not be truncated to the first move only.
+        self.assertEqual(
+            local_knowledge.repair_asr_text("右臂向下十厘米再向左十厘米"),
+            "右臂向下十厘米再向左十厘米",
+        )
+        self.assertEqual(
+            local_knowledge.repair_asr_text("右右臂向下十厘米再向左十厘米"),
+            "右臂向下十厘米再向左十厘米",
+        )
+        self.assertEqual(
+            local_knowledge.repair_asr_text("右臂先向上移十厘米再向左移十厘米"),
+            "右臂向上移十厘米再向左移十厘米",
+        )
+        # Field noise: arm near-miss + stutter collapse must stay allowlisted.
+        self.assertEqual(
+            local_knowledge.repair_asr_text("把右把右臂向上十厘米"),
+            "右臂向上十厘米",
+        )
+        self.assertEqual(
+            local_knowledge.repair_asr_text("有有臂一关节旋转三十度"),
+            "右臂关节1旋转三十度",
+        )
+        self.assertEqual(
+            local_knowledge.repair_asr_text("我臂我臂膝关节旋转三十度"),
+            "左臂关节1旋转三十度",
+        )
+        # Must NOT collapse Chinese numbers (old bug: 六十六十六→六十六).
+        self.assertEqual(
+            local_knowledge.collapse_repeated_prefix("六十六十六什么钱"),
+            "六十六十六什么钱",
+        )
+        # Trailing ambient after a complete command is trimmed.
+        self.assertEqual(
+            local_knowledge.repair_asr_text(
+                "左臂向前五厘米我感觉它现在是有一点问题他现在卡住了"
+            ),
+            "左臂向前五厘米",
+        )
         self._assert_reply_only("你有你有几个关节")
         self._assert_reply_only("你有你有几个自由度")
+        self._assert_reply_only("你会你会干什么")
+        self._assert_reply_only("早上早上好")
 
         class DialogueMustNotRun:
             def run(self, _text):

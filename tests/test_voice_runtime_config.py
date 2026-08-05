@@ -78,3 +78,25 @@ class VoiceRuntimeConfigTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "VOICE_AUDIO_NS_STRENGTH"):
                 voice_runtime_config.validate_runtime_config()
+
+    def test_remote_plaintext_dify_is_rejected_by_default(self):
+        with (
+            mock.patch.object(voice_runtime_config, "DIFY_BASE_URL", "http://192.168.1.9"),
+            mock.patch.object(voice_runtime_config, "VOICE_ALLOW_INSECURE_DIFY", False),
+            mock.patch.object(voice_runtime_config, "_require_file"),
+        ):
+            with self.assertRaisesRegex(ValueError, "must use HTTPS"):
+                voice_runtime_config.validate_runtime_config()
+
+    def test_remote_https_dify_is_accepted(self):
+        with (
+            mock.patch.object(voice_runtime_config, "DIFY_BASE_URL", "https://dify.example.test"),
+            mock.patch.object(voice_runtime_config, "VOICE_ALLOW_INSECURE_DIFY", False),
+            mock.patch.object(voice_runtime_config, "_require_file"),
+        ):
+            voice_runtime_config.validate_runtime_config()
+
+    def test_numeric_environment_errors_name_the_setting(self):
+        with mock.patch.dict(os.environ, {"BROKEN_INT": "abc"}):
+            with self.assertRaisesRegex(ValueError, "BROKEN_INT"):
+                voice_runtime_config._configured_int("BROKEN_INT", 1)

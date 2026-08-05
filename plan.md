@@ -1,240 +1,207 @@
-# voice_control_online 迁移执行计划
+# VoiceOnline 迁移部署计划（Ubuntu 22.04 x86_64）
 
-## 1. 目标与固定边界
+本文档供**目标机上的自动化 AI**严格执行。任何失败或未执行项不得标记为完成。
 
-本计划用于把当前在线语音版部署到 Jetson AGX Orin 机械臂控制器上，并由自动化 AI 按步骤完成配置和验收。
+## 0. 固定边界
 
-固定目标：
+| 项 | 要求 |
+|---|---|
+| 目标系统 | Ubuntu 22.04 LTS，架构 **x86_64**（`uname -m` 必须为 `x86_64`） |
+| ROS | **ROS 2 Humble**（若未安装须先装完再继续） |
+| Python | 系统 **`/usr/bin/python3` = 3.10**，使用项目 `.venv_online` |
+| 语音链路 | 本地 KWS + ASR + VAD + TTS；意图/对话经 **Dify Workflow** HTTP API |
+| 安装目录 | 默认 `TARGET_ROOT=/opt/VoiceOnline`；若用户指定其他路径，全文统一替换 |
+| 机械臂 | 默认 `VOICE_ENABLE_ROBOT_COMMAND=0`，只验收语音，不驱动机械臂 |
+| 禁止 | Ollama / llama.cpp / GGUF / 本地 Qwen 作主链路；禁止从源机拷贝 `.venv_online`、`build_online`、`install_online` |
+| 密钥 | `DIFY_API_KEY` 不得写入 Git、plan 验收日志或终端回显 |
 
-- 目标架构：Linux ARM64，验收时 `uname -m` 必须为 `aarch64`。
-- ROS：ROS 2 Humble，机械臂上已经安装，不重新安装整套 ROS。
-- Python：系统 CPython 3.10，使用项目自己的 `.venv_online`。
-- 语音链路：本地 KWS、ASR、VAD、TTS；文本意图解析通过 Dify Workflow 在线调用。
-- LLM：只使用 Dify 中配置的远程/云端模型供应商。
-- 明确不使用：Ollama、llama.cpp、GGUF、本地 Qwen、Dify 的 Ollama fallback。
-- 初始安全状态：`VOICE_ENABLE_ROBOT_COMMAND=0`，只验证语音、Dify 回复和 TTS，不允许驱动机械臂动作。
-- 目标安装目录：`/opt/voice_control_online`。如果用户指定其他目录，必须在所有命令中统一替换，不能混用多个路径。
+当前默认 TTS 为 **Matcha**（`models/tts/matcha-icefall-zh-baker`）。包内另含 Kokoro、Piper 可切换，见 `models/README.md`。
 
-当前代码已经把模型默认路径改为相对于项目根目录的 `models/`，启动器是 `scripts/run_voice_wake.sh`，安装和构建脚本是 `scripts/setup_voice_wake.sh`。不要在 Jetson 上写回源机的 `/home/ning/model/...` 路径。
+源码基线见 `SOURCE_COMMIT.txt`（`b3cd93457bc255eb44342ee9e063bcb0f080f000`）。
 
-## 2. 迁移前必须准备的参数
+---
 
-自动化 AI 开始配置前，要求得到以下值。缺少 Dify API Key 时只能停在静态检查，不能声称在线验收通过。
+## 1. 用户在复制前 / 开始前必须提供的参数
+
+AI 开始在线验收前必须拿到这些值；缺 API Key 只能做到静态检查。
 
 ```text
-TARGET_ROOT=/opt/voice_control_online
-DIFY_BASE_URL=http://<DIFY服务器地址>:80
-DIFY_API_KEY=<Dify Workflow API Key，不写入仓库>
+TARGET_ROOT=/opt/VoiceOnline
+DIFY_BASE_URL=http://<Dify可达IPv4或域名>:80
+DIFY_API_KEY=<Dify Workflow API Key，安全注入，不写进仓库>
 AUDIO_DEVICE=default
 APLAY_DEVICE=default
 VOICE_ENABLE_ROBOT_COMMAND=0
 ```
 
-说明：`DIFY_BASE_URL` 填 Dify 服务根地址，不要填到 `/v1`；代码会自动请求 `${DIFY_BASE_URL}/v1/workflows/run`。如果 Dify 运行在 Jetson 本机，使用 `http://127.0.0.1:80`；如果 Dify 运行在其他主机，使用 Jetson 可以访问的 IP 或域名。
+说明：
 
-## 3. 必须复制到 Jetson 的文件清单
+- `DIFY_BASE_URL` 填服务根地址，**不要**带 `/v1`；程序会请求 `${DIFY_BASE_URL}/v1/workflows/run`。
+- 若 Dify 与本机同机：可用 `http://127.0.0.1:80`。
+- 若 Dify 在另一台电脑：必须填**本机可路由的局域网 IPv4**，禁止写仅本机可达的错误地址、Docker 网桥 `172.*`（除非确认可达）。
+- 麦克风/扬声器请先接好。UGREEN MIC-CM581 见 `scripts/env.ugreen.example`。
 
-### 3.1 推荐复制方式
+---
 
-在源机执行复制。迁移时复制当前目录已经准备好的 `voice_online/` 打包目录，不要直接把整个开发仓库复制到 Jetson。复制前设置 Jetson 的 SSH 地址；不要使用 `--delete`，避免误删 Jetson 上已有文件。
+## 2. 迁移包内容（本目录）
 
-```bash
-SOURCE_ROOT=/home/ning/model/lyz/src/voice_control_online/voice_online
-TARGET_ROOT=/opt/voice_control_online
-JETSON_HOST=<jetson用户名>@<jetson地址>
+本包 **已排除** 源机构建产物，目标机必须重建：
 
-rsync -a --info=progress2 \
-  --exclude='.git/' \
-  --exclude='.venv_online/' \
-  --exclude='build_online/' \
-  --exclude='install_online/' \
-  --exclude='log_online/' \
-  --exclude='__pycache__/' \
-  --exclude='*.pyc' \
-  "${SOURCE_ROOT}/" "${JETSON_HOST}:${TARGET_ROOT}/"
+```text
+不要包含 / 不要从源机复制：
+  .venv_online/   build_online/   install_online/   log_online/
+  __pycache__/    *.pyc           .git/
+  含真实 API Key 的 .env
 ```
 
-如果不使用 `rsync`，也必须保持目录结构不变，并使用后面的 SHA-256 清单验收。不要只复制 `.onnx` 文件；TTS 还依赖词典、`voices.bin` 和整个 `espeak-ng-data` 目录。
-
-### 3.2 最小可运行代码和构建文件
-
-以下文件必须复制：
+### 2.1 必须存在的路径
 
 ```text
 CMakeLists.txt
 package.xml
+SOURCE_COMMIT.txt
+MANIFEST.sha256
+plan.md                          # 本文件
 requirements/voice-wake.txt
 scripts/run_voice_wake.sh
 scripts/setup_voice_wake.sh
-knowledge_base/robot_knowledge.csv
-```
-
-`CMakeLists.txt` 当前会安装下列在线运行时 Python 文件，因此这些文件不能漏：
-
-```text
-scripts/voice_wake_entry.py
-scripts/voice_space_wake.py
-scripts/voice_tts_node.py
-scripts/build_wake_keyword.py
-scripts/kws_sweep.py
-scripts/eval_kws.py
-scripts/voice_capture_smoke.py
-scripts/voice_runtime_config.py
-scripts/voice_wake_word.py
-scripts/voice_command_vad.py
-scripts/voice_asr_wake_word.py
-scripts/voice_audio_session.py
-scripts/voice_capture_adapter.py
-scripts/voice_audio_frontend.py
-scripts/voice_prompt_tone.py
-scripts/voice_wake_runtime.py
-scripts/voice_tts.py
-scripts/voice_dialogue_backend.py
-scripts/voice_asr_backend.py
-scripts/voice_tts_backend.py
-scripts/voice_runtime_container.py
-scripts/voice_text_pipeline.py
-scripts/voice_command_validation.py
-scripts/voice_robot_executor.py
-scripts/voice_local_knowledge.py
-scripts/voice_llm_client.py
-scripts/voice_qwen_llm.py
-scripts/latency_metrics.py
-```
-
-其中 `voice_qwen_llm.py` 虽然不是本在线入口的活动入口，但当前 `CMakeLists.txt` 仍将它列为安装文件。为避免构建时缺文件，按上表复制；不得使用它启动运行时。
-
-以下运行配置和设备诊断文件也必须复制：
-
-```text
 scripts/env.ugreen.example
-```
-
-`CMakeLists.txt` 当前还会安装 `eval_kws.py` 和 `voice_capture_smoke.py`；如果漏掉这两个文件，overlay 构建或后续 KWS/麦克风验收会与源码不一致。
-
-### 3.3 必须完整复制的模型资产
-
-整个 `models/` 目录必须复制，目标结构必须完全如下：
-
-```text
-models/
-├── sherpa-onnx-paraformer-zh-2023-09-14/
-│   ├── model.int8.onnx
-│   └── tokens.txt
-├── sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20/
-│   ├── encoder.onnx
-│   ├── decoder.onnx
-│   ├── joiner.onnx
-│   ├── tokens.txt
-│   └── keywords.txt
-├── vad/
-│   └── silero_vad.onnx
-└── tts/
-    └── kokoro-multi-lang-v1_0/
-        ├── model.onnx
-        ├── tokens.txt
-        ├── voices.bin
-        ├── lexicon-us-en.txt
-        ├── lexicon-zh.txt
-        ├── lexicon-gb-en.txt
-        ├── date-zh.fst
-        ├── number-zh.fst
-        ├── phone-zh.fst
-        ├── dict/
-        └── espeak-ng-data/
-```
-
-清单中的目录必须递归复制，不能只复制列出的顶层文件。当前 `models/` 约 622 MB，Kokoro TTS 目录包含约 377 个文件。
-
-模型来源对应关系：
-
-| 功能 | 源机原始来源 | 项目内迁移后路径 | Jetson 使用路径 |
-|---|---|---|---|
-| ASR | `/home/ning/model/sherpa-onnx-paraformer-zh-2023-09-14` | `models/sherpa-onnx-paraformer-zh-2023-09-14` | `${TARGET_ROOT}/models/sherpa-onnx-paraformer-zh-2023-09-14` |
-| 语音唤醒 KWS | 当前项目内已确认的 KWS 目录 | `models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20` | `${TARGET_ROOT}/models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20` |
-| VAD | 当前项目内已确认的 Silero 文件 | `models/vad/silero_vad.onnx` | `${TARGET_ROOT}/models/vad/silero_vad.onnx` |
-| TTS | `/home/ning/model/lyz/src/voice_control_online/tts/kokoro-multi-lang-v1_0` | `models/tts/kokoro-multi-lang-v1_0` | `${TARGET_ROOT}/models/tts/kokoro-multi-lang-v1_0` |
-
-KWS 当前唤醒词为 `小西小西`，由 `models/.../keywords.txt` 和 `WAKE_WORD` 配置共同决定。不要把 KWS 目录误认为 ASR 目录，也不要因为没有单独找到另一个“唤醒文件”而删除该目录。
-
-### 3.4 KWS 评估数据和验收测试
-
-为了让 Jetson 上的自动化 AI 能执行当前新增的 KWS 和采集验收，以下内容也必须同步：
-
-```text
-datasets/wake/
-kws_eval_office_defaults.csv
-tests/
-```
-
-`datasets/wake/` 是当前项目已有的唤醒正例/负例数据集，约 2.1 MB、31 个文件；它用于 `scripts/eval_kws.py` 的离线比较，不是运行时模型。`kws_eval_office_defaults.csv` 是已有结果基线，不能当作 Jetson 当前硬件的新验收结果，AI 必须在 Jetson 重新执行评估并另存结果。
-
-### 3.5 Dify 导入文件
-
-复制以下文件到 Jetson 或 Dify 管理机，实际导入 Dify 的文件是：
-
-```text
 scripts/voice_ros2_dify_v06.yml
+scripts/voice_*.py               # 运行时 Python（见 CMakeLists.txt install 列表）
+knowledge_base/robot_knowledge.csv
+datasets/wake/
+tests/
+kws_eval_office_defaults.csv
+models/sherpa-onnx-paraformer-zh-2023-09-14/
+models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20/
+models/vad/silero_vad.onnx
+models/tts/matcha-icefall-zh-baker/   # 默认 TTS
+models/tts/kokoro-multi-lang-v1_0/    # 可选高质量 TTS
+models/tts/piper-zh/                  # 可选快速 TTS
+voice_control_online.env.example
 ```
 
-以下文件仅用于以后重新生成 DSL，不是 Jetson 运行时必需文件：
+### 2.2 源机打包 / 同步到目标机示例
 
-```text
-scripts/generate_dify_dsl_v06.py
-```
-
-在 Dify 中导入并发布 `voice_ros2_dify_v06.yml`。Workflow 输入变量必须是 `text`，最终输出变量必须是 `result`。YAML 中的 LLM 节点 provider/model 为空或待绑定状态，必须在 Dify UI 中配置一个可从 Dify 服务器访问的远程/云端模型并发布 Workflow。
-
-### 3.6 不需要复制或安装的内容
-
-以下内容不属于本次在线版最小迁移集：
-
-```text
-项目源机的 .venv_online/
-项目源机的 build_online/
-项目源机的 install_online/
-项目源机的 log_online/
-项目源机的 __pycache__/
-项目源机的 .git/
-scripts/backup/
-debug_audio_capture_smoke/
-运行过程中生成的 `kws_eval_results.csv`
-本包内的 src/robot_controller.cpp（当前构建明确关闭）
-Ollama
-llama.cpp
-任何 GGUF 模型
-```
-
-`src/robot_controller.cpp` 不在当前语音在线构建中；机械臂已有控制器时，语音程序只在 `VOICE_ENABLE_ROBOT_COMMAND=1` 后发布 ROS 指令。机械臂控制器本身的部署属于另一个已存在的 ROS 包，不要在本计划中自动替换它。
-
-## 4. Jetson 系统环境配置
-
-### 4.1 架构和 ROS 基线
-
-自动化 AI 必须先执行并保存输出：
+在**源机**（已有完整 VoiceOnline 包时）：
 
 ```bash
-uname -m
-cat /etc/os-release
-source /opt/ros/humble/setup.bash
-ros2 --version
-which python3
-/usr/bin/python3 --version
-python3 -c "import rclpy; from std_msgs.msg import String; print('ROS Python OK')"
+# U 盘 / 移动硬盘
+cp -a /mnt/ssd/VoiceOnline /media/USB/VoiceOnline
+
+# 或 rsync 到目标机（不要用 --delete 除非确认目标无其他重要文件）
+rsync -a --info=progress2 \
+  /mnt/ssd/VoiceOnline/ \
+  user@TARGET_HOST:/opt/VoiceOnline/
+```
+
+目标机解压/拷贝后目录结构须保持不变。
+
+---
+
+## 3. 任务执行顺序（自动化 AI）
+
+每步命令、退出码、关键输出写入 `${TARGET_ROOT}/migration_acceptance/`，**日志中不得出现 API Key**。
+
+固定顺序：
+
+```text
+任务0 基线检查 → 任务1 文件校验 → 任务2 系统依赖/ROS
+→ 任务3 venv+构建 → 任务4 静态测试+--check
+→ 任务5 音频设备 → 任务5B TTS 冒烟 → 任务6 Dify
+→ 任务7 无麦克风演示 → 任务8 真实麦克风端到端
+（任务5A KWS 离线评估可在麦克风演示后补；任务9 机械臂动作需人工授权）
+```
+
+---
+
+### 任务 0：系统与架构基线
+
+```bash
+mkdir -p "${TARGET_ROOT:-/opt/VoiceOnline}/migration_acceptance"
+{
+  date -Is
+  uname -a
+  uname -m
+  cat /etc/os-release
+  /usr/bin/python3 --version
+  command -v ros2 || true
+  ls -la /opt/ros/humble/setup.bash 2>/dev/null || true
+} | tee "${TARGET_ROOT:-/opt/VoiceOnline}/migration_acceptance/system.txt"
 ```
 
 通过条件：
 
-- `uname -m` 为 `aarch64`。
-- `/opt/ros/humble/setup.bash` 存在且可 source。
-- `/usr/bin/python3` 的主版本为 3.10。
-- `rclpy` 和 `std_msgs` 可以导入。
+- `uname -m` 为 **`x86_64`**（不是 aarch64）。
+- `/etc/os-release` 为 Ubuntu 22.04。
+- `/usr/bin/python3` 主版本为 **3.10**。
 
-如果 `/usr/bin/python3` 不是 3.10，不能直接让 Conda 或 Python 3.11 冒充当前环境；应先在 Jetson 系统中准备 Python 3.10，再继续后续步骤。
+若 Python 不是 3.10，停止并报告；禁止用 Conda/其他 Python 冒充。
 
-### 4.2 系统包
+---
 
-ROS Humble 已安装，所以不执行 ROS 全量重装。安装在线版所需的非 ROS 系统包：
+### 任务 1：文件完整性
+
+```bash
+cd "${TARGET_ROOT:-/opt/VoiceOnline}"
+
+test -f CMakeLists.txt
+test -f package.xml
+test -f SOURCE_COMMIT.txt
+test -f MANIFEST.sha256
+test -f requirements/voice-wake.txt
+test -f scripts/run_voice_wake.sh
+test -f scripts/setup_voice_wake.sh
+test -f scripts/env.ugreen.example
+test -f scripts/voice_capture_smoke.py
+test -f scripts/eval_kws.py
+test -f knowledge_base/robot_knowledge.csv
+test -f scripts/voice_ros2_dify_v06.yml
+test -d datasets/wake/positive
+test -d tests
+test -f models/sherpa-onnx-paraformer-zh-2023-09-14/model.int8.onnx
+test -f models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20/encoder.onnx
+test -f models/vad/silero_vad.onnx
+test -f models/tts/matcha-icefall-zh-baker/model-steps-3.onnx
+test -f models/tts/matcha-icefall-zh-baker/vocos-22khz-univ.onnx
+test -f models/tts/matcha-icefall-zh-baker/tokens.txt
+test -f models/tts/matcha-icefall-zh-baker/lexicon.txt
+
+sha256sum -c MANIFEST.sha256 | tee migration_acceptance/manifest-check.log
+```
+
+通过条件：全部 `test` 退出 0；`sha256sum -c` 全部 OK。
+
+---
+
+### 任务 2：安装系统依赖与 ROS 2 Humble
+
+#### 2.1 若尚未安装 ROS 2 Humble
+
+按官方 Ubuntu 22.04 文档安装 Humble 桌面版或至少 `ros-humble-ros-base` + 常用消息包，使下列命令成功：
+
+```bash
+source /opt/ros/humble/setup.bash
+ros2 --version
+python3 -c "import rclpy; from std_msgs.msg import String; print('ROS Python OK')"
+```
+
+参考（需网络）：https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html
+
+最少建议包（语音在线构建不需要 MoveIt）：
+
+```bash
+sudo apt update
+sudo apt install -y \
+  ros-humble-ros-base \
+  ros-humble-std-msgs \
+  python3-rosdep \
+  python3-colcon-common-extensions
+```
+
+（若团队已有完整 Humble 桌面安装，跳过重装。）
+
+#### 2.2 语音运行时系统包
 
 ```bash
 sudo apt update
@@ -251,260 +218,70 @@ sudo apt install -y \
   libsndfile1
 ```
 
-`alsa-utils` 必须提供 `arecord` 和 `aplay`；`pulseaudio-utils` 提供 UGREEN 麦克风被桌面 PulseAudio/GNOME 占用时所需的 `pactl`、`pasuspender`：
+校验：
 
 ```bash
-command -v arecord
-command -v aplay
-command -v pactl
-command -v pasuspender
-arecord -l
-aplay -l
+command -v arecord && command -v aplay
+command -v pactl && command -v pasuspender
+arecord -l | tee migration_acceptance/audio-devices.txt
+aplay -l | tee -a migration_acceptance/audio-devices.txt
 ```
 
-当前构建使用 `-DVOICE_CONTROL_BUILD_ROBOT_CONTROLLER=OFF`，因此语音在线验收不要求额外安装 MoveIt、`nlohmann-json3-dev` 或本包内 C++ 控制器依赖。只有明确要在本包重新编译 C++ 控制器时，才另行解决 `moveit_ros_planning_interface`、`tf2`、`tf2_ros`、`tf2_geometry_msgs`、`nlohmann-json3-dev` 和 `tianlian`。
+本包不包含或构建 C++ 运动控制器，**不需要** MoveIt / nlohmann-json 等依赖。`robot_command` 的下游控制器由外部工程提供。
 
-### 4.3 虚拟环境和 Python 依赖
+---
 
-必须在 Jetson 本机重新创建虚拟环境，不能复制源机虚拟环境。当前仓库脚本会创建带 ROS 系统 site-packages 可见性的环境：
+### 任务 3：本机创建 venv、装 Python 依赖、构建 overlay
 
-```text
-${TARGET_ROOT}/.venv_online/
-```
-
-执行：
+**必须在目标 x86_64 本机执行**，禁止复制源机 site-packages。
 
 ```bash
-cd /opt/voice_control_online
+cd "${TARGET_ROOT:-/opt/VoiceOnline}"
 source /opt/ros/humble/setup.bash
-bash scripts/setup_voice_wake.sh
+bash scripts/setup_voice_wake.sh 2>&1 | tee migration_acceptance/build.log
 ```
 
-该脚本会完成：
+脚本会：
 
-1. 校验 `/usr/bin/python3` 为 Python 3.10。
-2. 校验 `ensurepip` 和 `python3.10-venv`。
-3. 创建 `.venv_online`。
-4. 安装构建工具 `pip`、`setuptools`、`wheel`、`packaging`。
-5. 按 `requirements/voice-wake.txt` 安装固定版本：
+1. 校验 `/usr/bin/python3` 为 3.10 + ensurepip  
+2. 创建 `.venv_online`（`--system-site-packages`，以便使用系统 rclpy）  
+3. 安装固定版本（`requirements/voice-wake.txt`）：
 
 ```text
 numpy==2.2.6
 soundfile==0.14.0
 sherpa-onnx==1.13.3
 pypinyin==0.55.0
-requests==2.25.1
+requests==2.34.2
 pynput==1.8.2
+aiohttp==3.14.3
 ```
 
-6. 使用 `/usr/bin/python3` 和 ROS Humble 构建 `build_online/`、`install_online/`、`log_online/`，并关闭本包内机器人控制器。
+4. 用 colcon 构建 `build_online/`、`install_online/`、`log_online/`；运动控制器由外部系统提供  
 
-Jetson 是 ARM64，Python 包必须在 Jetson 上解析并安装 ARM64 兼容版本，不能从 x86_64 主机拷贝 `site-packages` 或 wheel。官方 sherpa-onnx 项目列出 Linux arm64 支持；如果固定的 `sherpa-onnx==1.13.3` 在当前 Jetson/JetPack 上没有可用构建，自动化 AI 必须保存完整 pip 错误并停止，不得静默改版本或改用 Ollama。[sherpa-onnx 官方平台说明](https://github.com/k2-fsa/sherpa-onnx)；必要时再按照官方 Linux ARM64 构建说明处理。[sherpa-onnx Linux 安装说明](https://k2-fsa.github.io/sherpa/onnx/install/linux.html)
-
-### 4.4 Dify 环境变量
-
-创建权限为 600 的本地环境文件。API Key 只能由用户或密钥管理系统注入，不得写入 Git、`plan.md`、验收日志或终端回显：
+校验导入：
 
 ```bash
-if [ ! -e /etc/voice_control_online.env ]; then
-  sudo install -m 600 /dev/null /etc/voice_control_online.env
-else
-  sudo chmod 600 /etc/voice_control_online.env
-fi
-sudoedit /etc/voice_control_online.env
-```
-
-文件内容模板：
-
-```dotenv
-DIFY_BASE_URL=http://<DIFY服务器地址>:80
-DIFY_API_KEY=<注入真实Workflow API Key>
-DIFY_INPUT_KEY=text
-DIFY_OUTPUT_KEY=result
-DIFY_TIMEOUT_SEC=60
-AUDIO_DEVICE=default
-APLAY_DEVICE=default
-AUDIO_CAPTURE_SAMPLE_RATE=16000
-AUDIO_CAPTURE_CHANNELS=1
-WAKE_DETECTOR_MODE=kws
-WAKE_WORD=小西小西
-VOICE_ENABLE_ROBOT_COMMAND=0
-```
-
-当前新增音频处理配置：
-
-```text
-VOICE_AUDIO_FRONTEND=passthrough|basic|ns
-VOICE_AUDIO_NS_STRENGTH=1.0
-VOICE_AUDIO_NS_MIN_GAIN=0.08
-VOICE_AUDIO_NS_NOISE_UPDATE=0.90
-VOICE_AUDIO_NS_NOISE_MARGIN=1.8
-VOICE_COMMAND_VAD_GATE=segment|frame|off
-SPEECH_MIN_RMS=0.003
-SPEECH_MIN_SNR_DB=2.0
-```
-
-生产默认仍是 `VOICE_AUDIO_FRONTEND=passthrough`，用于和 `basic`、`ns` 做可重复 A/B 对比；`ns` 是频谱降噪，不是 AEC，也不会消除机械臂扬声器回声。`VOICE_COMMAND_VAD_GATE=segment` 是当前默认值，它先让 Silero VAD 看到真实音频，再对完整片段做 RMS/SNR 质量门控，避免吞掉指令首音节。除非 KWS/ASR 验收有证据要求，否则不要自动切换生产默认值。
-
-UGREEN MIC-CM581 如果在 Jetson 上出现，优先使用仓库中的配置示例：
-
-```bash
-cd /opt/voice_control_online
-source scripts/env.ugreen.example
-python3 scripts/voice_capture_smoke.py --probe-only
-```
-
-该设备通常需要硬件采集格式 `48000 Hz / 2 channels`，再由 `CaptureFormatAdapter` 转换为运行时使用的 16 kHz 单声道。卡号可能因重新插拔变化，不能永久假设 `hw:3,0`。
-
-当前 `run_voice_wake.sh` 不自动读取这个文件。交互式启动前必须执行：
-
-```bash
-set -a
-source /etc/voice_control_online.env
-set +a
-cd /opt/voice_control_online
-bash scripts/run_voice_wake.sh --check
-```
-
-如果部署为 systemd 服务，服务单元必须使用 `EnvironmentFile=/etc/voice_control_online.env`，并且 `ExecStart` 指向 `/opt/voice_control_online/scripts/run_voice_wake.sh`。只有交互式启动和 systemd 启动都验证通过后，才可设置开机自启。
-
-## 5. Dify 配置步骤
-
-1. 在 Dify 中导入 `scripts/voice_ros2_dify_v06.yml`。
-2. 创建或绑定该 Workflow 使用的知识库，并绑定 `robot_knowledge.csv` 对应的知识内容。
-3. 给 Workflow 中每个 LLM 节点配置可用的远程/云端 provider 和 model。
-4. 检查开始节点输入变量为 `text`。
-5. 检查最终输出变量为 `result`。
-6. 发布 Workflow。
-7. 创建该 Workflow 的 API Key，注入 Jetson 的 `/etc/voice_control_online.env`。
-8. 从 Jetson 发起一次 blocking API 测试：
-
-```bash
-set -a
-source /etc/voice_control_online.env
-set +a
-
-curl --fail-with-body -sS -X POST \
-  "${DIFY_BASE_URL}/v1/workflows/run" \
-  -H "Authorization: Bearer ${DIFY_API_KEY}" \
-  -H "Content-Type: application/json" \
-  -d '{"inputs":{"text":"查询左臂状态"},"response_mode":"blocking","user":"jetson_migration_check"}' \
-  | python3 -c 'import json,sys; p=json.load(sys.stdin); o=p.get("data",{}).get("outputs",{}); assert "result" in o, p; print("DIFY_WORKFLOW_OK")'
-```
-
-失败时必须区分：网络不可达、HTTP 401/403、Workflow 未发布、LLM provider 未配置、知识库错误、输出字段不是 `result`。不允许以 HTTP 200 但缺少 `data.outputs.result` 作为成功。
-
-Dify 自建服务可以部署在另一台联网主机；Jetson 端不需要安装 Docker/Dify，除非用户明确决定在 Jetson 上承载 Dify。Dify 自建官方 Docker Compose 流程见 [Dify 官方部署文档](https://docs.dify.ai/en/self-host/deploy/quick-start/docker-compose)。本计划不把 Dify 数据库、Redis、向量库迁移到 Jetson；如果要保留完整 Dify 实例数据，应另做 Dify 服务迁移计划。
-
-## 6. 自动化 AI 执行顺序
-
-自动化 AI 必须按顺序执行，每一步保存命令、退出码和关键输出到 `${TARGET_ROOT}/migration_acceptance/`，但任何日志都不得包含 `DIFY_API_KEY`。
-
-### 任务 1：复制文件并校验模型完整性
-
-引用：本文件第 3 节，`models/`，`CMakeLists.txt`。
-
-执行：
-
-```bash
-cd /opt/voice_control_online
-test -f CMakeLists.txt
-test -f package.xml
-test -f requirements/voice-wake.txt
-test -f scripts/run_voice_wake.sh
-test -f scripts/setup_voice_wake.sh
-test -f scripts/env.ugreen.example
-test -f scripts/eval_kws.py
-test -f scripts/voice_capture_smoke.py
-test -f knowledge_base/robot_knowledge.csv
-test -f scripts/voice_ros2_dify_v06.yml
-test -d datasets/wake/positive
-test -d datasets/wake/negative
-test -f kws_eval_office_defaults.csv
-test -d tests
-test -f models/sherpa-onnx-paraformer-zh-2023-09-14/model.int8.onnx
-test -f models/sherpa-onnx-paraformer-zh-2023-09-14/tokens.txt
-test -f models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20/encoder.onnx
-test -f models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20/decoder.onnx
-test -f models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20/joiner.onnx
-test -f models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20/tokens.txt
-test -f models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20/keywords.txt
-test -f models/vad/silero_vad.onnx
-test -f models/tts/kokoro-multi-lang-v1_0/model.onnx
-test -f models/tts/kokoro-multi-lang-v1_0/tokens.txt
-test -f models/tts/kokoro-multi-lang-v1_0/voices.bin
-test -d models/tts/kokoro-multi-lang-v1_0/espeak-ng-data
-test -d models/tts/kokoro-multi-lang-v1_0/dict
-```
-
-通过条件：所有 `test` 命令退出码为 0，且 `find models -type f` 的数量和源机清单一致。必须在源机生成清单，并把清单本身复制到 Jetson 后校验；不要只校验 Jetson 自己生成的清单：
-
-```bash
-# 源机执行：对待复制的 voice_online 打包目录生成清单
-cd /home/ning/model/lyz/src/voice_control_online/voice_online
-find models -type f -print0 | sort -z | xargs -0 sha256sum > /tmp/voice_control_online.models.sha256
-scp /tmp/voice_control_online.models.sha256 <jetson用户名>@<jetson地址>:/tmp/voice_control_online.models.sha256
-
-# Jetson 执行：用源机清单校验目标目录
-cd /opt/voice_control_online
-mkdir -p migration_acceptance
-cp /tmp/voice_control_online.models.sha256 migration_acceptance/models.sha256
-sha256sum -c migration_acceptance/models.sha256
-```
-
-### 任务 2：检查 ARM64、ROS 和 Python 运行边界
-
-引用：`scripts/setup_voice_wake.sh`、`scripts/run_voice_wake.sh`。
-
-执行 `uname -m`、`/usr/bin/python3 --version`、ROS import 检查，并确认未使用 Conda、用户 site-packages 或源机绝对路径。通过条件：架构是 `aarch64`，Python 是 3.10，ROS import 成功，且活动脚本中不存在源机模型绝对路径。
-
-```bash
-cd /opt/voice_control_online
-uname -m | grep -qx aarch64
-/usr/bin/python3 -c 'import sys; assert sys.version_info[:2] == (3,10); print(sys.version)'
-source /opt/ros/humble/setup.bash
-python3 -c 'import rclpy; from std_msgs.msg import String; print("ROS Python OK")'
-rg -n -S '/home/ning/model|/home/ning/|/mnt/ssd/' \
-  scripts/run_voice_wake.sh scripts/setup_voice_wake.sh scripts/voice_*.py CMakeLists.txt package.xml
-```
-
-最后一条扫描允许无匹配；若有匹配，必须确认它不是运行时路径，不能直接忽略。
-
-### 任务 3：创建 ARM64 虚拟环境、安装依赖并构建 overlay
-
-引用：`requirements/voice-wake.txt`、`scripts/setup_voice_wake.sh`。
-
-执行：
-
-```bash
-cd /opt/voice_control_online
-source /opt/ros/humble/setup.bash
-bash scripts/setup_voice_wake.sh
-```
-
-通过条件：命令退出码为 0；`.venv_online/bin/python` 存在；`build_online/`、`install_online/setup.bash` 存在；所有 Python 依赖可以导入；依赖加载路径不包含 `miniconda` 或 `/.local/`。
-
-```bash
-cd /opt/voice_control_online
+cd "${TARGET_ROOT:-/opt/VoiceOnline}"
 env -i PATH="$PWD/.venv_online/bin:/usr/bin:/bin" PYTHONNOUSERSITE=1 \
   "$PWD/.venv_online/bin/python" -I -c '
 import numpy, soundfile, sherpa_onnx, pypinyin, requests, rclpy
 print("PYTHON_IMPORTS_OK")
 for m in (numpy, soundfile, sherpa_onnx, pypinyin, requests):
     print(m.__name__, m.__file__)
-'
+' | tee migration_acceptance/python-imports.txt
 ```
 
-如果 `pip` 因 ARM64 wheel 或编译器问题失败，记录错误后停止；不得把源机 `site-packages`、x86 wheel 或 Conda 环境复制过来。
+通过条件：`setup_voice_wake.sh` 退出 0；`.venv_online/bin/python` 存在；`install_online/setup.bash` 存在；导入成功；路径中无 `miniconda` / 错误的 `/.local/` 污染。
 
-### 任务 4：执行静态测试、overlay 新鲜度和启动预检
+若 `sherpa-onnx==1.13.3` 在 x86_64 上 pip 失败：保存完整错误后停止，**不得**静默改版本或改用 Ollama。
 
-引用：`tests/test_voice_runtime_config.py`、`tests/test_voice_wake_startup.py`、`tests/test_wake_modules.py`、`tests/test_online_voice_phase1.py`、`tests/test_wake_entry_regressions.py`、`tests/test_capture_smoke.py`、`tests/test_eval_kws.py`、`scripts/run_voice_wake.sh`、`scripts/eval_kws.py`、`scripts/voice_capture_smoke.py`。
+---
 
-执行：
+### 任务 4：静态测试与启动预检
 
 ```bash
-cd /opt/voice_control_online
+cd "${TARGET_ROOT:-/opt/VoiceOnline}"
 PYTHONPATH="$PWD/scripts" .venv_online/bin/python -m py_compile \
   scripts/voice_wake_entry.py scripts/voice_runtime_config.py \
   scripts/voice_wake_runtime.py scripts/voice_audio_session.py \
@@ -522,237 +299,315 @@ PYTHONPATH="$PWD/scripts" .venv_online/bin/python -m unittest \
   tests.test_online_voice_phase1 \
   tests.test_wake_entry_regressions \
   tests.test_capture_smoke \
-  tests.test_eval_kws
+  tests.test_eval_kws \
+  tests.test_local_action_parser \
+  tests.test_voice_action_ack \
+  tests.test_dify_intent_routing \
+  2>&1 | tee migration_acceptance/unit-tests.log
 ```
 
-然后注入真实 Dify Key 执行：
+配置环境文件（**权限 600**，Key 由用户注入）：
 
 ```bash
+# 推荐：项目内本地文件（也可用 /etc/voice_control_online.env）
+cp -n voice_control_online.env.example voice_control_online.env
+chmod 600 voice_control_online.env
+# 用户编辑：填入真实 DIFY_BASE_URL 与 DIFY_API_KEY
+# nano voice_control_online.env
+
 set -a
-source /etc/voice_control_online.env
+source ./voice_control_online.env
 set +a
-cd /opt/voice_control_online
-bash scripts/run_voice_wake.sh --check
+bash scripts/run_voice_wake.sh --check 2>&1 | tee migration_acceptance/launcher-check.log
 ```
 
-通过条件：测试退出码为 0；`--check` 输出 `All checks passed successfully.`；没有 stale overlay、模型缺失、Python 污染路径或 `arecord` 缺失；启动预检同时打印硬件采样率/通道数和 `VOICE_AUDIO_FRONTEND`。
+通过条件：单元测试退出 0；`--check` 输出 `All checks passed successfully.`（若无 Key，`--check` 中 Dify 相关可能失败——此时只能标记静态通过，不能宣称在线验收完成）。
 
-### 任务 5：验证音频设备
+---
 
-引用：`scripts/run_voice_wake.sh`、`scripts/voice_runtime_config.py`、`scripts/voice_capture_smoke.py`、`scripts/env.ugreen.example`。
-
-先列设备：
+### 任务 5：音频设备
 
 ```bash
-arecord -l
-arecord -L
-aplay -l
-aplay -L
-```
+cd "${TARGET_ROOT:-/opt/VoiceOnline}"
+set -a; source ./voice_control_online.env; set +a
 
-优先使用当前新增的采集冒烟工具，因为它会经过与生产一致的 `CaptureFormatAdapter`，并检查有效音量和削波：
+# 探测
+python3 scripts/voice_capture_smoke.py --probe-only 2>&1 | tee -a migration_acceptance/audio-devices.txt
 
-```bash
-cd /opt/voice_control_online
-source /etc/voice_control_online.env
-python3 scripts/voice_capture_smoke.py --probe-only
+# 录 5 秒（说话）
 python3 scripts/voice_capture_smoke.py --free-device --seconds 5 \
-  --out migration_acceptance/capture_smoke
+  --out migration_acceptance/capture_smoke \
+  2>&1 | tee migration_acceptance/capture_smoke.log
 ```
 
-如果检测到 UGREEN MIC-CM581，使用其实际卡号和原生格式；卡号发生变化时以 `--probe-only` 输出为准：
+UGREEN MIC-CM581：
 
 ```bash
 source scripts/env.ugreen.example
+# 按 --probe-only 修正 AUDIO_DEVICE 卡号后写入 voice_control_online.env
 python3 scripts/voice_capture_smoke.py --free-device --seconds 5 \
   --out migration_acceptance/capture_smoke_ugreen
 ```
 
-该工具应输出 `PASS: capture adapter path produced valid 16 kHz mono audio.`。如果没有该设备，使用实际设备参数执行同一工具，不要强行套用 `hw:3,0`。
+通过条件：日志含 `PASS: capture adapter path produced valid 16 kHz mono audio.`；WAV 有人声。
 
-默认设备可用时，也可以做原始 ALSA 录放回环：
+回环（可选）：
 
 ```bash
-arecord -D default -f S16_LE -r 16000 -c 1 -d 5 /tmp/voice_control_online_mic.wav
-aplay -D default /tmp/voice_control_online_mic.wav
+arecord -D "${AUDIO_DEVICE:-default}" -f S16_LE -r 16000 -c 1 -d 3 /tmp/vo_mic.wav
+aplay -D "${APLAY_DEVICE:-default}" /tmp/vo_mic.wav
 ```
 
-如果默认设备不可用，必须把实际设备名写入 `/etc/voice_control_online.env` 的 `AUDIO_DEVICE` 和 `APLAY_DEVICE`，然后重复回环测试。通过条件：录音成功、播放成功、能听到录音内容；失败时记录 `arecord -l/-L` 和 `aplay -l/-L`，不能修改模型采样率来掩盖设备问题。
+---
 
-### 任务 5A：执行当前 KWS 离线评估
-
-引用：`datasets/wake/`、`scripts/eval_kws.py`、`scripts/kws_sweep.py`、`kws_eval_office_defaults.csv`。
-
-在 Jetson 本机执行当前项目随包提供的数据集评估，结果不能覆盖已有基线：
+### 任务 5A：KWS 离线评估（可后置）
 
 ```bash
-cd /opt/voice_control_online
-mkdir -p migration_acceptance
+cd "${TARGET_ROOT:-/opt/VoiceOnline}"
 PYTHONPATH="$PWD/scripts" .venv_online/bin/python scripts/eval_kws.py \
   --dataset-root datasets/wake \
   --frontends passthrough,ns \
   --scores 1.0,1.5,2.0,2.5,3.0 \
   --thresholds 0.15,0.20,0.25,0.30,0.35,0.40 \
   --recommend-max-far 0.5 \
-  --output migration_acceptance/kws_eval_jetson.csv \
-  | tee migration_acceptance/kws_eval_jetson.log
+  --output migration_acceptance/kws_eval_x86.csv \
+  2>&1 | tee migration_acceptance/kws_eval_x86.log
 ```
 
-通过条件：命令退出码为 0，CSV 结果存在并包含 `wake_recall`、`wake_frr`、`false_wake_per_hour`、`mean_trigger_sec` 和 `p95_trigger_sec` 字段。AI 必须报告是否找到满足 FAR/h 预算的推荐配置；如果没有推荐配置，不能擅自调整阈值或把基线 CSV 当成当前硬件结果，应标记为需要新增真实机械臂麦克风数据。
+不得用 `kws_eval_office_defaults.csv` 冒充本机结果。
 
-该离线评估只验证随包 WAV 数据集，不替代真实 Jetson 麦克风验收。`VOICE_AUDIO_FRONTEND=ns` 的结果只能作为 A/B 证据，不能未经比较就改成生产默认值。
+---
 
-### 任务 6：验证 Dify Workflow 在线请求
+### 任务 5B：TTS 冒烟
 
-引用：`scripts/voice_dialogue_backend.py`、`scripts/voice_ros2_dify_v06.yml`。
-
-先完成本文件第 5 节的 Dify 导入、远程模型绑定和发布，再执行本文件第 5 节的 `curl` 请求。通过条件必须同时满足：
-
-- HTTP 状态为 200。
-- 返回 JSON 存在 `data.outputs.result`。
-- `result` 能被当前在线程序解析为有效 JSON 指令或有效回复。
-- Dify 请求没有转发到 Ollama；Dify 的 provider/model 配置必须是远程/云端 provider。
-
-只返回 HTTP 200、空输出、错误字段或模型配置未完成，都判定失败。
-
-### 任务 7：无动作启动并完成端到端语音验收
-
-引用：`scripts/run_voice_wake.sh`、`scripts/voice_wake_entry.py`、`scripts/voice_wake_runtime.py`、`scripts/voice_tts.py`。
-
-执行：
+默认 Matcha：
 
 ```bash
+cd "${TARGET_ROOT:-/opt/VoiceOnline}"
+set -a; source ./voice_control_online.env; set +a
+export VOICE_TTS_TIMING=1
+PYTHONPATH="$PWD/scripts" .venv_online/bin/python - <<'PY' 2>&1 | tee migration_acceptance/tts-smoke.log
+import voice_tts
+assert voice_tts.tts_init(), "TTS init failed"
+assert voice_tts.tts_speak("好的，正在执行"), "first TTS failed"
+assert voice_tts.tts_speak("好的，正在执行"), "cached TTS failed"
+voice_tts.tts_cleanup()
+print("TTS_SMOKE_OK")
+PY
+```
+
+通过条件：听到两次中文；输出 `TTS_SMOKE_OK`。`APLAY_DEVICE` 必须是 `default` 或 `aplay -l` 中的真实设备，禁止占位符 `plughw:X,0`。
+
+---
+
+### 任务 6：Dify Workflow
+
+1. 在 Dify UI 导入 `scripts/voice_ros2_dify_v06.yml`  
+2. 绑定远程/云端 LLM provider（**禁止**默认走 Ollama）  
+3. 知识库可对齐 `knowledge_base/robot_knowledge.csv`  
+4. 输入变量 `text`，输出 `result`；**发布** Workflow  
+5. 在“通用问答与联网搜索”节点设置 `DEFAULT_WEATHER_CITY`、选择支持联网的模型，并确认“联网搜索”为 `True`  
+6. 创建 Workflow API Key 写入 `voice_control_online.env`  
+
+连通性：
+
+```bash
+set -a; source ./voice_control_online.env; set +a
+curl --fail-with-body -sS -o /dev/null -w 'DIFY_HTTP=%{http_code}\n' \
+  --connect-timeout 5 "${DIFY_BASE_URL}/install" \
+  | tee migration_acceptance/dify-connectivity.txt
+
+curl --fail-with-body -sS -X POST \
+  "${DIFY_BASE_URL}/v1/workflows/run" \
+  -H "Authorization: Bearer ${DIFY_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{"inputs":{"text":"查询左臂状态"},"response_mode":"blocking","user":"x86_migration_check"}' \
+  | python3 -c 'import json,sys; p=json.load(sys.stdin); o=p.get("data",{}).get("outputs",{}); assert "result" in o, p; print("DIFY_WORKFLOW_OK"); open("migration_acceptance/dify-response-redacted.json","w").write(json.dumps({"has_result":True,"result_preview":str(o.get("result"))[:200]}))'
+```
+
+通过条件：HTTP 可达；JSON 含 `data.outputs.result`。失败时区分：网络 / 401 / 未发布 / provider 未配 / 输出字段不对。
+
+---
+
+### 任务 7：无麦克风快速演示（文本 → Dify → TTS）
+
+```bash
+cd "${TARGET_ROOT:-/opt/VoiceOnline}"
+set -a; source ./voice_control_online.env; set +a
+
+PYTHONPATH="$PWD/scripts" .venv_online/bin/python - <<'PY' 2>&1 | tee migration_acceptance/quick-model-demo.log
+from voice_dialogue_backend import DifyWorkflowBackend
+backend = DifyWorkflowBackend()
+result = backend.run("请用一句话介绍你自己")
+assert result, backend.last_error
+print("DIFY_PYTHON_CLIENT_OK")
+print(result)
+PY
+
+PYTHONPATH="$PWD/scripts" .venv_online/bin/python - <<'PY' 2>&1 | tee -a migration_acceptance/quick-model-demo.log
+import voice_tts
+from voice_text_pipeline import process_text
+assert voice_tts.tts_init(), "TTS init failed"
+try:
+    result = process_text("请用一句话介绍你自己", speaker=voice_tts.tts_speak)
+    assert result, "no reply"
+    print("QUICK_MODEL_DEMO_OK")
+    print(result)
+finally:
+    voice_tts.tts_cleanup()
+PY
+```
+
+通过条件：打印 `DIFY_PYTHON_CLIENT_OK` 与 `QUICK_MODEL_DEMO_OK`，并**真实听到**中文播报。本步**不能**单独当作麦克风验收通过。
+
+---
+
+### 任务 8：真实麦克风端到端（必须）
+
+```bash
+cd "${TARGET_ROOT:-/opt/VoiceOnline}"
+set -a; source ./voice_control_online.env; set +a
+export VOICE_ENABLE_ROBOT_COMMAND=0
+bash scripts/run_voice_wake.sh 2>&1 | tee migration_acceptance/voice-e2e.log
+```
+
+人工操作：
+
+1. 说「小西小西」→ 听到唤醒提示  
+2. 说「请用一句话介绍你自己」→ 终端有 `你说:` 文本 → 扬声器完整回复  
+3. 再唤醒后说「你有几个关节」→ 应出现本地知识命中并播报  
+4. 保持 `VOICE_ENABLE_ROBOT_COMMAND=0`，无机械臂动作  
+
+本地知识短句（应跳过 Dify）：
+
+```text
+你有几条手臂
+你有几个关节
+你有几个自由度
+```
+
+---
+
+### 任务 9：机械臂动作（默认禁止，需人工授权）
+
+仅当任务 1–8 通过，且现场负责人确认急停/工作空间安全后：
+
+```bash
+export VOICE_ENABLE_ROBOT_COMMAND=1
+# 仅使用安全、小幅度指令；异常立即改回 0
+```
+
+无人工授权时 AI **不得**执行本任务。
+
+---
+
+## 4. 日常启动（配置完成后）
+
+```bash
+cd /opt/VoiceOnline   # 或你的 TARGET_ROOT
 set -a
-source /etc/voice_control_online.env
+source ./voice_control_online.env
 set +a
 export VOICE_ENABLE_ROBOT_COMMAND=0
-cd /opt/voice_control_online
 bash scripts/run_voice_wake.sh
 ```
 
-人工或自动音频测试步骤：
-
-1. 启动后观察日志出现 `Voice runtime started. Wake word: 小西小西`。
-2. 对麦克风说“ 小西小西 ”，观察唤醒被接受。
-3. 再说“查询左臂状态”或其他安全查询指令。
-4. 观察日志出现识别输入和处理输出。
-5. 确认 Dify 返回结果进入 TTS，日志出现 `TTS initialized` 或 `TTS warmup done`，并听到语音。
-6. 记录启动日志中的 `Audio frontend` 和 `Command VAD gate`，确认它们与当前环境文件一致；默认应为 `passthrough` 和 `segment`。
-7. 另开终端确认没有启动本包机器人控制器：
+预检：
 
 ```bash
-pgrep -af 'robot_controller|voice_wake_entry.py'
-set +e
-timeout 5s ros2 topic echo /robot_command std_msgs/msg/String --once
-TOPIC_STATUS=$?
-set -e
-if [ "$TOPIC_STATUS" -eq 124 ]; then
-  echo 'NO_ROBOT_COMMAND_OBSERVED'
-elif [ "$TOPIC_STATUS" -eq 0 ]; then
-  echo 'FAIL: robot command observed while VOICE_ENABLE_ROBOT_COMMAND=0' >&2
-  exit 1
-else
-  echo "FAIL: topic check exited with ${TOPIC_STATUS}" >&2
-  exit 1
-fi
+bash scripts/run_voice_wake.sh --check
 ```
 
-在 `VOICE_ENABLE_ROBOT_COMMAND=0` 时，不得出现新的机械臂执行消息。通过条件是“唤醒、ASR、Dify、TTS”四段均有证据，且机械臂没有动作。
+---
 
-### 任务 8：动作链路验收（必须人工确认后才允许）
+## 5. 切换 TTS（可选）
 
-本任务不是默认迁移验收的一部分。只有任务 1 至任务 7 全部通过，并由机械臂负责人确认急停、工作空间、控制器状态和测试指令安全后，才允许执行。
+编辑 `voice_control_online.env`：
+
+**Matcha（默认，推荐）**
 
 ```bash
-set -a
-source /etc/voice_control_online.env
-set +a
-export VOICE_ENABLE_ROBOT_COMMAND=1
-cd /opt/voice_control_online
-bash scripts/run_voice_wake.sh
+TTS_ENGINE=matcha
+PIPER_MODEL_DIR="${VOICE_REPO_ROOT}/models/tts/matcha-icefall-zh-baker"
+TTS_MODEL_FILE=model-steps-3.onnx
+TTS_VOCODER="${VOICE_REPO_ROOT}/models/tts/matcha-icefall-zh-baker/vocos-22khz-univ.onnx"
+TTS_SPEAKER_ID=0
 ```
 
-只使用已知安全、低幅度、可恢复的测试指令；观察 `/robot_command` 消息、机械臂控制器日志和实际动作。出现异常必须立即恢复 `VOICE_ENABLE_ROBOT_COMMAND=0` 并停止服务。没有人工安全确认时，自动化 AI 不得执行本任务，也不得修改默认配置为 1。
+**Kokoro（音质更好，x86 上通常比 ARM 快）**
 
-## 7. 验收判定标准
+```bash
+TTS_ENGINE=kokoro
+PIPER_MODEL_DIR="${VOICE_REPO_ROOT}/models/tts/kokoro-multi-lang-v1_0"
+TTS_MODEL_FILE=model.onnx
+TTS_SPEAKER_ID=47
+# unset TTS_VOCODER 或注释掉
+```
 
-### 必须全部通过
+**Piper 华严（最快）**
 
-- Jetson 架构为 `aarch64`。
-- ROS 2 Humble 可 source，`rclpy` 和 `std_msgs` 可导入。
-- `/usr/bin/python3` 为 3.10。
-- `.venv_online` 在 Jetson 本机创建，所有 Python 二进制依赖从 ARM64 环境安装。
-- `install_online/setup.bash` 构建成功。
-- 源码和 overlay 中的运行时 Python 文件一致，没有 stale overlay。
-- ASR、KWS、VAD、TTS 模型和所有辅助资产 SHA-256 一致。
-- `scripts/run_voice_wake.sh --check` 输出成功。
-- 音频录制和播放成功。
-- `voice_capture_smoke.py` 能通过生产采集适配器生成有效的 16 kHz 单声道音频；如果使用 UGREEN，已完成 PulseAudio 占用释放或明确记录设备不可用原因。
-- `eval_kws.py` 已在随包数据集上生成 Jetson 评估 CSV，报告 recall、FRR、FAR/h 和触发延迟；不能用旧基线冒充新结果。
-- Dify Workflow 请求成功，存在 `data.outputs.result`。
-- 无动作模式下可以完成唤醒、ASR、Dify、TTS 端到端链路。
-- 当前新增的 `ns` 和 `segment` 配置已通过单元测试；生产默认没有未经证据自动改成 `ns` 或 `frame`。
-- 无 Ollama、无 GGUF、无源机绝对模型路径依赖。
+```bash
+TTS_ENGINE=vits
+PIPER_MODEL_DIR="${VOICE_REPO_ROOT}/models/tts/piper-zh"
+TTS_MODEL_FILE=zh_CN-huayan-medium.onnx
+TTS_SPEAKER_ID=0
+```
 
-### 任一项失败都不能宣称迁移完成
+---
 
-尤其不能把以下情况判定为成功：
+## 6. 验收判定（全部满足才可宣称迁移完成）
 
-- 只 import 了 Python 包但没有加载模型。
-- `run_voice_wake.sh --check` 因没有 Dify Key 被跳过。
-- Dify 返回 HTTP 200 但没有 `data.outputs.result`。
-- 只听到唤醒提示音但没有可见的 ASR/Dify/TTS 回复。
-- 机械臂动作没有测试，因此默认把语音链路当作控制链路成功。
-- 使用了源机 `.venv_online`、`install_online` 或 x86_64 wheel。
+- [ ] 架构 `x86_64`，Ubuntu 22.04，Python 3.10  
+- [ ] ROS 2 Humble 可 source，`rclpy` 可用  
+- [ ] `.venv_online` / `install_online` **本机**创建，未拷贝源机二进制环境  
+- [ ] `MANIFEST.sha256` 通过  
+- [ ] `run_voice_wake.sh --check` 成功  
+- [ ] 麦克风采集 PASS；TTS 冒烟可听  
+- [ ] Dify Workflow 返回 `data.outputs.result`  
+- [ ] 无麦克风演示 + **真实麦克风**端到端通过  
+- [ ] `VOICE_ENABLE_ROBOT_COMMAND=0` 下无误动作  
+- [ ] 无 Ollama/GGUF；无源机绝对路径依赖  
 
-## 8. 验收证据保存要求
+失败示例（不得算成功）：只装了包未加载模型；无 Key 跳过在线检查却报完成；仅 TTS 无 Dify；仅录音无 ASR/回复；把办公室 KWS 基线 CSV 当成本机结果。
 
-自动化 AI 必须在 Jetson 保存以下文件：
+---
+
+## 7. 验收证据清单
+
+写入 `migration_acceptance/`：
 
 ```text
-${TARGET_ROOT}/migration_acceptance/system.txt
-${TARGET_ROOT}/migration_acceptance/models.sha256
-${TARGET_ROOT}/migration_acceptance/python-imports.txt
-${TARGET_ROOT}/migration_acceptance/build.log
-${TARGET_ROOT}/migration_acceptance/unit-tests.log
-${TARGET_ROOT}/migration_acceptance/launcher-check.log
-${TARGET_ROOT}/migration_acceptance/audio-devices.txt
-${TARGET_ROOT}/migration_acceptance/capture_smoke.log
-${TARGET_ROOT}/migration_acceptance/kws_eval_jetson.csv
-${TARGET_ROOT}/migration_acceptance/kws_eval_jetson.log
-${TARGET_ROOT}/migration_acceptance/dify-response-redacted.json
-${TARGET_ROOT}/migration_acceptance/voice-e2e.log
-${TARGET_ROOT}/migration_acceptance/acceptance-summary.md
+system.txt
+manifest-check.log
+python-imports.txt
+build.log
+unit-tests.log
+launcher-check.log
+audio-devices.txt
+capture_smoke.log
+tts-smoke.log
+dify-connectivity.txt
+dify-response-redacted.json
+quick-model-demo.log
+voice-e2e.log
+acceptance-summary.md   # 逐项 PASS/FAIL + 命令与退出码
 ```
 
-`dify-response-redacted.json` 必须删除 API Key、Authorization header、Cookie 和其他凭据。`acceptance-summary.md` 必须逐项标记 PASS/FAIL，并列出实际命令、退出码和证据文件路径。任何 FAIL、SKIP 或未执行项都必须保留原始原因，不能写成“已完成”。
+`acceptance-summary.md` 必须诚实标记 FAIL/SKIP 原因。
 
-## 9. 参考文件和范围说明
+---
 
-本计划依据当前仓库以下文件生成：
+## 8. 给目标机 AI 的启动提示词（用户可复制）
 
 ```text
-scripts/run_voice_wake.sh
-scripts/setup_voice_wake.sh
-scripts/voice_runtime_config.py
-scripts/voice_dialogue_backend.py
-scripts/voice_wake_entry.py
-scripts/voice_wake_runtime.py
-scripts/voice_tts.py
-scripts/voice_audio_frontend.py
-scripts/voice_command_vad.py
-scripts/voice_capture_smoke.py
-scripts/eval_kws.py
-scripts/env.ugreen.example
-CMakeLists.txt
-package.xml
-requirements/voice-wake.txt
-scripts/voice_ros2_dify_v06.yml
-knowledge_base/robot_knowledge.csv
-models/
-datasets/wake/
-kws_eval_office_defaults.csv
-tests/
-```
+请严格执行 /opt/VoiceOnline/plan.md（或本包解压路径下的 plan.md）。
 
-本次范围不包括修改程序代码、不包括迁移 Dify 数据库、不包括安装 Ollama、不包括编译本包 C++ 机械臂控制器、不包括真实动作安全验证。真实动作必须在无动作端到端验收通过后由机械臂负责人单独授权。
+- 目标：Ubuntu 22.04 x86_64 语音在线版迁移部署与验收
+- 禁止安装/使用 Ollama、llama.cpp、GGUF 作为主链路
+- 禁止复制源机 .venv_online、build_online、install_online；必须在本机重建
+- 先保持 VOICE_ENABLE_ROBOT_COMMAND=0
+- 逐项执行任务 0–8，结果写入 migration_acceptance/
+- 任何失败不得标记完成
+- DIFY_BASE_URL=<用户填写>
+- DIFY_API_KEY=<通过安全方式提供，勿回显>
+```

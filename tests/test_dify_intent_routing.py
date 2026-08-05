@@ -31,7 +31,12 @@ class DifyIntentRoutingTests(unittest.TestCase):
 
         for user_text, expected in (
             ("给我唱首歌", "fixed_reply"),
-            ("今天天气怎么样", "fixed_reply"),
+            ("今天天气怎么样", "web_search"),
+            ("长春今天天气怎么样", "web_search"),
+            ("北京明天会下雨吗", "web_search"),
+            ("搜索一下今天的机器人新闻", "web_search"),
+            ("联网查一下今天的科技新闻", "web_search"),
+            ("查一下今天的科技新闻", "web_search"),
             ("左臂向下10厘米", "local_action"),
             ("左臂向上抬十厘米", "local_action"),
             ("左臂向上抬十五厘米", "local_action"),
@@ -44,7 +49,12 @@ class DifyIntentRoutingTests(unittest.TestCase):
             ("你有几个关节", "robot_knowledge"),
             ("你有几个自由度", "robot_knowledge"),
             ("有几条手臂", "robot_knowledge"),
-            ("讲一个历史故事", "complex_fallback"),
+            ("怎么记录按摩点位", "robot_knowledge"),
+            ("方向接口完成了吗", "robot_knowledge"),
+            ("今天是多少号", "web_search"),
+            ("还有多少天国庆节", "web_search"),
+            ("讲一个历史故事", "web_search"),
+            ("为什么天空是蓝色的", "web_search"),
         ):
             with self.subTest(user_text=user_text):
                 self.assertEqual(scope["main"](user_text), {"intent": expected})
@@ -85,6 +95,47 @@ class DifyIntentRoutingTests(unittest.TestCase):
             with self.subTest(node_id=node["id"]):
                 self.assertLessEqual(max_tokens, 256)
 
+    def test_web_search_uses_model_native_search_and_reply_only_guard(self):
+        environment = self.workflow["workflow"]["environment_variables"]
+        default_city = next(
+            item for item in environment
+            if item["name"] == "DEFAULT_WEATHER_CITY"
+        )
+        self.assertEqual(default_city["value"], "上海")
+        self.assertEqual(default_city["value_type"], "string")
+        self.assertFalse(any(
+            node["data"]["type"] == "http-request"
+            for node in self.nodes.values()
+        ))
+
+        search = self.nodes["llm_web_search_summary"]["data"]
+        self.assertEqual(search["type"], "llm")
+        self.assertTrue(search["model"]["completion_params"]["enable_search"])
+        self.assertIn("通用知识问答", search["prompt_template"][0]["text"])
+        self.assertIn("DEFAULT_WEATHER_CITY", search["prompt_template"][0]["text"])
+
+        edge = next(
+            edge for edge in self.edges
+            if edge.get("sourceHandle") == "case_web_search"
+        )
+        self.assertEqual(edge["target"], "llm_web_search_summary")
+
+        fallback_edge = next(
+            edge for edge in self.edges
+            if edge.get("sourceHandle") == "false"
+        )
+        self.assertEqual(fallback_edge["target"], "llm_web_search_summary")
+        self.assertNotIn("tmpl_complex_fallback", self.nodes)
+
+        guard_scope = {}
+        exec(self.nodes["guard_web_search_reply"]["data"]["code"], guard_scope)
+        guarded = guard_scope["main"](
+            '{"action":"move_cartesian","arm":"left","z":0.1}'
+        )
+        parsed = json.loads(guarded["result"])
+        self.assertEqual(set(parsed), {"reply"})
+        self.assertNotIn("action", parsed)
+
     def test_fixed_reply_branch_is_deterministic_and_avoids_second_llm(self):
         self.assertNotIn("llm_fixed_reply", self.nodes)
         node = self.nodes["fixed_reply_local"]
@@ -92,18 +143,22 @@ class DifyIntentRoutingTests(unittest.TestCase):
 
         scope = {}
         exec(node["data"]["code"], scope)
-        expected_replies = {
-            "你是谁": "我是施耐力双臂六关节机械臂，拥有左右两条手臂，各六个关节。",
-            "你能做什么": "我可以控制左右两条机械臂，支持关节旋转和空间移动。",
-            "你你会干什么": "我可以控制左右两条机械臂，支持关节旋转和空间移动。",
-            "给我唱首歌": "我不能唱歌。我可以控制左右两条机械臂，支持关节旋转和空间移动。",
-            "今天天气怎么样": "我无法查询天气。我可以帮助控制左右两条机械臂。",
-            "谢谢": "不客气，很高兴能帮到你。",
+        expected_needles = {
+            "你是谁": ["小西", "单臂按摩机器人", "点位示教", "安全"],
+            "自我介绍": ["按摩点位示教", "启动确认", "安全"],
+            "强化学习": ["强化学习", "已示教点位"],
+            "阻抗控制": ["力控参数", "下层机械臂程序"],
+            "你能做什么": ["按摩点位", "启动按摩", "联网搜索", "尚未接入"],
+            "你你会干什么": ["按摩点位", "启动按摩", "联网搜索", "尚未接入"],
+            "给我唱首歌": ["普通语音", "原创歌"],
+            "谢谢": ["不客气"],
         }
-        for user_text, expected_reply in expected_replies.items():
+        for user_text, needles in expected_needles.items():
             with self.subTest(user_text=user_text):
                 output = scope["main"](user_text)
-                self.assertEqual(json.loads(output["result"]), {"reply": expected_reply})
+                reply = json.loads(output["result"])["reply"]
+                for needle in needles:
+                    self.assertIn(needle, reply)
 
         edge = next(
             edge
