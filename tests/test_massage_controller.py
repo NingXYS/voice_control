@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from voice_massage_controller import (
     MassageController,
     is_ambiguous_massage_move,
+    looks_like_massage_control,
     parse_massage_intent,
     parse_massage_move_intent,
     parse_massage_start_request,
@@ -108,6 +109,20 @@ class MassageIntentTests(unittest.TestCase):
             "执行按摩全部位置五级": {
                 "parts": ("all",), "force_level": 5, "complete": True,
             },
+            # Natural speech without an explicit 开始 verb still stays local.
+            "帮我按摩左肩力度一级": {
+                "parts": ("left-shoulder",), "force_level": 1, "complete": True,
+            },
+            "按摩左肩，力度二级": {
+                "parts": ("left-shoulder",), "force_level": 2, "complete": True,
+            },
+            "我想按摩背部三档": {
+                "parts": ("back",), "force_level": 3, "complete": True,
+            },
+            # ASR near-miss still parses.
+            "开始按摩擦左肩力度一级": {
+                "parts": ("left-shoulder",), "force_level": 1, "complete": True,
+            },
         }
         for text, expected in cases.items():
             with self.subTest(text=text):
@@ -118,12 +133,65 @@ class MassageIntentTests(unittest.TestCase):
             "开始按摩", "开始按摩左肩", "开始按摩三级", "开始按摩左肩六级",
             "开始按摩左腿三级", "开始按摩左肩三级随便执行",
             "开始按摩全部位置和左肩三级", "开始按摩左肩三级四级",
+            "帮我按摩左肩", "按摩右腰",
         ):
             with self.subTest(text=text):
                 request = parse_massage_start_request(text)
                 self.assertIsNotNone(request)
                 self.assertFalse(request["complete"])
         self.assertIsNone(parse_massage_start_request("可以开始按摩吗"))
+        # Soft "按摩…" without part/force is not a start request
+        # (status / FAQ phrases must not become start_massage).
+        self.assertIsNone(parse_massage_start_request("按摩状态"))
+        self.assertIsNone(parse_massage_start_request("帮我按摩"))
+
+    def test_massage_control_never_depends_on_dify_routing(self):
+        for text in (
+            "开始按摩左肩，力度一级",
+            "帮我按摩左肩力度三级",
+            "按摩背部二级",
+            "确认开始",
+            "开始记录点位",
+            "按摩状态",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(looks_like_massage_control(text), text)
+
+        # Knowledge questions still leave room for FAQ / Dify.
+        for text in ("你会按摩吗", "按摩是什么", "怎么开始按摩"):
+            with self.subTest(text=text):
+                self.assertFalse(looks_like_massage_control(text), text)
+
+        # Even if Dify is completely broken, start-massage stays local.
+        spoken = []
+        result = process_text(
+            "开始按摩左肩，力度二级",
+            dialogue=lambda _text: (_ for _ in ()).throw(AssertionError("Dify called")),
+            massage_controller=MagicMock(
+                handle=lambda *a, **k: {
+                    "action": "massage_start",
+                    "state": "awaiting_confirmation",
+                    "reply": "ok",
+                },
+                enabled=True,
+            ),
+            speaker=spoken.append,
+        )
+        self.assertEqual(result[0]["action"], "massage_start")
+        # Soft natural phrasing also stays local.
+        result = process_text(
+            "帮我按摩左肩力度一级",
+            dialogue=lambda _text: (_ for _ in ()).throw(AssertionError("Dify called")),
+            massage_controller=MagicMock(
+                handle=lambda *a, **k: {
+                    "action": "massage_start",
+                    "state": "awaiting_confirmation",
+                    "reply": "ok",
+                },
+                enabled=True,
+            ),
+        )
+        self.assertEqual(result[0]["action"], "massage_start")
 
     def test_direction_moves_require_explicit_distance_and_unit(self):
         cases = {
@@ -285,6 +353,69 @@ class MassageControllerTests(unittest.TestCase):
         out = ctrl.finish_teaching()
         self.assertTrue(out["started"])
         self.assertEqual(proc.stdin.getvalue(), "q\n")
+
+    def test_capture_teaching_point_sends_enter(self):
+        proc = RunningProcess()
+        ctrl = self.controller(popen=lambda *a, **k: proc)
+        ctrl.start_teaching()
+        out = ctrl.capture_teaching_point()
+        self.assertTrue(out["ok"])
+        self.assertEqual(proc.stdin.getvalue(), "\n")
+
+    def test_teaching_command_file_is_applied(self):
+        proc = RunningProcess()
+        ctrl = self.controller(popen=lambda *a, **k: proc)
+        ctrl.start_teaching()
+        # Simulate UI control without the background watcher (popen_factory disables it).
+        out = ctrl.apply_teaching_command("capture")
+        self.assertTrue(out["ok"])
+        out = ctrl.apply_teaching_command("quit")
+        self.assertTrue(out["ok"])
+        self.assertEqual(proc.stdin.getvalue(), "\nq\n")
+
+    def test_close_stops_running_teaching_process(self):
+        proc = RunningProcess()
+        stopped = []
+        ctrl = self.controller(popen=lambda *a, **k: proc)
+        ctrl.start_teaching()
+
+        def stop(**_kwargs):
+            stopped.append(True)
+            proc.returncode = -15
+            proc.done.set()
+
+        ctrl._stop_teaching_process = stop
+        ctrl.close()
+        self.assertTrue(stopped)
+        self.assertIsNone(ctrl._teaching_proc)
+
+    def test_dry_run_auto_stops_after_five_points(self):
+        worker = Path(__file__).resolve().parent.parent / "scripts" / "voice_massage_dry_run.py"
+        if not worker.is_file():
+            self.skipTest("dry-run worker missing")
+        out = Path(self.temp.name) / "points.h"
+        proc = subprocess.Popen(
+            [sys.executable, str(worker), "teaching", str(out)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        try:
+            for _ in range(5):
+                proc.stdin.write("\n")
+                proc.stdin.flush()
+            code = proc.wait(timeout=3)
+            self.assertEqual(code, 0)
+            text = out.read_text(encoding="utf-8")
+            self.assertIn("std::array<std::array<double, 6>, 5>", text)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=2)
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
+                if stream is not None:
+                    stream.close()
 
     def test_too_few_points_preserves_previous_plan(self):
         old = self.data / "captured_postures.h"

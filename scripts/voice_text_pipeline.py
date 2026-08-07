@@ -14,6 +14,7 @@ from voice_local_knowledge import normalize_text, repair_asr_text
 from voice_massage_controller import (
     MassageController,
     is_ambiguous_massage_move,
+    looks_like_massage_control,
     parse_massage_intent,
     parse_massage_move_intent,
     parse_massage_start_request,
@@ -206,17 +207,28 @@ def _controller_execution_enabled(controller) -> bool:
 
 
 def _handle_massage_intent(text, speaker=None, runtime=None, massage_controller=None):
+    """Route massage control entirely on-device; never depend on Dify here."""
     move = parse_massage_move_intent(text)
-    start_request = parse_massage_start_request(text)
     intent = parse_massage_intent(text)
+    start_request = parse_massage_start_request(text)
     ambiguous_move = is_ambiguous_massage_move(text)
-    if move is None and start_request is None and intent is None and not ambiguous_move:
+    controlish = looks_like_massage_control(text)
+
+    if (
+        move is None
+        and start_request is None
+        and intent is None
+        and not ambiguous_move
+        and not controlish
+    ):
         return None
+
     if ambiguous_move:
         reply = "请说明上下左右、距离和单位，例如按摩机械臂向上五厘米。"
         if speaker is not None:
             _speak_text(speaker, reply, sentence_tts=False)
         return [{"reply": reply}]
+
     ctrl = massage_controller
     if ctrl is None and runtime is not None:
         ctrl = getattr(runtime, "massage_controller", None)
@@ -230,6 +242,7 @@ def _handle_massage_intent(text, speaker=None, runtime=None, massage_controller=
             if speaker is not None:
                 _speak_text(speaker, reply, sentence_tts=False)
             return [{"action": "massage_unavailable", "reply": reply}]
+
     if move is not None:
         audit_action_batch(
             [{"action": "massage_move_relative"}],
@@ -248,8 +261,19 @@ def _handle_massage_intent(text, speaker=None, runtime=None, massage_controller=
                 speaker=speaker,
             )
         ]
-    if start_request is not None:
-        complete = start_request["complete"]
+
+    # Exact non-start intents (示教/确认/状态) win over soft start parses.
+    if intent is not None and intent != "start_massage":
+        audit_action_batch(
+            [{"action": f"massage_{intent}"}],
+            source="massage-local",
+            execution_enabled=_controller_execution_enabled(ctrl),
+        )
+        print(f"💆 本地按摩指令命中: {intent}", flush=True)
+        return [ctrl.handle(intent, speaker=speaker)]
+
+    if start_request is not None or intent == "start_massage":
+        complete = bool(start_request and start_request.get("complete"))
         parts = start_request["parts"] if complete else None
         force_level = start_request["force_level"] if complete else None
         audit_action_batch(
@@ -273,13 +297,18 @@ def _handle_massage_intent(text, speaker=None, runtime=None, massage_controller=
                 force_level=force_level,
             )
         ]
-    audit_action_batch(
-        [{"action": f"massage_{intent}"}],
-        source="massage-local",
-        execution_enabled=_controller_execution_enabled(ctrl),
+
+    # Recognized as massage control but not fully parsed → local fail-closed,
+    # never Dify (so Dify outages cannot block massage control).
+    reply = (
+        "按摩指令请直接说：开始按摩左肩，力度一级；"
+        "位置可选左肩、右肩、背部、左腰、右腰或全部位置，力度一至五级。"
+        "确认现场安全后再说确认开始。"
     )
-    print(f"💆 本地按摩指令命中: {intent}", flush=True)
-    return [ctrl.handle(intent, speaker=speaker)]
+    print(f"💆 本地按摩指令兜底（未完整解析，不走 Dify）: {text!r}", flush=True)
+    if speaker is not None:
+        _speak_text(speaker, reply, sentence_tts=False)
+    return [{"action": "massage_clarify", "reply": reply}]
 
 
 def _handle_online_intent(

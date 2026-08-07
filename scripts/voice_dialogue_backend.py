@@ -144,6 +144,31 @@ def _outputs_from_event(event: dict) -> dict | None:
     return None
 
 
+def _format_dify_http_error(response) -> str:
+    """Build a short, non-secret error line from a failed Dify HTTP response."""
+    status = getattr(response, "status_code", "?")
+    detail = ""
+    try:
+        raw = (getattr(response, "text", None) or "")[:800]
+        if raw:
+            payload = json.loads(raw)
+            if isinstance(payload, dict):
+                code = str(payload.get("code") or "").strip()
+                message = str(payload.get("message") or "").strip()
+                parts = [p for p in (code, message) if p]
+                detail = ": " + " — ".join(parts) if parts else f": {raw[:200]}"
+            else:
+                detail = f": {raw[:200]}"
+    except Exception:
+        try:
+            text = (getattr(response, "text", None) or "").strip()
+            if text:
+                detail = f": {text[:200]}"
+        except Exception:
+            detail = ""
+    return f"Dify HTTP {status}{detail}"
+
+
 class DifyWorkflowBackend:
     def __init__(self, base_url=None, api_key=None, input_key=None, output_key=None,
                  user=None, timeout=None, session=None, stream_enabled=None,
@@ -215,7 +240,7 @@ class DifyWorkflowBackend:
                 stream=True,
             )
             if response.status_code != 200:
-                self.last_error = f"Dify HTTP {response.status_code}"
+                self.last_error = _format_dify_http_error(response)
                 print(f"⚠️ {self.last_error}", file=sys.stderr)
                 return None
             content_length = response.headers.get("Content-Length") if hasattr(response, "headers") else None
@@ -330,7 +355,7 @@ class DifyWorkflowBackend:
         )
         try:
             if response.status_code != 200:
-                self.last_error = f"Dify HTTP {response.status_code}"
+                self.last_error = _format_dify_http_error(response)
                 print(f"⚠️ {self.last_error}", file=sys.stderr)
                 yield ("done", None)
                 return
@@ -396,7 +421,9 @@ class DifyWorkflowBackend:
         )
         try:
             if response.status_code != 200:
-                self.last_error = f"Dify chat HTTP {response.status_code}"
+                self.last_error = _format_dify_http_error(response).replace(
+                    "Dify HTTP", "Dify chat HTTP", 1
+                )
                 print(f"⚠️ {self.last_error}", file=sys.stderr)
                 yield ("done", None)
                 return

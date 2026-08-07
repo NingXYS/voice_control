@@ -157,6 +157,25 @@ h2 { margin-bottom: 18px; font-size: 19px; }
 .control:disabled { opacity: .38; cursor: default; }
 .control-message { min-height: 18px; margin: 12px 0 0; color: var(--muted); font-size: 11px; }
 
+.teaching-panel {
+  width: min(100%, 460px);
+  margin-top: 14px;
+  padding: 14px 16px;
+  border: 1px solid rgba(183, 139, 80, .35);
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(241, 227, 204, .92), rgba(255, 252, 246, .88));
+  box-shadow: 0 12px 30px rgba(120, 90, 40, .08);
+  display: grid;
+  gap: 12px;
+}
+.teaching-copy { display: grid; gap: 4px; text-align: center; }
+.teaching-copy strong { font-size: 22px; letter-spacing: .04em; color: #7a5a2c; }
+.teaching-copy span { color: var(--muted); font-size: 12px; }
+.teaching-actions { display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; }
+.control--teach { color: #4c6348; background: var(--green-soft); }
+.control--teach-stop { color: var(--red); background: var(--red-soft); }
+.teaching-help { margin: 0; text-align: center; color: var(--muted); font-size: 11px; line-height: 1.5; }
+
 .conversation-panel { display: grid; grid-template-rows: auto 1fr; }
 .conversation-head { display: flex; justify-content: space-between; align-items: flex-end; padding: 20px 20px 15px; border-bottom: 1px solid var(--line); }
 .conversation-head h2 { margin: 0; }

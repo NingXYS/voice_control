@@ -142,6 +142,22 @@
           <button class="control control--stop" id="stopBtn" disabled><span>■</span><b>停止</b></button>
           <button class="control control--clear" id="clearBtn"><span>⌫</span><b>清空对话</b></button>
         </div>
+        <div class="teaching-panel" id="teachingPanel" hidden>
+          <div class="teaching-copy">
+            <p class="eyebrow">MASSAGE TEACHING</p>
+            <strong id="teachingProgress">0 / 5</strong>
+            <span id="teachingNextPart">等待示教开始</span>
+          </div>
+          <div class="teaching-actions">
+            <button class="control control--teach" id="captureTeachingBtn" type="button">
+              <span>↵</span><b>记录当前点位</b>
+            </button>
+            <button class="control control--teach-stop" id="finishTeachingBtn" type="button">
+              <span>■</span><b>结束示教</b>
+            </button>
+          </div>
+          <p class="teaching-help" id="teachingHelp">按左肩、右肩、背部、左腰、右腰顺序；录满 5 个点自动结束。</p>
+        </div>
         <p class="control-message" id="controlMessage"></p>
       </section>
 

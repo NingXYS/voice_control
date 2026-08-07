@@ -24,19 +24,25 @@ def write_header(path: Path, count: int) -> None:
     )
 
 
-def teach(output: Path) -> int:
+def teach(output: Path, required_points: int = 5) -> int:
     print("[DRY RUN] 模拟拖动示教已启动，不会连接机械臂。", flush=True)
-    print("按回车生成一个假点位，输入 q 保存退出。", flush=True)
+    print(
+        f"按回车生成一个假点位；录满 {required_points} 个点自动保存退出，也可输入 q 提前结束。",
+        flush=True,
+    )
     count = 0
     for raw in iter(input, None):
         text = raw.strip()
-        if text.lower() == "q":
+        if text.lower() == "q" or set(text.lower()) == {"q"}:
             break
         if text:
             print("请输入空行记录，或输入 q 退出。", flush=True)
             continue
         print(f"[DRY RUN] 已记录 P{count}", flush=True)
         count += 1
+        if count >= required_points:
+            print(f"[DRY RUN] 已录满 {required_points} 个点，自动结束。", flush=True)
+            break
     if count:
         write_header(output, count)
         print(f"[DRY RUN] 已保存 {count} 个假点位到 {output}", flush=True)

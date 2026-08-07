@@ -24,6 +24,7 @@ try:
 except ImportError as exc:  # pragma: no cover - exercised by launcher preflight
     raise SystemExit("aiohttp is required; run scripts/setup_voice_wake.sh") from exc
 
+from voice_massage_controller import REQUIRED_TEACHING_POINTS, MassageController
 from voice_ui_events import EVENT_PREFIX, redact
 from voice_speaker_verifier import (
     SherpaSpeakerEmbeddingExtractor,
@@ -1063,6 +1064,42 @@ class DashboardState:
         self._reader_tasks: list[asyncio.Task] = []
         self._wait_task: asyncio.Task | None = None
         self.speakers = speaker_service or SpeakerAdminService(self.repo_root)
+        self.teaching = {
+            "active": False,
+            "state": "idle",
+            "point_count": 0,
+            "required": REQUIRED_TEACHING_POINTS,
+            "next_part": "",
+            "parts": ["左肩", "右肩", "背部", "左腰", "右腰"],
+        }
+
+    def massage_data_dir(self) -> Path:
+        configured = os.environ.get("VOICE_MASSAGE_DATA_DIR", "").strip()
+        if configured:
+            return Path(configured).expanduser()
+        return self.repo_root / "massage_data"
+
+    def teaching_cmd_path(self) -> Path:
+        return self.massage_data_dir() / ".teaching_cmd"
+
+    def write_teaching_command(self, command: str) -> tuple[bool, str]:
+        if self.runtime_status != "running" or not self.process or self.process.returncode is not None:
+            return False, "语音模块未运行，无法控制示教"
+        token = (command or "").strip().lower()
+        is_quit = token in {"quit", "q", "finish", "stop", "done"} or (token and set(token) == {"q"})
+        is_capture = token in {"", "capture", "enter", "record", "点"}
+        if not is_quit and not is_capture:
+            return False, f"未知示教控制指令: {command!r}"
+        # Capture needs an active teaching session; quit is best-effort.
+        if is_capture and not self.teaching.get("active"):
+            return False, "当前不在示教录点状态"
+        try:
+            MassageController.write_teaching_command_file(
+                self.teaching_cmd_path(), "quit" if is_quit else "capture"
+            )
+        except OSError as exc:
+            return False, f"写入示教控制失败: {exc}"
+        return True, "已发送结束示教指令" if is_quit else "已发送记录点位指令"
 
     def event(self, event_type: str, payload: Any = None, *, turn_id=None) -> dict[str, Any]:
         self._sequence += 1
@@ -1100,6 +1137,16 @@ class DashboardState:
             if self.runtime_status == "starting":
                 self.runtime_status = "running"
                 await self._publish_status()
+        if event_type == "massage.teaching":
+            data = event["payload"] if isinstance(event["payload"], dict) else {}
+            self.teaching = {
+                "active": bool(data.get("active")),
+                "state": str(data.get("state") or self.teaching.get("state") or "idle"),
+                "point_count": int(data.get("point_count") or 0),
+                "required": int(data.get("required") or REQUIRED_TEACHING_POINTS),
+                "next_part": str(data.get("next_part") or ""),
+                "parts": list(data.get("parts") or self.teaching.get("parts") or []),
+            }
         await self.broadcast(event)
         return event
 
@@ -1123,6 +1170,7 @@ class DashboardState:
                 "massage_enabled": env_flag("VOICE_ENABLE_MASSAGE"),
                 "massage_dry_run": env_flag("VOICE_MASSAGE_DRY_RUN"),
             },
+            "teaching": dict(self.teaching),
             "speaker": self.speakers.status() if speaker_payload is None else speaker_payload,
         }
 
@@ -1246,17 +1294,26 @@ class DashboardState:
             if not process or process.returncode is not None:
                 self.runtime_status = "offline"
                 self.phase = "stopped"
+                self.teaching["active"] = False
                 await self._publish_status()
                 return True, "语音模块已经停止"
             self._expected_stop = True
             self.runtime_status = "stopping"
             await self._publish_status()
+            # Best-effort cooperative quit before killing the process group.
+            if self.teaching.get("active"):
+                try:
+                    MassageController.write_teaching_command_file(
+                        self.teaching_cmd_path(), "quit"
+                    )
+                except OSError:
+                    pass
             try:
                 os.killpg(process.pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
         try:
-            await asyncio.wait_for(process.wait(), timeout=8.0)
+            await asyncio.wait_for(process.wait(), timeout=10.0)
         except asyncio.TimeoutError:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
@@ -1266,6 +1323,7 @@ class DashboardState:
         wait_task = self._wait_task
         if wait_task is not None and not wait_task.done():
             await asyncio.shield(wait_task)
+        self.teaching["active"] = False
         return True, "语音模块已停止；外部机械臂任务可能仍需现场确认或实体急停"
 
     async def clear_conversation(self) -> None:
@@ -1401,6 +1459,20 @@ def build_app(
     async def clear(_request):
         await state.clear_conversation()
         return web.json_response({"ok": True})
+
+    async def teaching_capture(_request):
+        ok, message = await asyncio.to_thread(state.write_teaching_command, "capture")
+        return web.json_response(
+            {"ok": ok, "message": message, "teaching": dict(state.teaching)},
+            status=200 if ok else 409,
+        )
+
+    async def teaching_finish(_request):
+        ok, message = await asyncio.to_thread(state.write_teaching_command, "quit")
+        return web.json_response(
+            {"ok": ok, "message": message, "teaching": dict(state.teaching)},
+            status=200 if ok else 409,
+        )
 
     def speaker_error(exc: Exception) -> web.Response:
         if isinstance(exc, KeyError):
@@ -1654,6 +1726,8 @@ def build_app(
     app.router.add_post("/api/runtime/start", start)
     app.router.add_post("/api/runtime/stop", stop)
     app.router.add_post("/api/conversation/clear", clear)
+    app.router.add_post("/api/massage/teaching/capture", teaching_capture)
+    app.router.add_post("/api/massage/teaching/finish", teaching_finish)
     app.router.add_get("/api/speakers", speakers_status)
     app.router.add_post("/api/speakers/enrollments", speaker_enrollment_start)
     app.router.add_post(

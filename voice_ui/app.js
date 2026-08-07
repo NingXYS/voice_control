@@ -6,6 +6,8 @@ const ui = {
   appShell: $("#appShell"), runtimePill: $("#runtimePill"), userStage: $("#userStage"), assistantStage: $("#assistantStage"),
   phaseTitle: $("#phaseTitle"), phaseHint: $("#phaseHint"), orbWrap: $("#orbWrap"), phaseTrack: $("#phaseTrack"),
   startBtn: $("#startBtn"), stopBtn: $("#stopBtn"), clearBtn: $("#clearBtn"), controlMessage: $("#controlMessage"),
+  teachingPanel: $("#teachingPanel"), teachingProgress: $("#teachingProgress"), teachingNextPart: $("#teachingNextPart"),
+  teachingHelp: $("#teachingHelp"), captureTeachingBtn: $("#captureTeachingBtn"), finishTeachingBtn: $("#finishTeachingBtn"),
   conversation: $("#conversation"), emptyConversation: $("#emptyConversation"), turnCount: $("#turnCount"),
   resourceList: $("#resourceList"), safetyCard: $("#safetyCard"), audioDevice: $("#audioDevice"), logs: $("#logs"), clearLogsBtn: $("#clearLogsBtn"),
   speakerSummary: $("#speakerSummary"), speakerNameInput: $("#speakerNameInput"), speakerEnrollBtn: $("#speakerEnrollBtn"), speakerHelp: $("#speakerHelp"),
@@ -34,6 +36,8 @@ const state = {
   enrollmentOperationToken: 0,
   probeBusy: false,
   experimentBusy: false,
+  teachingBusy: false,
+  teaching: { active: false, point_count: 0, required: 5, next_part: "", state: "idle" },
   notices: { speaker: "", enrollment: "", experiment: "" }
 };
 const phaseCopy = {
@@ -323,9 +327,39 @@ function syncCurrentEnrollment(payload) {
   }
 }
 
+function renderTeaching(teaching) {
+  const data = teaching || state.teaching || {};
+  state.teaching = {
+    active: Boolean(data.active),
+    point_count: Number(data.point_count) || 0,
+    required: Number(data.required) || 5,
+    next_part: data.next_part || "",
+    state: data.state || "idle",
+    parts: data.parts || state.teaching?.parts || ["左肩", "右肩", "背部", "左腰", "右腰"],
+  };
+  const active = state.teaching.active;
+  if (ui.teachingPanel) ui.teachingPanel.hidden = !active;
+  if (!ui.teachingProgress) return;
+  ui.teachingProgress.textContent = `${state.teaching.point_count} / ${state.teaching.required}`;
+  if (active) {
+    ui.teachingNextPart.textContent = state.teaching.next_part
+      ? `下一步：${state.teaching.next_part}`
+      : state.teaching.point_count >= state.teaching.required
+        ? "已录满，正在自动结束"
+        : "请拖到目标位置后点击记录";
+    ui.teachingHelp.textContent = "顺序：左肩 → 右肩 → 背部 → 左腰 → 右腰。录满 5 点自动保存构建；按钮等价于终端回车。";
+  } else {
+    ui.teachingNextPart.textContent = "等待示教开始";
+  }
+  const canClick = active && !state.teachingBusy && state.runtime === "running";
+  if (ui.captureTeachingBtn) ui.captureTeachingBtn.disabled = !canClick;
+  if (ui.finishTeachingBtn) ui.finishTeachingBtn.disabled = !canClick;
+}
+
 function renderStatus(data) {
   setRuntime(data.runtime || "offline", data.error || "");
   setPhase(data.phase || "stopped");
+  renderTeaching(data.teaching);
   const labels = { wake: "唤醒模型", asr: "语音识别", vad: "语音检测", tts: "语音合成", speaker: "声纹模型", dify: "Dify 服务" };
   ui.resourceList.replaceChildren(...Object.entries(labels).map(([key, label]) => {
     const ok = Boolean(data.resources?.[key]);
@@ -423,10 +457,19 @@ function handleEvent(event) {
     (event.payload.logs || []).forEach(addLog);
   } else if (event.type === "runtime.status") {
     setRuntime(event.payload.status, event.payload.error);
+    if ((event.payload?.status || "") !== "running") {
+      renderTeaching({
+        active: false,
+        point_count: state.teaching.point_count,
+        required: state.teaching.required,
+      });
+    }
   } else if (event.type === "speaker.updated") {
     refreshSpeakers().catch((error) => { setNotice("speaker", error.message); });
   } else if (event.type === "voice.phase") {
     setPhase(event.payload.phase);
+  } else if (event.type === "massage.teaching") {
+    renderTeaching(event.payload || {});
   } else if (event.type.startsWith("conversation.") || event.type === "action.result") {
     if (event.type === "conversation.cleared") resetConversation(); else updateConversation(event);
   } else if (event.type === "runtime.log" || event.type === "runtime.error" || event.type === "voice.timing" || event.type === "voice.speaker") {
@@ -774,6 +817,32 @@ ui.clearBtn.addEventListener("click", async () => {
   try { await api("/api/conversation/clear", { method: "POST" }); } catch (error) { ui.controlMessage.textContent = error.message; }
 });
 ui.clearLogsBtn.addEventListener("click", () => { ui.logs.replaceChildren(); });
+
+async function sendTeachingCommand(kind) {
+  if (state.teachingBusy) return;
+  state.teachingBusy = true;
+  renderTeaching(state.teaching);
+  const path = kind === "quit"
+    ? "/api/massage/teaching/finish"
+    : "/api/massage/teaching/capture";
+  try {
+    const data = await api(path, { method: "POST" });
+    ui.controlMessage.textContent = data.message || (kind === "quit" ? "已发送结束示教" : "已发送记录点位");
+    if (data.teaching) renderTeaching(data.teaching);
+  } catch (error) {
+    ui.controlMessage.textContent = error.message;
+  } finally {
+    state.teachingBusy = false;
+    renderTeaching(state.teaching);
+  }
+}
+
+if (ui.captureTeachingBtn) {
+  ui.captureTeachingBtn.addEventListener("click", () => sendTeachingCommand("capture"));
+}
+if (ui.finishTeachingBtn) {
+  ui.finishTeachingBtn.addEventListener("click", () => sendTeachingCommand("quit"));
+}
 $$('.tab').forEach((tab) => tab.addEventListener("click", () => {
   $$('.tab').forEach((node) => node.classList.toggle("is-active", node === tab));
   $$('.tab-view').forEach((node) => node.classList.toggle("is-active", node.dataset.view === tab.dataset.tab));
