@@ -611,11 +611,26 @@ class WakeWordRuntime:
                 "duration_ms": round((time.perf_counter() - started) * 1000.0),
                 "message": str(exc),
             }
+        if (
+            "threshold" not in payload
+            and self.speaker_verifier is not None
+            and hasattr(self.speaker_verifier, "threshold")
+        ):
+            try:
+                payload["threshold"] = round(float(self.speaker_verifier.threshold), 4)
+            except (TypeError, ValueError):
+                pass
         self.events.emit("voice.speaker", payload)
+        threshold_text = (
+            f" threshold={payload['threshold']}"
+            if payload.get("threshold") is not None
+            else ""
+        )
         print(
             "🪪 声纹验证: "
             f"mode={payload['mode']} accepted={payload['accepted']} "
-            f"score={payload['score']} speaker={payload.get('display_name') or '-'} "
+            f"score={payload['score']}{threshold_text} "
+            f"speaker={payload.get('display_name') or '-'} "
             f"reason={payload['reason']} duration_ms={payload['duration_ms']}",
             flush=True,
         )
@@ -687,8 +702,14 @@ class WakeWordRuntime:
                     continue
 
                 if not self._speaker_accepts(audio):
-                    if followup and self._session_active():
-                        # Keep the original deadline but do not refresh it.
+                    # Wake already opened the continuous-session window. Keep it
+                    # armed through the original idle deadline so a failed
+                    # first-turn speaker check does not force another wake word.
+                    if self._session_enabled() and self._session_active():
+                        print(
+                            "🪪 声纹未通过，已忽略本轮语音；连续会话仍有效，可直接再说",
+                            flush=True,
+                        )
                         self._prepare_followup()
                     else:
                         self._reset_to_wake(

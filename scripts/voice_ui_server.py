@@ -41,6 +41,7 @@ from voice_speaker_dataset import (
     SpeakerExperimentRunner,
     configured_model_specs,
     create_model_extractor,
+    effective_bundle_threshold,
     preprocessing_signature,
     resolve_active_bundle,
     robust_inlier_mask,
@@ -378,7 +379,7 @@ class SpeakerAdminService:
                 "backend": str(resolved["model_backend"]),
                 "model_path": Path(str(resolved["model_path"])),
                 "profile_dir": Path(str(resolved["profile_dir"])),
-                "threshold": float(resolved["threshold"]),
+                "threshold": float(effective_bundle_threshold(resolved)),
                 "num_threads": int(resolved["num_threads"]),
                 "legacy": False,
             }
@@ -542,11 +543,42 @@ class SpeakerAdminService:
             and legacy_evaluation.get("ready")
             and legacy_evaluation.get("false_accept_rate") == 0.0
         )
+        threshold_min = None
+        threshold_max = None
+        threshold_default = None
+        threshold_source = "env"
+        bundle = context.get("bundle")
+        if isinstance(bundle, dict) and not context["legacy"]:
+            try:
+                threshold_min = float(bundle["threshold_min"])
+                threshold_max = float(bundle["threshold_max"])
+                threshold_default = float(bundle["threshold"])
+                threshold_source = str(bundle.get("threshold_source") or "report")
+            except (KeyError, TypeError, ValueError):
+                threshold_min = None
+                threshold_max = None
+                threshold_default = None
+                threshold_source = "report"
+        elif context["legacy"]:
+            threshold_source = "legacy"
+        threshold_editable = bool(
+            not context["legacy"]
+            and not error
+            and threshold_min is not None
+            and threshold_max is not None
+            and math.isfinite(threshold_min)
+            and math.isfinite(threshold_max)
+        )
         return {
             "model_ready": not context_error and context["model_path"].is_file(),
             "legacy_rollback_ready": legacy_rollback_ready,
             "mode": _speaker_mode(),
             "threshold": context["threshold"],
+            "threshold_min": threshold_min,
+            "threshold_max": threshold_max,
+            "threshold_default": threshold_default,
+            "threshold_source": threshold_source,
+            "threshold_editable": threshold_editable,
             "effective_model_id": context["model_id"],
             "effective_backend": context["backend"],
             "effective_num_threads": context["num_threads"],
@@ -991,6 +1023,18 @@ class SpeakerAdminService:
         finally:
             with self._mutex:
                 self._experiment_busy = False
+
+    def set_threshold(self, threshold: float) -> dict[str, Any]:
+        with self._mutex:
+            if self._session is not None:
+                raise RuntimeError("请先完成或取消当前声纹登记")
+            if self._experiment_busy:
+                raise RuntimeError("三模型评测正在进行")
+            result = self.dataset.set_operator_threshold(threshold)
+            # Force the next status() call to re-validate the pointer.
+            self._validated_bundle_key = ""
+            self._validated_bundle = None
+            return result
 
 
 class DashboardState:
@@ -1532,6 +1576,32 @@ def build_app(
         except Exception as exc:
             return speaker_error(exc)
 
+    async def speaker_set_threshold(request):
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"ok": False, "message": "请求体必须是 JSON"}, status=400)
+        if not isinstance(body, dict) or "threshold" not in body:
+            return web.json_response({"ok": False, "message": "缺少 threshold 字段"}, status=400)
+        try:
+            async with state._lifecycle_lock:
+                if state.process and state.process.returncode is None:
+                    return web.json_response(
+                        {"ok": False, "message": "请先停止语音模块再调整声纹阈值"},
+                        status=409,
+                    )
+                result = await asyncio.to_thread(
+                    state.speakers.set_threshold,
+                    body["threshold"],
+                )
+            await state.publish(
+                "speaker.updated",
+                {"operation": "threshold_updated", "threshold": result.get("threshold")},
+            )
+            return web.json_response({"ok": True, **result})
+        except Exception as exc:
+            return speaker_error(exc)
+
     async def speaker_sample_exclude(request):
         try:
             async with state._lifecycle_lock:
@@ -1604,6 +1674,7 @@ def build_app(
     app.router.add_get("/api/speakers/evaluation", speaker_evaluation)
     app.router.add_post("/api/speakers/experiments/rebuild", speaker_experiments_rebuild)
     app.router.add_post("/api/speakers/experiments/{model_id}/activate", speaker_experiment_activate)
+    app.router.add_post("/api/speakers/threshold", speaker_set_threshold)
     app.router.add_get("/ws", websocket)
     app.on_cleanup.append(cleanup)
     return app

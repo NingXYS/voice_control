@@ -262,9 +262,10 @@ class SpeakerDecision:
     reason: str
     duration_ms: int
     scores: dict[str, float]
+    threshold: float | None = None
 
     def event_payload(self, *, mode: str) -> dict[str, Any]:
-        return {
+        payload = {
             "mode": mode,
             "accepted": self.accepted,
             "score": round(self.score, 4),
@@ -273,6 +274,9 @@ class SpeakerDecision:
             "reason": self.reason,
             "duration_ms": self.duration_ms,
         }
+        if self.threshold is not None and math.isfinite(float(self.threshold)):
+            payload["threshold"] = round(float(self.threshold), 4)
+        return payload
 
 
 class SherpaSpeakerEmbeddingExtractor:
@@ -356,6 +360,7 @@ class SpeakerVerifier:
             reason="matched" if accepted else "speaker_mismatch",
             duration_ms=int(duration_ms),
             scores=scores,
+            threshold=self.threshold,
         )
 
     def verify(self, audio: np.ndarray, sample_rate: int) -> SpeakerDecision:
@@ -367,7 +372,9 @@ class SpeakerVerifier:
         except ValueError as exc:
             elapsed = round((self.clock() - started) * 1000.0)
             reason = "audio_too_short" if str(exc) == "audio_too_short" else "invalid_audio"
-            return SpeakerDecision(False, -1.0, None, None, reason, elapsed, {})
+            return SpeakerDecision(
+                False, -1.0, None, None, reason, elapsed, {}, threshold=self.threshold
+            )
 
 
 class SpeakerEvaluationStore:
@@ -482,16 +489,23 @@ class SpeakerEvaluationStore:
             return candidate_frr, candidate_far
 
         recommended_threshold = None
+        recommended_threshold_min = None
+        recommended_threshold_max = None
         if profile_ids and all(count >= 30 for count in genuine_by_speaker.values()) and len(impostor) >= 100:
+            impostor_scores = [
+                float(probe.get("best_score", -1.0))
+                for probe in impostor
+                if math.isfinite(float(probe.get("best_score", -1.0)))
+            ]
             candidates = sorted(
                 {
                     genuine_score(probe)
                     for probe in genuine
                     if math.isfinite(genuine_score(probe))
                     and 0.0 <= genuine_score(probe) <= 1.0
-                },
-                reverse=True,
+                }
             )
+            valid: list[float] = []
             for candidate in candidates:
                 candidate_frr, candidate_far = rates_at(float(candidate))
                 if (
@@ -499,8 +513,26 @@ class SpeakerEvaluationStore:
                     and set(candidate_frr) == set(profile_ids)
                     and all(rate <= 0.10 for rate in candidate_frr.values())
                 ):
-                    recommended_threshold = float(candidate)
-                    break
+                    valid.append(float(candidate))
+            if valid and impostor_scores:
+                # FAR=0 floor is strictly above every impostor (score >= thr).
+                threshold_floor = math.nextafter(max(impostor_scores), float("inf"))
+                floor_frr, floor_far = rates_at(threshold_floor)
+                if (
+                    math.isfinite(threshold_floor)
+                    and 0.0 <= threshold_floor <= 1.0
+                    and floor_far == 0.0
+                    and set(floor_frr) == set(profile_ids)
+                    and all(rate <= 0.10 for rate in floor_frr.values())
+                    and threshold_floor <= valid[-1]
+                ):
+                    recommended_threshold_min = threshold_floor
+                else:
+                    recommended_threshold_min = valid[0]
+                recommended_threshold = valid[0]
+                if recommended_threshold < recommended_threshold_min:
+                    recommended_threshold = recommended_threshold_min
+                recommended_threshold_max = valid[-1]
 
         p95_latency = percentile(latencies, 0.95)
         return {
@@ -519,6 +551,8 @@ class SpeakerEvaluationStore:
             "recommended_threshold_hex": (
                 recommended_threshold.hex() if recommended_threshold is not None else None
             ),
+            "recommended_threshold_min": recommended_threshold_min,
+            "recommended_threshold_max": recommended_threshold_max,
             "ready": bool(
                 profile_ids
                 and all(count >= 30 for count in genuine_by_speaker.values())

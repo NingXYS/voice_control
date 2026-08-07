@@ -64,6 +64,14 @@
           <h2>授权声纹</h2>
           <div class="speaker-summary" id="speakerSummary"></div>
 
+          <div class="speaker-threshold-form" id="speakerThresholdForm" hidden>
+            <label class="speaker-threshold-label" for="speakerThresholdInput">生效阈值</label>
+            <input id="speakerThresholdInput" type="number" min="0" max="1" step="0.01" inputmode="decimal">
+            <button id="speakerThresholdBtn" type="button">应用阈值</button>
+            <span class="speaker-threshold-range" id="speakerThresholdRange"></span>
+          </div>
+          <p class="speaker-help" id="speakerThresholdHelp"></p>
+
           <div class="speaker-enroll-form">
             <input id="speakerNameInput" maxlength="32" placeholder="用户名称，例如：操作员一">
             <button id="speakerEnrollBtn">登记新用户</button>

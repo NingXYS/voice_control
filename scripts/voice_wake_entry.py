@@ -80,7 +80,12 @@ from voice_speaker_verifier import (
     SpeakerProfileStore,
     SpeakerVerifier,
 )
-from voice_speaker_dataset import create_model_extractor, resolve_active_bundle
+from voice_speaker_dataset import (
+    BUNDLE_FORMAT_VERSION,
+    create_model_extractor,
+    effective_bundle_threshold,
+    resolve_active_bundle,
+)
 from voice_wake_word import DualStageWakeWordDetector, WakeWordDetector
 from voice_runtime_container import VoiceRuntimeContainer
 
@@ -179,7 +184,7 @@ def resolve_speaker_runtime_settings() -> SpeakerRuntimeSettings:
                 "active speaker bundle predates safety binding "
                 f"({', '.join(missing)} missing); roll back to CAM++ and rebuild the report"
             )
-        if active_bundle["bundle_format_version"] != 3:
+        if active_bundle["bundle_format_version"] != BUNDLE_FORMAT_VERSION:
             raise RuntimeError(
                 "active speaker bundle format is obsolete; roll back to CAM++ and rebuild the report"
             )
@@ -188,7 +193,7 @@ def resolve_speaker_runtime_settings() -> SpeakerRuntimeSettings:
             backend=str(active_bundle["model_backend"]),
             model_path=str(active_bundle["model_path"]),
             profile_dir=str(active_bundle["profile_dir"]),
-            threshold=float(active_bundle["threshold"]),
+            threshold=float(effective_bundle_threshold(active_bundle)),
             num_threads=_positive_thread_count(
                 active_bundle["num_threads"],
                 setting="active bundle num_threads",

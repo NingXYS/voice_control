@@ -87,6 +87,13 @@ h2 { margin-bottom: 18px; font-size: 19px; }
 .speaker-summary-row, .evaluation-row { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 10px; }
 .speaker-summary-row b, .evaluation-row b { color: var(--ink); text-align: right; }
 .speaker-enroll-form { display: grid; gap: 7px; margin-top: 12px; }
+.speaker-threshold-form { display: grid; grid-template-columns: auto 1fr auto; gap: 7px; align-items: center; margin-top: 10px; }
+.speaker-threshold-label { color: var(--muted); font-size: 10px; white-space: nowrap; }
+.speaker-threshold-form input { width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 9px 10px; background: rgba(255,255,255,.55); color: var(--ink); outline: none; font-size: 11px; }
+.speaker-threshold-form input:focus { border-color: var(--green); }
+.speaker-threshold-form button { border: 0; border-radius: 10px; padding: 9px 10px; background: var(--green-soft); color: #4c6348; cursor: pointer; font-size: 10px; font-weight: 700; white-space: nowrap; }
+.speaker-threshold-form button:disabled { opacity: .4; cursor: default; }
+.speaker-threshold-range { grid-column: 1 / -1; color: var(--muted); font-size: 9px; line-height: 1.4; }
 .speaker-enroll-form input, .speaker-view select, .speaker-view > input { width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 9px 10px; background: rgba(255,255,255,.55); color: var(--ink); outline: none; font-size: 11px; }
 .speaker-enroll-form input:focus, .speaker-view select:focus { border-color: var(--green); }
 .speaker-enroll-form button, .wide-button, .speaker-actions button { border: 0; border-radius: 10px; padding: 9px 10px; background: var(--green-soft); color: #4c6348; cursor: pointer; font-size: 10px; font-weight: 700; }

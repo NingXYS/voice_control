@@ -16,7 +16,7 @@ import voice_wake_entry
 
 def _active_bundle(model_path: Path, profile_dir: Path, *, num_threads=4):
     return {
-        "bundle_format_version": 3,
+        "bundle_format_version": 4,
         "bundle_id": "candidate-1",
         "model_id": "eres2netv2",
         "model_backend": "sherpa",
@@ -28,8 +28,13 @@ def _active_bundle(model_path: Path, profile_dir: Path, *, num_threads=4):
         "profiles_manifest_path": "profiles_manifest.json",
         "profiles_manifest_sha256": "2" * 64,
         "evaluation_signature": "3" * 64,
-        "threshold": 0.625,
-        "threshold_hex": float(0.625).hex(),
+        "profile_template_sha256": "4" * 64,
+        "threshold": 0.55,
+        "threshold_hex": float(0.55).hex(),
+        "threshold_min": 0.55,
+        "threshold_min_hex": float(0.55).hex(),
+        "threshold_max": 0.70,
+        "threshold_max_hex": float(0.70).hex(),
         "ready": True,
     }
 
@@ -52,8 +57,27 @@ class SpeakerRuntimeSettingsTests(unittest.TestCase):
 
             self.assertEqual(settings.model_id, "eres2netv2")
             self.assertEqual(settings.num_threads, 4)
-            self.assertEqual(settings.threshold, 0.625)
+            self.assertEqual(settings.threshold, 0.55)
             self.assertEqual(settings.source, "active-bundle")
+
+    def test_operator_threshold_override_is_used_at_runtime(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            model = root / "candidate.onnx"
+            model.write_bytes(b"model")
+            profiles = root / "profiles"
+            bundle = _active_bundle(model, profiles, num_threads=4)
+            bundle["operator_threshold"] = 0.62
+            bundle["operator_threshold_hex"] = float(0.62).hex()
+            bundle["threshold_source"] = "operator"
+            with (
+                mock.patch.object(voice_wake_entry, "SPEAKER_PROFILE_DIR", str(root)),
+                mock.patch.object(voice_wake_entry, "SPEAKER_NUM_THREADS", 1),
+                mock.patch.object(voice_wake_entry, "_active_pointer", return_value=bundle),
+                mock.patch.object(voice_wake_entry, "resolve_active_bundle", return_value=bundle),
+            ):
+                settings = voice_wake_entry.resolve_speaker_runtime_settings()
+            self.assertEqual(settings.threshold, 0.62)
 
     def test_old_active_bundle_is_rejected_with_rollback_guidance(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -32,9 +32,16 @@ from voice_speaker_verifier import (
 
 
 DATASET_VERSION = 2
-REPORT_FORMAT_VERSION = 3
-BUNDLE_FORMAT_VERSION = 3
+REPORT_FORMAT_VERSION = 4
+BUNDLE_FORMAT_VERSION = 4
 PROFILE_MANIFEST_VERSION = 1
+# Pointer-only fields allowed beyond the immutable bundle.json snapshot.
+OPERATOR_POINTER_KEYS = frozenset({
+    "operator_threshold",
+    "operator_threshold_hex",
+    "threshold_source",
+    "threshold_updated_at",
+})
 GROUP_SAMPLE_COUNT = 8
 ENROLLMENT_GROUPS = (
     {
@@ -144,24 +151,76 @@ def _threshold_payload(threshold: float) -> dict[str, Any]:
     return {"threshold": value, "threshold_hex": value.hex()}
 
 
-def _validated_exact_threshold(value: dict[str, Any]) -> float:
+def _threshold_range_payload(threshold_min: float, threshold_max: float) -> dict[str, Any]:
+    """Serialize the operator-adjustable safe range for a deployed model."""
+    low = float(threshold_min)
+    high = float(threshold_max)
+    if not math.isfinite(low) or not math.isfinite(high):
+        raise ValueError("speaker threshold range must be finite")
+    if not 0.0 <= low <= high <= 1.0:
+        raise ValueError("speaker threshold range must satisfy 0 <= min <= max <= 1")
+    return {
+        "threshold_min": low,
+        "threshold_min_hex": low.hex(),
+        "threshold_max": high,
+        "threshold_max_hex": high.hex(),
+    }
+
+
+def _validated_exact_threshold(
+    value: dict[str, Any],
+    *,
+    key: str = "threshold",
+    hex_key: str = "threshold_hex",
+) -> float:
     try:
-        raw_threshold = value["threshold"]
+        raw_threshold = value[key]
         if isinstance(raw_threshold, bool) or not isinstance(raw_threshold, (int, float)):
-            raise TypeError("threshold must be numeric")
-        threshold = float(value["threshold"])
-        encoded = str(value["threshold_hex"])
+            raise TypeError(f"{key} must be numeric")
+        threshold = float(value[key])
+        encoded = str(value[hex_key])
     except (KeyError, TypeError, ValueError) as exc:
-        raise RuntimeError("speaker bundle threshold is invalid") from exc
+        raise RuntimeError(f"speaker bundle {key} is invalid") from exc
     if not math.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
-        raise RuntimeError("speaker bundle threshold is invalid")
+        raise RuntimeError(f"speaker bundle {key} is invalid")
     try:
         decoded = float.fromhex(encoded)
     except ValueError as exc:
-        raise RuntimeError("speaker bundle threshold encoding is invalid") from exc
+        raise RuntimeError(f"speaker bundle {hex_key} encoding is invalid") from exc
     if decoded != threshold:
-        raise RuntimeError("speaker bundle threshold encoding does not match threshold")
+        raise RuntimeError(f"speaker bundle {hex_key} encoding does not match {key}")
     return threshold
+
+
+def _validated_threshold_range(value: dict[str, Any]) -> tuple[float, float]:
+    low = _validated_exact_threshold(
+        value, key="threshold_min", hex_key="threshold_min_hex"
+    )
+    high = _validated_exact_threshold(
+        value, key="threshold_max", hex_key="threshold_max_hex"
+    )
+    if low > high:
+        raise RuntimeError("speaker bundle threshold range is inverted")
+    return low, high
+
+
+def effective_bundle_threshold(value: dict[str, Any]) -> float:
+    """Return the runtime threshold, preferring an operator override when set."""
+    default = _validated_exact_threshold(value)
+    if "operator_threshold" not in value and "operator_threshold_hex" not in value:
+        return default
+    override = _validated_exact_threshold(
+        value, key="operator_threshold", hex_key="operator_threshold_hex"
+    )
+    low, high = _validated_threshold_range(value)
+    if not low <= override <= high:
+        raise RuntimeError("operator speaker threshold is outside the safe range")
+    return override
+
+
+def _pointer_bundle_core(value: dict[str, Any]) -> dict[str, Any]:
+    """Strip operator-only pointer fields before comparing to bundle.json."""
+    return {key: item for key, item in value.items() if key not in OPERATOR_POINTER_KEYS}
 
 
 @dataclass(frozen=True)
@@ -355,7 +414,9 @@ def _validate_versioned_bundle(profile_dir: str | Path, value: dict[str, Any]) -
         "bundle_id", "model_id", "model_backend", "model_path", "model_sha256",
         "preprocessing_signature", "num_threads", "profile_dir",
         "profiles_manifest_path", "profiles_manifest_sha256", "evaluation_signature",
-        "profile_template_sha256", "threshold", "threshold_hex", "ready",
+        "profile_template_sha256", "threshold", "threshold_hex",
+        "threshold_min", "threshold_min_hex", "threshold_max", "threshold_max_hex",
+        "ready",
     }
     if not required.issubset(value) or value.get("ready") is not True:
         raise RuntimeError("active speaker bundle is invalid")
@@ -369,7 +430,8 @@ def _validate_versioned_bundle(profile_dir: str | Path, value: dict[str, Any]) -
         raise RuntimeError("active speaker bundle path escapes bundle storage")
     bundle_path = bundle_root / "bundle.json"
     stored = _read_json(bundle_path, None)
-    if stored != value:
+    pointer_core = _pointer_bundle_core(value)
+    if stored != pointer_core:
         raise RuntimeError("active speaker pointer does not match bundle.json")
 
     profile_root = Path(str(value["profile_dir"]))
@@ -393,7 +455,12 @@ def _validate_versioned_bundle(profile_dir: str | Path, value: dict[str, Any]) -
     num_threads = raw_num_threads
     if num_threads <= 0:
         raise RuntimeError("active speaker num_threads is invalid")
-    _validated_exact_threshold(value)
+    default_threshold = _validated_exact_threshold(value)
+    low, high = _validated_threshold_range(value)
+    if not low <= default_threshold <= high:
+        raise RuntimeError("speaker bundle default threshold is outside the safe range")
+    # Validate optional operator override (pointer-only; not stored in bundle.json).
+    effective_bundle_threshold(value)
 
     model_path = Path(str(value["model_path"]))
     if not model_path.is_absolute() or not model_path.is_file():
@@ -765,7 +832,53 @@ class SpeakerDatasetStore:
 
     def activate_bundle(self, bundle: dict[str, Any]) -> None:
         _validate_versioned_bundle(self.profile_dir, bundle)
-        _atomic_json(self.active_path, bundle)
+        _atomic_json(self.active_path, _pointer_bundle_core(bundle))
+
+    def set_operator_threshold(self, threshold: float) -> dict[str, Any]:
+        """Adjust the effective threshold within the active bundle's safe range.
+
+        The immutable ``bundle.json`` keeps the report default.  The operator
+        override lives only on ``active_bundle.json`` and is applied at runtime.
+        """
+        active = self.active_bundle()
+        if not isinstance(active, dict) or active.get("legacy") is True:
+            raise ValueError("需要已激活的版本化声纹模型包才能调整阈值")
+        # Re-validate against the on-disk immutable snapshot before mutating.
+        validated = _validate_versioned_bundle(self.profile_dir, active)
+        low, high = _validated_threshold_range(validated)
+        try:
+            value = float(threshold)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("阈值必须是 0 到 1 之间的数字") from exc
+        if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+            raise ValueError("阈值必须是 0 到 1 之间的数字")
+        if not low <= value <= high:
+            raise ValueError(
+                f"阈值必须在安全区间 [{low:.4f}, {high:.4f}] 内"
+            )
+        default = _validated_exact_threshold(validated)
+        pointer = _pointer_bundle_core(validated)
+        if value == default:
+            # Clearing the override restores the report default.
+            pointer.pop("operator_threshold", None)
+            pointer.pop("operator_threshold_hex", None)
+            pointer.pop("threshold_source", None)
+            pointer.pop("threshold_updated_at", None)
+        else:
+            pointer["operator_threshold"] = value
+            pointer["operator_threshold_hex"] = value.hex()
+            pointer["threshold_source"] = "operator"
+            pointer["threshold_updated_at"] = utc_now()
+        _validate_versioned_bundle(self.profile_dir, pointer)
+        _atomic_json(self.active_path, pointer)
+        return {
+            "threshold": effective_bundle_threshold(pointer),
+            "threshold_min": low,
+            "threshold_max": high,
+            "threshold_default": default,
+            "threshold_source": pointer.get("threshold_source", "report"),
+            "active_bundle": pointer,
+        }
 
     def build_bundle_without_speaker(self, speaker_id: str) -> dict[str, Any]:
         """Create (but do not activate) an immutable bundle without one user.
@@ -776,7 +889,9 @@ class SpeakerDatasetStore:
         active = self.active_bundle()
         if not isinstance(active, dict) or active.get("legacy") is True:
             raise ValueError("a versioned active speaker bundle is required")
-        source = _validate_versioned_bundle(self.profile_dir, active)
+        source = _pointer_bundle_core(
+            _validate_versioned_bundle(self.profile_dir, active)
+        )
         source_profiles = Path(source["profile_dir"])
         source_index = _read_json(source_profiles / "profiles.json", None)
         if not isinstance(source_index, dict) or not isinstance(source_index.get("profiles"), list):
@@ -980,16 +1095,37 @@ class SpeakerExperimentRunner:
         return result
 
     @classmethod
-    def _select_calibration_threshold(
+    def _threshold_is_safe(
+        cls,
+        records: list[dict[str, Any]],
+        expected: list[str],
+        threshold: float,
+    ) -> bool:
+        _, far = cls._rates(records, threshold)
+        per_speaker = cls._frr_by_speaker(records, threshold)
+        return (
+            far == 0.0
+            and set(per_speaker) == set(expected)
+            and all(rate <= 0.10 for rate in per_speaker.values())
+        )
+
+    @classmethod
+    def _select_calibration_thresholds(
         cls,
         records: list[dict[str, Any]],
         speaker_ids: Iterable[str],
-    ) -> float | None:
-        """Pick the highest calibration-only threshold meeting safety limits.
+    ) -> tuple[float, float, float] | None:
+        """Pick the safe calibration threshold range meeting FAR/FRR limits.
 
-        A genuine score equal to the threshold is accepted, so the finite set
-        of observed genuine scores contains the exact highest feasible value.
-        The chosen binary64 value is later persisted without rounding.
+        Returns ``(default, threshold_min, threshold_max)`` where:
+        - min is the lowest deployable value with FAR=0 on the evaluation set
+          (strictly above the highest impostor score) and per-speaker FRR<=10%
+        - max is the highest genuine-score candidate still meeting those limits
+        - default is the lowest *genuine-score* candidate in that range (a small
+          extra margin over pure min, while still maximizing acceptance vs max)
+
+        Acceptance uses ``score >= threshold``, so the FAR=0 floor is
+        ``nextafter(max_impostor, +inf)``, not the lowest genuine score.
         """
         expected = sorted(str(value) for value in speaker_ids)
         genuine = [item for item in records if item.get("actual_speaker_id") in expected]
@@ -999,22 +1135,52 @@ class SpeakerExperimentRunner:
             for speaker_id in expected
         ):
             return None
+        impostor_scores = [
+            float(item["best_score"])
+            for item in impostor
+            if math.isfinite(float(item["best_score"]))
+        ]
+        if not impostor_scores:
+            return None
+        # score >= threshold is accepted, so FAR=0 requires threshold > max impostor.
+        threshold_floor = math.nextafter(max(impostor_scores), float("inf"))
+        if not math.isfinite(threshold_floor) or not 0.0 <= threshold_floor <= 1.0:
+            return None
+        if not cls._threshold_is_safe(records, expected, threshold_floor):
+            return None
+
         candidates = sorted({
             float(item["genuine_score"])
             for item in genuine
             if math.isfinite(float(item["genuine_score"]))
             and 0.0 <= float(item["genuine_score"]) <= 1.0
-        }, reverse=True)
+        })
+        valid: list[float] = []
         for candidate in candidates:
-            _, far = cls._rates(records, candidate)
-            per_speaker = cls._frr_by_speaker(records, candidate)
-            if (
-                far == 0.0
-                and set(per_speaker) == set(expected)
-                and all(rate <= 0.10 for rate in per_speaker.values())
-            ):
-                return candidate
-        return None
+            if cls._threshold_is_safe(records, expected, candidate):
+                valid.append(candidate)
+        if not valid:
+            return None
+        threshold_min = threshold_floor
+        threshold_max = valid[-1]
+        if threshold_min > threshold_max:
+            return None
+        # Prefer the lowest genuine candidate as the default deploy value so the
+        # report default keeps a modest margin above pure FAR=0 floor.
+        default = valid[0]
+        if default < threshold_min:
+            default = threshold_min
+        return default, threshold_min, threshold_max
+
+    @classmethod
+    def _select_calibration_threshold(
+        cls,
+        records: list[dict[str, Any]],
+        speaker_ids: Iterable[str],
+    ) -> float | None:
+        """Pick the default calibration threshold (lowest genuine-safe value)."""
+        selected = cls._select_calibration_thresholds(records, speaker_ids)
+        return None if selected is None else selected[0]
 
     @staticmethod
     def _p95(values: list[int]) -> int | None:
@@ -1101,8 +1267,8 @@ class SpeakerExperimentRunner:
             for sample in probes
             if not sample.get("actual_speaker_id") and sample.get("subject_batch")
         }
-        threshold = self._select_calibration_threshold(calibration, centroids)
-        if threshold is None:
+        selected = self._select_calibration_thresholds(calibration, centroids)
+        if selected is None:
             return {
                 "model_id": spec.model_id,
                 "label": spec.label,
@@ -1111,6 +1277,10 @@ class SpeakerExperimentRunner:
                 "embedding_cache_key": cache_id,
                 "threshold": None,
                 "threshold_hex": None,
+                "threshold_min": None,
+                "threshold_min_hex": None,
+                "threshold_max": None,
+                "threshold_max_hex": None,
                 "genuine_count": sum(genuine_by_speaker.values()),
                 "genuine_by_speaker": genuine_by_speaker,
                 "impostor_count": impostor_count,
@@ -1122,6 +1292,7 @@ class SpeakerExperimentRunner:
                 "reason": "校准集不存在同时满足FAR=0和每位用户FRR<=10%的阈值",
             }
 
+        threshold, threshold_min, threshold_max = selected
         calibration_frr, calibration_far = self._rates(calibration, threshold)
         holdout_frr, holdout_far = self._rates(holdout, threshold)
         total_frr, total_far = self._rates(records, threshold)
@@ -1154,6 +1325,7 @@ class SpeakerExperimentRunner:
             "embedding_cache_key": cache_id,
             "profile_template_sha256": _profile_template_sha256(centroids),
             **_threshold_payload(threshold),
+            **_threshold_range_payload(threshold_min, threshold_max),
             "genuine_count": sum(genuine_by_speaker.values()),
             "genuine_by_speaker": genuine_by_speaker,
             "impostor_count": impostor_count,
@@ -1236,7 +1408,12 @@ class SpeakerExperimentRunner:
                 "impostor_batches_min": 3,
                 "false_accept_rate_max": 0.0,
                 "false_reject_rate_max": 0.10,
-                "threshold_selection": "highest calibration-only threshold with FAR=0 and per-speaker FRR<=10%",
+                "threshold_selection": (
+                    "default is lowest genuine-score candidate with FAR=0 and "
+                    "per-speaker FRR<=10%; threshold_min is nextafter(max impostor) "
+                    "so operators can lower within the true FAR=0 band; threshold_max "
+                    "is the highest still-safe candidate"
+                ),
                 "p95_latency_ms_max": 300,
             },
         }
@@ -1264,8 +1441,11 @@ class SpeakerExperimentRunner:
                 )
         try:
             threshold = _validated_exact_threshold(selected)
+            threshold_min, threshold_max = _validated_threshold_range(selected)
         except RuntimeError as exc:
             raise ValueError("speaker report threshold is not exactly deployable") from exc
+        if not threshold_min <= threshold <= threshold_max:
+            raise ValueError("speaker report default threshold is outside the safe range")
         extractor = self._extractor(spec)
         cache_id = self.dataset.prepare_embedding_cache(binding)
         if selected.get("embedding_cache_key") != cache_id:
@@ -1317,6 +1497,7 @@ class SpeakerExperimentRunner:
             "profile_template_sha256": template_sha256,
             "evaluation_signature": evaluation_signature,
             **_threshold_payload(threshold),
+            **_threshold_range_payload(threshold_min, threshold_max),
             "ready": True,
             "created_at": utc_now(),
             "report_generated_at": report.get("generated_at"),

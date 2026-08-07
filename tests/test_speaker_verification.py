@@ -1,4 +1,5 @@
 import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -147,12 +148,14 @@ class SpeakerEvaluationTests(unittest.TestCase):
             self.assertEqual(summary["false_reject_rate"], 0)
             self.assertFalse(evaluations.summary(3, threshold=0.6)["current"])
 
-    def test_legacy_recommendation_is_highest_exact_zero_far_threshold(self):
+    def test_legacy_recommendation_is_lowest_exact_zero_far_threshold(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             evaluations = SpeakerEvaluationStore(temp_dir)
+            # Wide safe range: impostors peak at 0.40, genuine covers 0.55–0.90.
+            # Lowest-safe default is 0.55; highest still-safe is 0.70 (FRR=10%).
             speaker_scores = {
-                "alice": [0.8] * 27 + [0.4] * 3,
-                "bob": [0.612346] * 27 + [0.4] * 3,
+                "alice": [0.90] * 24 + [0.70] * 3 + [0.55] * 3,
+                "bob": [0.88] * 24 + [0.70] * 3 + [0.55] * 3,
             }
             for speaker_id, scores in speaker_scores.items():
                 for score in scores:
@@ -171,56 +174,67 @@ class SpeakerEvaluationTests(unittest.TestCase):
                     profile_revision=1,
                     actual_speaker_id=None,
                     decision=SpeakerDecision(
-                        False, 0.612345, "bob", "bob", "speaker_mismatch", 20,
-                        {"alice": 0.2, "bob": 0.612345},
+                        False, 0.40, "bob", "bob", "speaker_mismatch", 20,
+                        {"alice": 0.2, "bob": 0.40},
                     ),
                     audio_ms=1000,
                 )
-            summary = evaluations.summary(1, threshold=0.612346)
+            summary = evaluations.summary(1, threshold=0.55)
             self.assertTrue(summary["ready"])
-            self.assertEqual(summary["recommended_threshold"], 0.612346)
+            self.assertEqual(summary["recommended_threshold"], 0.55)
+            self.assertEqual(
+                summary["recommended_threshold_min"],
+                math.nextafter(0.40, float("inf")),
+            )
+            self.assertEqual(summary["recommended_threshold_max"], 0.70)
             self.assertEqual(
                 float.fromhex(summary["recommended_threshold_hex"]),
                 summary["recommended_threshold"],
             )
-            # Four-decimal deployment would accept every impostor here.
-            self.assertGreater(
-                evaluations.summary(1, threshold=round(0.612346, 4))["false_accept_rate"],
-                0.0,
-            )
-            self.assertEqual(summary["false_reject_rate_by_speaker"]["alice"], 0.1)
-            self.assertEqual(summary["false_reject_rate_by_speaker"]["bob"], 0.1)
+            self.assertEqual(summary["false_reject_rate"], 0.0)
+            self.assertEqual(summary["false_accept_rate"], 0.0)
 
 
 class SpeakerDatasetTests(unittest.TestCase):
-    def test_calibration_threshold_is_highest_exact_per_speaker_safe_value(self):
+    def test_calibration_threshold_is_lowest_exact_per_speaker_safe_value(self):
         records = []
-        for speaker_id, high in (("alice", 0.8), ("bob", 0.612346)):
+        # Alice/bob genuine scores create a non-trivial safe range.
+        for speaker_id in ("alice", "bob"):
             records.extend(
                 {
                     "actual_speaker_id": speaker_id,
                     "genuine_score": score,
                     "best_score": score,
                 }
-                for score in ([high] * 9 + [0.4])
+                for score in ([0.90] * 8 + [0.70] + [0.55])
             )
         records.extend(
             {
                 "actual_speaker_id": None,
                 "genuine_score": -1.0,
-                "best_score": 0.612345,
+                "best_score": 0.40,
             }
             for _ in range(20)
         )
-        threshold = SpeakerExperimentRunner._select_calibration_threshold(
+        selected = SpeakerExperimentRunner._select_calibration_thresholds(
             records, ["alice", "bob"]
         )
-        self.assertEqual(threshold, 0.612346)
-        self.assertEqual(SpeakerExperimentRunner._rates(records, threshold)[1], 0.0)
-        self.assertGreater(
-            SpeakerExperimentRunner._rates(records, round(threshold, 4))[1],
-            0.0,
+        self.assertIsNotNone(selected)
+        default, threshold_min, threshold_max = selected
+        self.assertEqual(default, 0.55)
+        self.assertEqual(threshold_min, math.nextafter(0.40, float("inf")))
+        self.assertEqual(threshold_max, 0.70)
+        self.assertEqual(
+            SpeakerExperimentRunner._select_calibration_threshold(records, ["alice", "bob"]),
+            0.55,
         )
+        # 0.55 is inside the true FAR=0 band even though it is below the
+        # lowest genuine-score default endpoint used before the floor fix.
+        self.assertLess(threshold_min, 0.55)
+        self.assertEqual(SpeakerExperimentRunner._rates(records, 0.55)[1], 0.0)
+        self.assertEqual(SpeakerExperimentRunner._rates(records, threshold_min)[1], 0.0)
+        self.assertEqual(SpeakerExperimentRunner._rates(records, threshold_max)[1], 0.0)
+        self.assertGreater(SpeakerExperimentRunner._frr_by_speaker(records, 0.90)["alice"], 0.10)
 
     def test_unknown_model_backend_is_rejected(self):
         self.assertEqual(
@@ -367,11 +381,15 @@ class SpeakerDatasetTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "configuration changed"):
                 wrong_threads.build_bundle("campplus")
             bundle = runner.build_bundle("campplus")
-            self.assertEqual(bundle["bundle_format_version"], 3)
+            self.assertEqual(bundle["bundle_format_version"], 4)
             self.assertEqual(bundle["num_threads"], 4)
             self.assertEqual(bundle["evaluation_signature"], report["evaluation_signature"])
             self.assertEqual(bundle["profile_template_sha256"], report["models"][0]["profile_template_sha256"])
             self.assertEqual(float.fromhex(bundle["threshold_hex"]), bundle["threshold"])
+            self.assertEqual(float.fromhex(bundle["threshold_min_hex"]), bundle["threshold_min"])
+            self.assertEqual(float.fromhex(bundle["threshold_max_hex"]), bundle["threshold_max"])
+            self.assertLessEqual(bundle["threshold_min"], bundle["threshold"])
+            self.assertLessEqual(bundle["threshold"], bundle["threshold_max"])
             self.assertEqual(
                 __import__("hashlib").sha256(
                     (Path(bundle["profile_dir"]).parent / bundle["profiles_manifest_path"]).read_bytes()
@@ -382,6 +400,17 @@ class SpeakerDatasetTests(unittest.TestCase):
             active = resolve_active_bundle(root / "profiles")
             self.assertEqual(active["bundle_id"], bundle["bundle_id"])
             self.assertEqual(SpeakerProfileStore(active["profile_dir"]).list_profiles()[0].speaker_id, draft["speaker_id"])
+            # Operator override stays on the pointer only; bundle.json remains default.
+            if bundle["threshold_min"] < bundle["threshold_max"]:
+                mid = (bundle["threshold_min"] + bundle["threshold_max"]) / 2
+                updated = dataset.set_operator_threshold(mid)
+                self.assertEqual(updated["threshold"], mid)
+                reloaded = resolve_active_bundle(root / "profiles")
+                self.assertEqual(reloaded["operator_threshold"], mid)
+                self.assertEqual(reloaded["threshold"], bundle["threshold"])
+                restored = dataset.set_operator_threshold(bundle["threshold"])
+                self.assertEqual(restored["threshold_source"], "report")
+                self.assertNotIn("operator_threshold", restored["active_bundle"])
             with self.assertRaisesRegex(ValueError, "final authorized"):
                 dataset.build_bundle_without_speaker(draft["speaker_id"])
 
@@ -638,6 +667,22 @@ class RuntimeSpeakerGateTests(unittest.TestCase):
         audio = runtime._collect_utterance(followup=True)
         self.assertIsNotNone(audio)
         self.assertEqual(runtime._session_until, 10.0)
+
+    def test_first_turn_speaker_reject_keeps_continuous_session(self):
+        now = [1.0]
+        rejected, _ = self.runtime("enforce", False)
+        rejected.session_timeout = 60.0
+        rejected.clock = lambda: now[0]
+        rejected._session_until = 50.0
+        rejected._in_followup = False
+        rejected._prepare_followup = lambda: setattr(rejected, "_in_followup", True)
+        # Simulate the branch used after capture when speaker fails.
+        if rejected._session_enabled() and rejected._session_active():
+            rejected._prepare_followup()
+        else:
+            rejected._reset_to_wake(reason="fail")
+        self.assertTrue(rejected._in_followup)
+        self.assertEqual(rejected._session_until, 50.0)
 
 
 class SpeakerAdminServiceTests(unittest.TestCase):

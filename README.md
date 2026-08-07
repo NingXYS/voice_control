@@ -99,6 +99,12 @@ CAM++、ERes2Net-large 和 ERes2NetV2 在同一批录音上公平比较。对话
 FAR 为 0、FRR 不高于 10%、P95 不高于 300 ms 时，界面才允许原子激活候选模型。
 激活后仍可一键回滚原 CAM++ 声纹。
 
+默认部署阈值取**最低**仍满足 `FAR=0` 且每位用户 `FRR≤10%` 的校准值，给现场
+本人分数留余量；报告同时给出可调上界 `threshold_max`。Dashboard 可在
+`[threshold_min, threshold_max]` 内手动调整生效阈值（语音模块须先停止，改完后
+重启语音才生效）。`VOICE_SPEAKER_THRESHOLD` 仅在无 active bundle / 回滚到旧版
+CAM++ 时生效。
+
 声纹默认关闭。先登记用户并设置 `VOICE_SPEAKER_VERIFY_MODE=shadow` 收集现场
 数据；只有界面显示 FAR、FRR 和 P95 达标后才改为 `enforce`。`shadow` 会计算、
 记录声纹结果但不拦截指令，`enforce` 会在 ASR 和动作执行前拒绝未通过者。声纹只能过滤

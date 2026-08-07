@@ -13,7 +13,10 @@ const ui = {
   enrollmentGroup: $("#enrollmentGroup"),
   captureSpeakerSampleBtn: $("#captureSpeakerSampleBtn"), commitSpeakerBtn: $("#commitSpeakerBtn"), cancelSpeakerBtn: $("#cancelSpeakerBtn"), speakerList: $("#speakerList"),
   probeSpeakerSelect: $("#probeSpeakerSelect"), probeBatchInput: $("#probeBatchInput"), captureProbeBtn: $("#captureProbeBtn"), probeResult: $("#probeResult"), evaluationCard: $("#evaluationCard"),
-  rebuildExperimentsBtn: $("#rebuildExperimentsBtn"), rollbackLegacyBtn: $("#rollbackLegacyBtn"), experimentHelp: $("#experimentHelp"), experimentCard: $("#experimentCard")
+  rebuildExperimentsBtn: $("#rebuildExperimentsBtn"), rollbackLegacyBtn: $("#rollbackLegacyBtn"), experimentHelp: $("#experimentHelp"), experimentCard: $("#experimentCard"),
+  speakerThresholdForm: $("#speakerThresholdForm"), speakerThresholdInput: $("#speakerThresholdInput"),
+  speakerThresholdBtn: $("#speakerThresholdBtn"), speakerThresholdRange: $("#speakerThresholdRange"),
+  speakerThresholdHelp: $("#speakerThresholdHelp")
 };
 
 const state = {
@@ -138,16 +141,48 @@ function renderSpeaker(data) {
   const activeModel = modelRows.concat(configuredModels).find((model) => model.model_id === activeModelId);
   const activeModelLabel = activeModel?.label || (activeModelId === "campplus" ? "CAM++" : activeModelId || "缺失");
   const modeLabels = { off: "关闭", shadow: "影子验证", enforce: "强制门控" };
+  const effectiveThreshold = finiteNumber(
+    data?.threshold ?? activeBundle?.operator_threshold ?? activeBundle?.threshold ?? evaluation?.threshold
+  );
+  const thresholdMin = finiteNumber(data?.threshold_min ?? activeBundle?.threshold_min);
+  const thresholdMax = finiteNumber(data?.threshold_max ?? activeBundle?.threshold_max);
+  const thresholdDefault = finiteNumber(data?.threshold_default ?? activeBundle?.threshold);
+  const thresholdSourceLabels = { report: "报告默认", operator: "手动调整", legacy: "旧版", env: "环境变量" };
+  const thresholdSource = thresholdSourceLabels[data?.threshold_source] || data?.threshold_source || "-";
   ui.speakerSummary.replaceChildren(
     summaryRow("当前生效模型", activeModelLabel),
     summaryRow("当前模式", modeLabels[data?.mode] || data?.mode || "关闭"),
-    summaryRow("生效阈值", Number(activeBundle?.threshold ?? evaluation?.threshold ?? data?.threshold ?? 0.6).toFixed(2)),
+    summaryRow("生效阈值", effectiveThreshold == null ? "-" : effectiveThreshold.toFixed(4)),
+    summaryRow("阈值来源", thresholdSource),
     summaryRow("当前授权用户", `${profiles.length} 位`)
   );
 
   const runtimeOffline = state.runtime === "offline" || state.runtime === "error";
   const experimentBusy = state.experimentBusy || Boolean(data?.experiment_busy);
   const manageable = runtimeOffline && Boolean(data?.model_ready) && !state.enrollment && !state.enrollmentBusy && !experimentBusy;
+  const thresholdEditable = Boolean(data?.threshold_editable) && manageable && thresholdMin != null && thresholdMax != null;
+  if (ui.speakerThresholdForm) {
+    ui.speakerThresholdForm.hidden = !Boolean(data?.threshold_editable);
+    if (ui.speakerThresholdInput && document.activeElement !== ui.speakerThresholdInput) {
+      ui.speakerThresholdInput.value = effectiveThreshold == null ? "" : String(Number(effectiveThreshold.toFixed(4)));
+      ui.speakerThresholdInput.min = thresholdMin == null ? "0" : String(thresholdMin);
+      ui.speakerThresholdInput.max = thresholdMax == null ? "1" : String(thresholdMax);
+    }
+    if (ui.speakerThresholdRange) {
+      ui.speakerThresholdRange.textContent = (thresholdMin != null && thresholdMax != null)
+        ? `安全区间 ${thresholdMin.toFixed(4)} – ${thresholdMax.toFixed(4)}${thresholdDefault != null ? `（默认 ${thresholdDefault.toFixed(4)}）` : ""}`
+        : "";
+    }
+    if (ui.speakerThresholdBtn) ui.speakerThresholdBtn.disabled = !thresholdEditable;
+    if (ui.speakerThresholdInput) ui.speakerThresholdInput.disabled = !thresholdEditable;
+    if (ui.speakerThresholdHelp && !state.notices.threshold) {
+      ui.speakerThresholdHelp.textContent = data?.threshold_editable
+        ? (runtimeOffline
+          ? "可在安全区间内下调阈值以提高本人通过率；改完后需重新启动语音模块。"
+          : "调整阈值前请先停止语音模块。")
+        : "";
+    }
+  }
   ui.speakerEnrollBtn.disabled = !manageable;
   ui.speakerNameInput.disabled = !manageable;
   const defaultSpeakerHelp = data?.error
@@ -218,7 +253,7 @@ function renderSpeaker(data) {
       const detail = document.createElement("p");
       detail.textContent = reportStale
         ? (experiments.stale_reason || model.stale_reason || "录音、声纹模板或推理配置已变化，请重新计算报告后再激活。")
-        : model.reason || `阈值 ${Number(model.threshold || 0).toFixed(2)} · FAR ${percentLabel(model.false_accept_rate)} · FRR ${percentLabel(model.false_reject_rate)} · 路人 ${model.impostor_count || 0}/100 · 批次 ${model.impostor_batch_count || 0}/3 · P95 ${model.p95_latency_ms ?? "-"}ms`;
+        : model.reason || `阈值 ${Number(model.threshold || 0).toFixed(4)}${model.threshold_max != null && Number(model.threshold_max) !== Number(model.threshold) ? `–${Number(model.threshold_max).toFixed(4)}` : ""} · FAR ${percentLabel(model.false_accept_rate)} · FRR ${percentLabel(model.false_reject_rate)} · 路人 ${model.impostor_count || 0}/100 · 批次 ${model.impostor_batch_count || 0}/3 · P95 ${model.p95_latency_ms ?? "-"}ms`;
       item.append(head, detail);
       if (model.ready) {
         const alreadyActive = sameReportActivation(activeBundle, experiments, model);
@@ -365,7 +400,7 @@ function addLog(event) {
   const timing = event.type === "voice.timing"
     ? `耗时 · ${event.payload?.stage || "stage"} · ${JSON.stringify(event.payload || {})}`
     : event.type === "voice.speaker"
-      ? `声纹 · ${event.payload?.accepted ? "匹配" : "未匹配"} · ${event.payload?.display_name || "无"} · score=${event.payload?.score} · ${event.payload?.duration_ms}ms`
+      ? `声纹 · ${event.payload?.accepted ? "匹配" : "未匹配"} · ${event.payload?.display_name || "无"} · score=${event.payload?.score}${event.payload?.threshold != null ? ` / thr=${event.payload.threshold}` : ""} · ${event.payload?.duration_ms}ms`
     : "";
   line.append(document.createTextNode(event.payload?.message || timing || JSON.stringify(event.payload || {})));
   ui.logs.appendChild(line);
@@ -675,6 +710,39 @@ async function activateExperiment(modelId) {
 }
 
 ui.rollbackLegacyBtn.addEventListener("click", () => activateExperiment("legacy-v1"));
+
+async function applySpeakerThreshold() {
+  if (!ui.speakerThresholdInput) return;
+  const value = Number(ui.speakerThresholdInput.value);
+  if (!Number.isFinite(value)) {
+    state.notices.threshold = "请输入有效的阈值数字";
+    ui.speakerThresholdHelp.textContent = state.notices.threshold;
+    return;
+  }
+  if (!window.confirm(`确认将生效阈值设为 ${value.toFixed(4)} 吗？改完后需重新启动语音模块。`)) return;
+  ui.speakerThresholdBtn.disabled = true;
+  try {
+    const data = await api("/api/speakers/threshold", {
+      method: "POST",
+      body: JSON.stringify({ threshold: value }),
+    });
+    state.notices.threshold = `阈值已更新为 ${Number(data.threshold).toFixed(4)}，请重新启动语音模块后生效。`;
+    ui.speakerThresholdHelp.textContent = state.notices.threshold;
+    await refreshSpeakers();
+  } catch (error) {
+    state.notices.threshold = error.message;
+    ui.speakerThresholdHelp.textContent = state.notices.threshold;
+  } finally {
+    if (state.speakerData) renderSpeaker(state.speakerData);
+  }
+}
+
+if (ui.speakerThresholdBtn) {
+  ui.speakerThresholdBtn.addEventListener("click", () => {
+    state.notices.threshold = "";
+    applySpeakerThreshold();
+  });
+}
 
 ui.loginForm.addEventListener("submit", async (event) => {
   event.preventDefault(); ui.loginError.textContent = "";
