@@ -185,6 +185,25 @@ VOICE_SESSION_END_PHRASES = os.environ.get(
     "VOICE_SESSION_END_PHRASES",
     "退出,结束对话,结束会话,再见,不用了,停止聊天,停止对话",
 )
+
+# Optional speaker verification gate. Enrollment is managed by the dashboard
+# while the voice runtime is offline. The ONNX model runs through the existing
+# sherpa-onnx dependency; no FunASR/PyTorch runtime is required.
+SPEAKER_VERIFY_MODE = os.environ.get("VOICE_SPEAKER_VERIFY_MODE", "off").strip().lower()
+SPEAKER_MODEL_PATH = _configured_path(
+    "VOICE_SPEAKER_MODEL_PATH",
+    _project_asset(
+        "models",
+        "speaker",
+        "3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx",
+    ),
+)
+SPEAKER_PROFILE_DIR = os.environ.get(
+    "VOICE_SPEAKER_PROFILE_DIR",
+    str(_SOURCE_ROOT / "runtime_data" / "speaker_profiles"),
+).strip()
+SPEAKER_THRESHOLD = _configured_float("VOICE_SPEAKER_THRESHOLD", 0.60)
+SPEAKER_NUM_THREADS = _configured_int("VOICE_SPEAKER_NUM_THREADS", 1)
 # Short anti double-wake after a turn. Combined with POST_TTS_GUARD this is the
 # blackout before the next "小西小西" is accepted. Was 1.5s and felt like "dead"
 # if the user re-woke immediately after TTS.
@@ -409,6 +428,14 @@ def validate_runtime_config() -> None:
         raise ValueError("SPEECH_MIN_RMS must be between 0 and 1")
     if COMMAND_VAD_GATE not in {"segment", "frame", "off"}:
         raise ValueError("VOICE_COMMAND_VAD_GATE must be segment, frame, or off")
+    if SPEAKER_VERIFY_MODE not in {"off", "shadow", "enforce"}:
+        raise ValueError("VOICE_SPEAKER_VERIFY_MODE must be off, shadow, or enforce")
+    if not 0.0 <= SPEAKER_THRESHOLD <= 1.0:
+        raise ValueError("VOICE_SPEAKER_THRESHOLD must be between 0 and 1")
+    if SPEAKER_NUM_THREADS <= 0:
+        raise ValueError("VOICE_SPEAKER_NUM_THREADS must be positive")
+    if not SPEAKER_PROFILE_DIR:
+        raise ValueError("VOICE_SPEAKER_PROFILE_DIR must not be empty")
     if not 0.0 < ASR_TARGET_RMS <= 1.0:
         raise ValueError("ASR_TARGET_RMS must be between 0 and 1")
     if ASR_MAX_GAIN < 1.0:
@@ -442,6 +469,8 @@ def validate_runtime_config() -> None:
         wake_dir = Path(WAKE_MODEL_DIR)
         for filename in ("tokens.txt", "encoder.onnx", "decoder.onnx", "joiner.onnx", "keywords.txt"):
             _require_file(wake_dir / filename, f"wake-word asset {filename}")
+    if SPEAKER_VERIFY_MODE != "off":
+        _require_file(Path(SPEAKER_MODEL_PATH), "speaker embedding model")
 
 
 def _require_file(path: Path, description: str) -> None:

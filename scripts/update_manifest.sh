@@ -18,6 +18,7 @@ find . -type f \
     ! -path './log_online/*' \
     ! -path './logs/*' \
     ! -path './debug_audio*/*' \
+    ! -path './runtime_data/*' \
     ! -path './models/tts/phrase_cache/*' \
     ! -path './massage_data/logs/*' \
     ! -path './massage_data/_rokae_log_/*' \

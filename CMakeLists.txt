@@ -11,7 +11,7 @@ find_package(ament_cmake REQUIRED)
 # Motion planning, collision/workspace limits and emergency stop belong to the
 # separately deployed controller and are intentionally not built from this tree.
 
-install(PROGRAMS
+set(VOICE_EXECUTABLE_SCRIPTS
   scripts/voice_wake_entry.py
   scripts/voice_space_wake.py
   scripts/voice_tts_node.py
@@ -20,13 +20,21 @@ install(PROGRAMS
   scripts/eval_kws.py
   scripts/voice_capture_smoke.py
   scripts/voice_ui_server.py
+  scripts/export_eres2netv2_onnx.py
+)
+
+install(PROGRAMS
+  ${VOICE_EXECUTABLE_SCRIPTS}
   DESTINATION lib/${PROJECT_NAME}
 )
 
-install(FILES
+set(VOICE_PYTHON_MODULES
   scripts/voice_runtime_config.py
   scripts/voice_wake_word.py
   scripts/voice_wake_verifier.py
+  scripts/voice_speaker_verifier.py
+  scripts/voice_speaker_dataset.py
+  scripts/voice_speaker_onnx.py
   scripts/voice_command_vad.py
   scripts/voice_asr_wake_word.py
   scripts/voice_audio_session.py
@@ -55,11 +63,40 @@ install(FILES
   scripts/voice_subprocess.py
   scripts/voice_action_audit.py
   scripts/voice_network_policy.py
+)
+
+install(FILES
+  ${VOICE_PYTHON_MODULES}
   DESTINATION lib/${PROJECT_NAME}
 )
 
-install(PROGRAMS
+set(VOICE_AUXILIARY_SCRIPTS
   scripts/run_voice_ui.sh
+)
+
+install(PROGRAMS
+  ${VOICE_AUXILIARY_SCRIPTS}
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+# Keep launch-time stale-overlay verification in lockstep with the files above.
+# The launcher reads this installed manifest instead of maintaining a second,
+# easily-forgotten Python module list.
+set(VOICE_OVERLAY_FILE_MANIFEST_CONTENT "")
+foreach(VOICE_SOURCE_FILE IN LISTS
+    VOICE_EXECUTABLE_SCRIPTS
+    VOICE_PYTHON_MODULES
+    VOICE_AUXILIARY_SCRIPTS)
+  get_filename_component(VOICE_SOURCE_NAME "${VOICE_SOURCE_FILE}" NAME)
+  string(APPEND VOICE_OVERLAY_FILE_MANIFEST_CONTENT "${VOICE_SOURCE_NAME}\n")
+endforeach()
+set(VOICE_OVERLAY_FILE_MANIFEST
+  "${CMAKE_CURRENT_BINARY_DIR}/voice_overlay_files.txt")
+file(GENERATE
+  OUTPUT "${VOICE_OVERLAY_FILE_MANIFEST}"
+  CONTENT "${VOICE_OVERLAY_FILE_MANIFEST_CONTENT}")
+install(FILES
+  "${VOICE_OVERLAY_FILE_MANIFEST}"
   DESTINATION lib/${PROJECT_NAME}
 )
 

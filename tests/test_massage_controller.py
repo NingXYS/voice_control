@@ -18,6 +18,7 @@ from voice_massage_controller import (
     is_ambiguous_massage_move,
     parse_massage_intent,
     parse_massage_move_intent,
+    parse_massage_start_request,
 )
 from voice_text_pipeline import process_text
 
@@ -94,6 +95,36 @@ class MassageIntentTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertIsNone(parse_massage_intent(text))
 
+    def test_parameterized_start_request(self):
+        cases = {
+            "开始按摩左肩，力度三级": {
+                "parts": ("left-shoulder",), "force_level": 3, "complete": True,
+            },
+            "启动按摩左肩和右腰，2档力度": {
+                "parts": ("left-shoulder", "right-waist"),
+                "force_level": 2,
+                "complete": True,
+            },
+            "执行按摩全部位置五级": {
+                "parts": ("all",), "force_level": 5, "complete": True,
+            },
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(parse_massage_start_request(text), expected)
+
+    def test_start_request_fails_closed_when_parameters_are_invalid(self):
+        for text in (
+            "开始按摩", "开始按摩左肩", "开始按摩三级", "开始按摩左肩六级",
+            "开始按摩左腿三级", "开始按摩左肩三级随便执行",
+            "开始按摩全部位置和左肩三级", "开始按摩左肩三级四级",
+        ):
+            with self.subTest(text=text):
+                request = parse_massage_start_request(text)
+                self.assertIsNotNone(request)
+                self.assertFalse(request["complete"])
+        self.assertIsNone(parse_massage_start_request("可以开始按摩吗"))
+
     def test_direction_moves_require_explicit_distance_and_unit(self):
         cases = {
             "按摩机械臂向上5厘米": {"direction": "up", "distance_m": 0.05},
@@ -122,12 +153,31 @@ class MassageIntentTests(unittest.TestCase):
         ctrl = MagicMock()
         ctrl.handle.return_value = {"action": "massage_start", "state": "awaiting_confirmation"}
         result = process_text(
-            "开始按摩",
+            "开始按摩左肩和背部，力度三级",
             dialogue=lambda _text: (_ for _ in ()).throw(AssertionError("Dify called")),
             massage_controller=ctrl,
         )
         self.assertEqual(result[0]["action"], "massage_start")
-        ctrl.handle.assert_called_once_with("start_massage", speaker=None)
+        ctrl.handle.assert_called_once_with(
+            "start_massage",
+            speaker=None,
+            parts=("left-shoulder", "back"),
+            force_level=3,
+        )
+
+    def test_incomplete_start_pipeline_prompts_locally(self):
+        ctrl = MagicMock()
+        ctrl.handle.return_value = {
+            "action": "massage_start", "state": "ready", "started": False,
+        }
+        process_text(
+            "开始按摩",
+            dialogue=lambda _text: (_ for _ in ()).throw(AssertionError("Dify called")),
+            massage_controller=ctrl,
+        )
+        ctrl.handle.assert_called_once_with(
+            "start_massage", speaker=None, parts=None, force_level=None,
+        )
 
     def test_direction_pipeline_uses_reserved_controller_path(self):
         ctrl = MagicMock()
@@ -238,11 +288,11 @@ class MassageControllerTests(unittest.TestCase):
 
     def test_too_few_points_preserves_previous_plan(self):
         old = self.data / "captured_postures.h"
-        old.write_text(header(3, "old"))
+        old.write_text(header(5, "old"))
         ctrl = self.controller()
         ctrl.state = "teaching"
         ctrl._teaching_proc = FinishedProcess(0)
-        ctrl.candidate_path.write_text(header(1, "candidate"))
+        ctrl.candidate_path.write_text(header(4, "candidate"))
         out = ctrl.finish_teaching()
         self.assertFalse(out["started"])
         self.assertEqual(ctrl.state, "ready")
@@ -252,25 +302,27 @@ class MassageControllerTests(unittest.TestCase):
         ctrl = self.controller()
         ctrl.state = "teaching"
         ctrl._teaching_proc = FinishedProcess(0)
-        ctrl.candidate_path.write_text(header(3, "new"))
+        ctrl.candidate_path.write_text(header(5, "new"))
         out = ctrl.finish_teaching()
         self.assertTrue(out["started"])
         self.wait_state(ctrl, "ready")
-        self.assertEqual(ctrl.point_count, 3)
+        self.assertEqual(ctrl.point_count, 5)
 
-        out = ctrl.start_massage()
+        out = ctrl.start_massage(("left-shoulder", "back"), 3)
         self.assertFalse(out["started"])
         self.assertEqual(ctrl.state, "awaiting_confirmation")
+        self.assertEqual(out["parts"], ["left-shoulder", "back"])
+        self.assertEqual(out["force_newtons"], 40)
         out = ctrl.confirm_start()
         self.assertTrue(out["started"])
         self.wait_state(ctrl, "ready")
 
     def test_cancel_confirmation_does_not_launch(self):
         popen = MagicMock(return_value=FinishedProcess())
-        (self.data / "captured_postures.h").write_text(header(2))
+        (self.data / "captured_postures.h").write_text(header(5))
         ctrl = self.controller(popen=popen)
         self.assertEqual(ctrl.state, "ready")
-        ctrl.start_massage()
+        ctrl.start_massage(("right-shoulder",), 2)
         out = ctrl.cancel_start()
         self.assertTrue(out["cancelled"])
         self.assertEqual(ctrl.state, "ready")
@@ -278,25 +330,84 @@ class MassageControllerTests(unittest.TestCase):
 
     def test_build_failure_rolls_back_header_and_binary(self):
         active = self.data / "captured_postures.h"
-        active.write_text(header(3, "old"))
+        active.write_text(header(5, "old"))
         ctrl = self.controller(
             run=lambda *a, **k: subprocess.CompletedProcess(a[0], 2, "compile error")
         )
         ctrl.state = "teaching"
         ctrl._teaching_proc = FinishedProcess(0)
-        ctrl.candidate_path.write_text(header(4, "new"))
+        ctrl.candidate_path.write_text(header(5, "new"))
         ctrl.finish_teaching()
         self.wait_state(ctrl, "ready")
         self.assertIn("old", active.read_text())
         self.assertEqual(self.massage.read_text(), "old-binary")
 
     def test_massage_failure_enters_error(self):
-        (self.data / "captured_postures.h").write_text(header(2))
+        (self.data / "captured_postures.h").write_text(header(5))
         ctrl = self.controller(popen=lambda *a, **k: FinishedProcess(7))
-        ctrl.start_massage()
+        ctrl.start_massage(("back",), 1)
         ctrl.confirm_start()
         self.wait_state(ctrl, "error")
         self.assertIn("code=7", ctrl.last_error)
+
+    def test_confirm_passes_locked_selection_to_u_chui(self):
+        (self.data / "captured_postures.h").write_text(header(5))
+        proc = RunningProcess()
+        popen = MagicMock(return_value=proc)
+        ctrl = self.controller(popen=popen)
+        out = ctrl.start_massage(("right-waist", "left-shoulder"), 4)
+        self.assertEqual(out["parts"], ["left-shoulder", "right-waist"])
+        status = ctrl.report_status()
+        self.assertIn("左肩、右腰，力度4级（50牛）", status["reply"])
+        repeated = ctrl.start_massage(None, None)
+        self.assertIn("当前锁定左肩、右腰，力度4级（50牛）", repeated["reply"])
+
+        out = ctrl.confirm_start()
+        self.assertTrue(out["started"])
+        command = popen.call_args.args[0]
+        self.assertEqual(
+            command,
+            [
+                str(self.massage), "--level", "4",
+                "--part", "left-shoulder", "--part", "right-waist",
+            ],
+        )
+        proc.returncode = 0
+        proc.done.set()
+        self.wait_state(ctrl, "ready")
+
+    def test_all_positions_use_all_cli_flag_and_cancel_clears_selection(self):
+        (self.data / "captured_postures.h").write_text(header(5))
+        popen = MagicMock(return_value=FinishedProcess())
+        ctrl = self.controller(popen=popen)
+        ctrl.start_massage(("all",), 5)
+        ctrl.cancel_start()
+        out = ctrl.confirm_start()
+        self.assertFalse(out["started"])
+        popen.assert_not_called()
+
+        ctrl.start_massage(("all",), 5)
+        ctrl.confirm_start()
+        self.assertEqual(
+            popen.call_args.args[0],
+            [str(self.massage), "--level", "5", "--part", "all"],
+        )
+
+    def test_start_requires_five_points_and_complete_parameters(self):
+        (self.data / "captured_postures.h").write_text(header(2))
+        ctrl = self.controller()
+        self.assertEqual(ctrl.state, "idle")
+        out = ctrl.start_massage(("back",), 3)
+        self.assertFalse(out["started"])
+        self.assertIn("不能开始按摩", out["reply"])
+
+        (self.data / "captured_postures.h").write_text(header(5))
+        ctrl = self.controller()
+        for parts, level in ((None, None), (("back",), 6), (("unknown",), 3)):
+            with self.subTest(parts=parts, level=level):
+                out = ctrl.start_massage(parts, level)
+                self.assertFalse(out["started"])
+                self.assertIn("位置和一至五级力度", out["reply"])
 
 
 if __name__ == "__main__":

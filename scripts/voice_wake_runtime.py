@@ -190,6 +190,8 @@ class WakeWordRuntime:
         wake_verifier=None,
         followup_max_duration: float | None = None,
         event_emitter=None,
+        speaker_verifier=None,
+        speaker_verify_mode: str = "off",
     ):
         self.audio = audio
         self.wake_detector = wake_detector
@@ -215,6 +217,12 @@ class WakeWordRuntime:
             if str(p).strip()
         )
         self.wake_verifier = wake_verifier
+        self.speaker_verifier = speaker_verifier
+        self.speaker_verify_mode = str(speaker_verify_mode).strip().lower()
+        if self.speaker_verify_mode not in {"off", "shadow", "enforce"}:
+            raise ValueError("speaker_verify_mode must be off, shadow, or enforce")
+        if self.speaker_verify_mode != "off" and self.speaker_verifier is None:
+            raise ValueError("speaker verifier is required when verification is enabled")
         self.events = event_emitter or get_ui_emitter()
         self._tts_speak = speaker_callback or (lambda _text: False)
         self.state = VoiceState.WAITING_WAKE_WORD
@@ -439,10 +447,10 @@ class WakeWordRuntime:
                     record_started = now
                     self._set_state(VoiceState.RECORDING_COMMAND)
                     collected = [accepted_chunk]
-                    # Talking extends the continuous-session idle window.
-                    if followup and self._session_enabled():
-                        self._begin_or_extend_session()
-                        listen_deadline = max(listen_deadline, self._session_until)
+                    # Do not extend the continuous-session window here. Speaker
+                    # verification runs after VAD; only an accepted turn may
+                    # refresh the session, otherwise ambient chatter could keep
+                    # the microphone armed forever.
                 elif now >= listen_deadline:
                     end_reason = "start_timeout"
                     break
@@ -585,6 +593,36 @@ class WakeWordRuntime:
             reset_current_turn(turn_token)
         return text
 
+    def _speaker_accepts(self, audio: np.ndarray) -> bool:
+        if self.speaker_verify_mode == "off":
+            return True
+        started = time.perf_counter()
+        try:
+            decision = self.speaker_verifier.verify(audio, self.sample_rate)
+            payload = decision.event_payload(mode=self.speaker_verify_mode)
+        except Exception as exc:
+            payload = {
+                "mode": self.speaker_verify_mode,
+                "accepted": False,
+                "score": -1.0,
+                "speaker_id": None,
+                "display_name": None,
+                "reason": "verifier_error",
+                "duration_ms": round((time.perf_counter() - started) * 1000.0),
+                "message": str(exc),
+            }
+        self.events.emit("voice.speaker", payload)
+        print(
+            "🪪 声纹验证: "
+            f"mode={payload['mode']} accepted={payload['accepted']} "
+            f"score={payload['score']} speaker={payload.get('display_name') or '-'} "
+            f"reason={payload['reason']} duration_ms={payload['duration_ms']}",
+            flush=True,
+        )
+        if self.speaker_verify_mode == "shadow":
+            return True
+        return bool(payload["accepted"])
+
     def run(self):
         self.audio.open()
         try:
@@ -646,6 +684,16 @@ class WakeWordRuntime:
                     else:
                         # Woke but never spoke within start_timeout.
                         self._reset_to_wake()
+                    continue
+
+                if not self._speaker_accepts(audio):
+                    if followup and self._session_active():
+                        # Keep the original deadline but do not refresh it.
+                        self._prepare_followup()
+                    else:
+                        self._reset_to_wake(
+                            reason="🪪 声纹未通过，已忽略本轮语音",
+                        )
                     continue
 
                 outcome = self._handle_turn_audio(audio)

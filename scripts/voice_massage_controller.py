@@ -11,13 +11,44 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Optional, Protocol
+from typing import Callable, Optional, Protocol, Sequence
 
 from voice_subprocess import sanitized_subprocess_env
 
 
 Speaker = Callable[[str], object]
 MASSAGE_MOVE_DIRECTIONS = frozenset({"up", "down", "left", "right"})
+MASSAGE_BODY_PARTS = (
+    "left-shoulder",
+    "right-shoulder",
+    "back",
+    "left-waist",
+    "right-waist",
+)
+MASSAGE_FORCE_NEWTONS = {1: 20, 2: 30, 3: 40, 4: 50, 5: 55}
+_BODY_PART_NAMES = {
+    "left-shoulder": "左肩",
+    "right-shoulder": "右肩",
+    "back": "背部",
+    "left-waist": "左腰",
+    "right-waist": "右腰",
+    "all": "全部位置",
+}
+_BODY_PART_ALIASES = {
+    "left-shoulder": ("左肩膀", "左肩"),
+    "right-shoulder": ("右肩膀", "右肩"),
+    "back": ("后背", "背部"),
+    "left-waist": ("左腰部", "左腰"),
+    "right-waist": ("右腰部", "右腰"),
+}
+_ALL_PART_ALIASES = ("全部位置", "所有位置", "全部部位", "所有部位", "全部", "所有")
+_MASSAGE_START_RE = re.compile(
+    r"^(?:请帮我|请|帮我|麻烦)?(?:开始|启动|执行|进行)按摩"
+)
+_FORCE_LEVEL_RE = re.compile(
+    r"(?:力度)?([一二三四五12345])(?:级|档)(?:力度)?"
+)
+_START_FILLER_RE = re.compile(r"(?:和|以及|跟|还有|与|位置|部位|力度|一下|吧|谢谢)+")
 _DIRECTION_NAMES = {
     "up": "向上",
     "down": "向下",
@@ -122,6 +153,71 @@ def is_ambiguous_massage_move(text: str) -> bool:
     if not normalized or any(mark in normalized for mark in ("?", "？", "吗", "能不能")):
         return False
     return _AMBIGUOUS_MASSAGE_MOVE_RE.fullmatch(normalized) is not None
+
+
+def parse_massage_start_request(text: str) -> Optional[dict]:
+    """Parse a parameterized massage request without executing it.
+
+    A returned dictionary means that the utterance is a massage-start command.
+    ``complete`` is false when a required field is missing or any unsupported
+    text remains, allowing the caller to fail closed with a local prompt.
+    """
+    raw = text or ""
+    if any(mark in raw for mark in ("?", "？", "吗", "能不能")):
+        return None
+    normalized = re.sub(r"[\s，。！,!、]", "", raw)
+    match = _MASSAGE_START_RE.match(normalized)
+    if match is None:
+        return None
+    payload = normalized[match.end():]
+    remainder = payload
+    parts = []
+    valid = True
+
+    all_hits = 0
+    for alias in _ALL_PART_ALIASES:
+        count = remainder.count(alias)
+        if count:
+            all_hits += count
+            remainder = remainder.replace(alias, "")
+
+    for part in MASSAGE_BODY_PARTS:
+        hit_count = 0
+        for alias in _BODY_PART_ALIASES[part]:
+            count = remainder.count(alias)
+            if count:
+                hit_count += count
+                remainder = remainder.replace(alias, "")
+        if hit_count:
+            if hit_count > 1:
+                valid = False
+            parts.append(part)
+
+    if all_hits:
+        if all_hits > 1 or parts:
+            valid = False
+        else:
+            parts = ["all"]
+
+    force_matches = list(_FORCE_LEVEL_RE.finditer(remainder))
+    force_level = None
+    if len(force_matches) == 1:
+        value = force_matches[0].group(1)
+        force_level = {
+            "一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+        }.get(value, int(value) if value.isdigit() else None)
+        start, end = force_matches[0].span()
+        remainder = remainder[:start] + remainder[end:]
+    elif len(force_matches) > 1:
+        valid = False
+
+    remainder = _START_FILLER_RE.sub("", remainder)
+    complete = bool(parts) and force_level in MASSAGE_FORCE_NEWTONS and valid and not remainder
+    return {
+        "parts": tuple(parts),
+        "force_level": force_level,
+        "complete": complete,
+    }
 
 
 def parse_massage_intent(text: str) -> Optional[str]:
@@ -234,10 +330,16 @@ class MassageController:
         self._lock = threading.RLock()
         self._teaching_proc = None
         self._massage_proc = None
+        self._pending_selection = None
+        self._active_selection = None
         self._speaker: Optional[Speaker] = None
         self.last_error = ""
         self.point_count = self._read_point_count(self.header_path)
-        self.state = "ready" if self.point_count >= 2 and self.massage_bin.is_file() else "idle"
+        self.state = (
+            "ready"
+            if self.point_count == len(MASSAGE_BODY_PARTS) and self.massage_bin.is_file()
+            else "idle"
+        )
         self.available, reason = self._startup_check()
         if self.enabled and not self.available:
             self.last_error = reason
@@ -296,7 +398,7 @@ class MassageController:
         self._speak(speaker, reply)
         return {"action": action, "state": self.state, "reply": reply, **extra}
 
-    def handle(self, intent: str, speaker: Optional[Speaker] = None):
+    def handle(self, intent: str, speaker: Optional[Speaker] = None, **params):
         methods = {
             "start_teaching": self.start_teaching,
             "finish_teaching": self.finish_teaching,
@@ -308,6 +410,12 @@ class MassageController:
         method = methods.get(intent)
         if method is None:
             return self._reply("massage_unknown", "没有识别到按摩控制指令", speaker)
+        if intent == "start_massage":
+            return method(
+                parts=params.get("parts"),
+                force_level=params.get("force_level"),
+                speaker=speaker,
+            )
         return method(speaker=speaker)
 
     def move_relative(
@@ -428,9 +536,11 @@ class MassageController:
                 ).start()
             return self._reply(
                 "massage_start_teaching",
-                ("已启动无机械臂模拟示教。请在终端按回车生成假点位，第一个点是安全点；完成后说记录完成"
+                ("已启动无机械臂模拟示教。请按左肩、右肩、背部、左腰、右腰的顺序，"
+                 "在终端按回车生成五个假点位；完成后说记录完成"
                  if self.dry_run else
-                 "已启动拖动示教。请在终端按回车记录点位，第一个点是安全点；完成后输入 q，再告诉我记录完成"),
+                 "已启动拖动示教。请按左肩、右肩、背部、左腰、右腰的顺序，"
+                 "在终端按回车记录五个点位；完成后输入 q，再告诉我记录完成"),
                 speaker, started=True,
             )
 
@@ -532,11 +642,15 @@ class MassageController:
                     speaker, started=False,
                 )
             count = self._read_point_count(self.candidate_path)
-            if count < 2:
-                self.state = "ready" if self.point_count >= 2 and self.massage_bin.is_file() else "idle"
+            if count != len(MASSAGE_BODY_PARTS):
+                self.state = (
+                    "ready"
+                    if self.point_count == len(MASSAGE_BODY_PARTS) and self.massage_bin.is_file()
+                    else "idle"
+                )
                 return self._reply(
                     "massage_finish_teaching",
-                    "有效点位不足。至少需要一个安全点和一个按摩点，上一份方案未改变",
+                    "点位数量不正确。必须依次记录左肩、右肩、背部、左腰、右腰共五个点，上一份方案未改变",
                     speaker, started=False, point_count=count,
                 )
             self.state = "building"
@@ -577,7 +691,7 @@ class MassageController:
                 self.point_count = count
                 self.state = "ready"
                 self.last_error = ""
-            self._speak(self._speaker, f"按摩程序构建完成，共有{count - 1}个按摩点")
+            self._speak(self._speaker, "按摩程序构建完成，五个按摩位置已就绪")
             print(f"✅ 按摩构建完成，日志: {log_path}", flush=True)
         except Exception as exc:
             try:
@@ -590,7 +704,11 @@ class MassageController:
             except OSError as rollback_exc:
                 print(f"❌ 按摩构建回滚失败: {rollback_exc}", flush=True)
             with self._lock:
-                self.state = "ready" if had_header and had_binary else "error"
+                self.state = (
+                    "ready"
+                    if self.point_count == len(MASSAGE_BODY_PARTS) and had_header and had_binary
+                    else "error"
+                )
                 self.last_error = str(exc)
             self._speak(self._speaker, "按摩程序构建失败，上一份有效方案已保留")
             print(f"❌ 按摩构建失败: {exc}，日志: {log_path}", flush=True)
@@ -599,24 +717,89 @@ class MassageController:
             binary_backup.unlink(missing_ok=True)
             self._speaker = None
 
-    def start_massage(self, speaker=None):
+    @staticmethod
+    def _normalize_selection(parts: Optional[Sequence[str]], force_level):
+        if isinstance(parts, str) or not parts:
+            return None
+        if isinstance(force_level, bool) or not isinstance(force_level, int):
+            return None
+        if force_level not in MASSAGE_FORCE_NEWTONS:
+            return None
+        requested = tuple(parts)
+        if "all" in requested:
+            if requested != ("all",):
+                return None
+            return {"parts": ("all",), "force_level": force_level}
+        if len(requested) != len(set(requested)):
+            return None
+        if any(part not in MASSAGE_BODY_PARTS for part in requested):
+            return None
+        selected = tuple(part for part in MASSAGE_BODY_PARTS if part in requested)
+        if len(selected) == len(MASSAGE_BODY_PARTS):
+            selected = ("all",)
+        return {"parts": selected, "force_level": force_level}
+
+    @staticmethod
+    def _selection_description(selection) -> str:
+        part_names = "、".join(_BODY_PART_NAMES[part] for part in selection["parts"])
+        force_level = selection["force_level"]
+        force_newtons = MASSAGE_FORCE_NEWTONS[force_level]
+        return f"{part_names}，力度{force_level}级（{force_newtons}牛）"
+
+    @staticmethod
+    def _selection_metadata(selection) -> dict:
+        return {
+            "parts": list(selection["parts"]),
+            "force_level": selection["force_level"],
+            "force_newtons": MASSAGE_FORCE_NEWTONS[selection["force_level"]],
+        }
+
+    def start_massage(
+        self,
+        parts: Optional[Sequence[str]] = None,
+        force_level: Optional[int] = None,
+        speaker=None,
+    ):
         with self._lock:
             blocked = self._check_enabled("massage_start", speaker)
             if blocked:
                 return blocked
+            if self.state == "awaiting_confirmation":
+                selection = self._pending_selection
+                detail = (
+                    f"，当前锁定{self._selection_description(selection)}"
+                    if selection is not None else ""
+                )
+                return self._reply(
+                    "massage_start",
+                    f"已有按摩任务等待安全确认{detail}。如需更改，请先说取消启动",
+                    speaker, started=False,
+                )
+            selection = self._normalize_selection(parts, force_level)
+            if selection is None:
+                return self._reply(
+                    "massage_start",
+                    "开始按摩需要同时说明位置和一至五级力度。位置可选左肩、右肩、背部、左腰、右腰或全部位置，例如开始按摩左肩，力度三级",
+                    speaker, started=False,
+                )
             if self.state != "ready":
                 return self._reply(
                     "massage_start", f"当前处于{self._state_name()}，不能开始按摩",
                     speaker, started=False,
                 )
-            if self.point_count < 2 or not self.massage_bin.is_file():
+            if self.point_count != len(MASSAGE_BODY_PARTS) or not self.massage_bin.is_file():
                 self.state = "idle"
-                return self._reply("massage_start", "还没有可用的按摩点位，请先完成示教", speaker, started=False)
+                return self._reply(
+                    "massage_start", "还没有完整的五个按摩位置，请先完成示教",
+                    speaker, started=False,
+                )
+            self._pending_selection = selection
             self.state = "awaiting_confirmation"
+            metadata = self._selection_metadata(selection)
             return self._reply(
                 "massage_start",
-                f"当前有{self.point_count - 1}个按摩点。请确认人员和环境安全，并说确认开始",
-                speaker, started=False, point_count=self.point_count,
+                f"准备按摩{self._selection_description(selection)}。请确认人员和环境安全，并说确认开始",
+                speaker, started=False, point_count=self.point_count, **metadata,
             )
 
     def confirm_start(self, speaker=None):
@@ -626,10 +809,27 @@ class MassageController:
                 return blocked
             if self.state != "awaiting_confirmation":
                 return self._reply("massage_confirm_start", "当前没有等待确认的按摩任务", speaker, started=False)
+            selection = self._pending_selection
+            if selection is None:
+                self.state = "ready"
+                return self._reply(
+                    "massage_confirm_start", "按摩参数已失效，请重新说明位置和力度",
+                    speaker, started=False,
+                )
+            part_args = []
+            for part in selection["parts"]:
+                part_args.extend(["--part", part])
             try:
                 command = (
-                    [sys.executable, str(self.dry_run_worker), "massage", "--seconds", "2"]
-                    if self.dry_run else [str(self.massage_bin)]
+                    [
+                        sys.executable, str(self.dry_run_worker), "massage",
+                        "--seconds", "2", "--level", str(selection["force_level"]),
+                        *part_args,
+                    ]
+                    if self.dry_run else [
+                        str(self.massage_bin), "--level", str(selection["force_level"]),
+                        *part_args,
+                    ]
                 )
                 proc = self._popen(
                     command, cwd=str(self.data_dir),
@@ -640,15 +840,22 @@ class MassageController:
             except Exception as exc:
                 self.state = "error"
                 self.last_error = str(exc)
+                self._pending_selection = None
+                self._active_selection = None
                 return self._reply("massage_confirm_start", "按摩程序启动失败，请检查终端日志", speaker, started=False)
             self._massage_proc = proc
+            self._active_selection = selection
+            self._pending_selection = None
             self._speaker = speaker
             self.state = "massaging"
             threading.Thread(target=self._watch_massage, args=(proc,), daemon=True).start()
+            metadata = self._selection_metadata(selection)
             return self._reply(
                 "massage_confirm_start",
-                "开始模拟按摩，不会驱动机械臂" if self.dry_run else "已确认安全，开始按摩",
-                speaker, started=True,
+                (f"开始模拟按摩{self._selection_description(selection)}，不会驱动机械臂"
+                 if self.dry_run else
+                 f"已确认安全，开始按摩{self._selection_description(selection)}"),
+                speaker, started=True, **metadata,
             )
 
     def _watch_massage(self, proc):
@@ -657,6 +864,7 @@ class MassageController:
             if proc is not self._massage_proc:
                 return
             self._massage_proc = None
+            self._active_selection = None
             speaker = self._speaker
             self._speaker = None
             if code == 0:
@@ -672,6 +880,7 @@ class MassageController:
         with self._lock:
             if self.state != "awaiting_confirmation":
                 return self._reply("massage_cancel_start", "当前没有等待确认的按摩任务", speaker, cancelled=False)
+            self._pending_selection = None
             self.state = "ready"
             return self._reply("massage_cancel_start", "已取消本次按摩启动", speaker, cancelled=True)
 
@@ -690,7 +899,14 @@ class MassageController:
         with self._lock:
             detail = self._state_name()
             if self.state in {"ready", "awaiting_confirmation", "massaging"}:
-                detail += f"，共有{max(0, self.point_count - 1)}个按摩点"
+                detail += "，五个按摩位置已就绪"
+            selection = (
+                self._pending_selection
+                if self.state == "awaiting_confirmation"
+                else self._active_selection if self.state == "massaging" else None
+            )
+            if selection is not None:
+                detail += f"，本次选择{self._selection_description(selection)}"
             if self.state == "error" and self.last_error:
                 detail += f"。{self.last_error}"
             return self._reply("massage_status", f"当前按摩状态是{detail}", speaker)

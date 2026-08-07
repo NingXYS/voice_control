@@ -74,6 +74,13 @@ VOICE_WAKE_VENV_DIR="${VOICE_WAKE_VENV_DIR:-${REPO_ROOT}/.venv_online}"
     export PARAFORMER_MODEL_DIR="${PARAFORMER_MODEL_DIR:-${REPO_ROOT}/models/sherpa-onnx-paraformer-zh-2023-09-14}"
     export WAKE_MODEL_DIR="${WAKE_MODEL_DIR:-${REPO_ROOT}/models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20}"
     export VAD_MODEL_PATH="${VAD_MODEL_PATH:-${REPO_ROOT}/models/vad/silero_vad.onnx}"
+    export VOICE_SPEAKER_MODEL_PATH="${VOICE_SPEAKER_MODEL_PATH:-${REPO_ROOT}/models/speaker/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx}"
+    export VOICE_SPEAKER_ERES2NET_LARGE_MODEL_PATH="${VOICE_SPEAKER_ERES2NET_LARGE_MODEL_PATH:-${REPO_ROOT}/models/speaker/3dspeaker_speech_eres2net_large_sv_zh-cn_3dspeaker_16k.onnx}"
+    export VOICE_SPEAKER_ERES2NETV2_MODEL_PATH="${VOICE_SPEAKER_ERES2NETV2_MODEL_PATH:-${REPO_ROOT}/models/speaker/3dspeaker_speech_eres2netv2_sv_zh-cn_16k-common.onnx}"
+    export VOICE_SPEAKER_PROFILE_DIR="${VOICE_SPEAKER_PROFILE_DIR:-${REPO_ROOT}/runtime_data/speaker_profiles}"
+    export VOICE_SPEAKER_VERIFY_MODE="${VOICE_SPEAKER_VERIFY_MODE:-off}"
+    export VOICE_SPEAKER_THRESHOLD="${VOICE_SPEAKER_THRESHOLD:-0.60}"
+    export VOICE_SPEAKER_NUM_THREADS="${VOICE_SPEAKER_NUM_THREADS:-1}"
     # Default TTS: Matcha (ARM-friendly). Override via voice_control_online.env.
     _default_tts="${REPO_ROOT}/models/tts/matcha-icefall-zh-baker"
     if [ ! -d "${_default_tts}" ]; then
@@ -180,40 +187,32 @@ for lib in libs:
     fi
 
     INSTALLED_PACKAGE_DIR="${ONLINE_INSTALL_ROOT}/voice_control/lib/voice_control"
-    for file in \
-        voice_wake_entry.py \
-        voice_runtime_config.py \
-        voice_wake_runtime.py \
-        voice_audio_session.py \
-        voice_capture_adapter.py \
-        voice_audio_frontend.py \
-        voice_wake_word.py \
-        voice_wake_verifier.py \
-        voice_command_vad.py \
-        voice_asr_backend.py \
-        voice_text_pipeline.py \
-        voice_llm_client.py \
-        voice_local_knowledge.py \
-        voice_assembly_controller.py \
-        voice_massage_controller.py \
-        voice_online_services.py \
-        voice_runtime_container.py \
-        voice_dialogue_backend.py \
-        voice_ui_events.py \
-        voice_text_segmenter.py \
-        voice_command_validation.py \
-        voice_subprocess.py \
-        voice_action_audit.py \
-        voice_network_policy.py; do
-        if [ ! -f "${REPO_ROOT}/scripts/${file}" ]; then
+    # Generated from CMake's complete install lists (including, for example,
+    # voice_audio_session.py and voice_audio_frontend.py).
+    OVERLAY_FILE_MANIFEST="${INSTALLED_PACKAGE_DIR}/voice_overlay_files.txt"
+    if [ ! -f "${OVERLAY_FILE_MANIFEST}" ]; then
+        echo "Check failed: installed overlay has no voice file manifest." >&2
+        echo "Please run 'bash scripts/setup_voice_wake.sh' before launching." >&2
+        exit 1
+    fi
+    while IFS= read -r file || [ -n "${file}" ]; do
+        if [ -z "${file}" ]; then
             continue
         fi
-        if ! cmp -s "${REPO_ROOT}/scripts/${file}" "${INSTALLED_PACKAGE_DIR}/${file}"; then
+        case "${file}" in
+            */*|.*)
+                echo "Check failed: invalid installed overlay manifest entry: ${file}" >&2
+                exit 1
+                ;;
+        esac
+        if [ ! -f "${REPO_ROOT}/scripts/${file}" ] || \
+           [ ! -f "${INSTALLED_PACKAGE_DIR}/${file}" ] || \
+           ! cmp -s "${REPO_ROOT}/scripts/${file}" "${INSTALLED_PACKAGE_DIR}/${file}"; then
             echo "Check failed: installed overlay is stale for ${file}." >&2
             echo "Please run 'bash scripts/setup_voice_wake.sh' before launching." >&2
             exit 1
         fi
-    done
+    done < "${OVERLAY_FILE_MANIFEST}"
     KNOWLEDGE_BASE_FILE="${ONLINE_INSTALL_ROOT}/voice_control/lib/knowledge_base/robot_knowledge.csv"
     if [ ! -f "${KNOWLEDGE_BASE_FILE}" ]; then
         echo "Check failed: local knowledge base not found at ${KNOWLEDGE_BASE_FILE}." >&2
@@ -279,6 +278,40 @@ for lib in libs:
         done
     fi
 
+    case "${VOICE_SPEAKER_VERIFY_MODE}" in
+        off|shadow|enforce) ;;
+        *)
+            echo "Check failed: VOICE_SPEAKER_VERIFY_MODE must be off, shadow, or enforce" >&2
+            exit 1
+            ;;
+    esac
+    if [ "${VOICE_SPEAKER_VERIFY_MODE}" = "off" ]; then
+        SPEAKER_CHECK_DESCRIPTION="Speaker: MODE=off (verification disabled)"
+    else
+        SPEAKER_CHECK_DESCRIPTION="$(python3 - "${INSTALLED_PACKAGE_DIR}" <<'PY'
+import sys
+
+installed_package_dir = sys.argv[1]
+sys.path.insert(0, installed_package_dir)
+try:
+    from voice_wake_entry import inspect_speaker_runtime
+
+    info = inspect_speaker_runtime()
+except Exception as exc:
+    print(f"Check failed: effective speaker deployment is invalid: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+
+print(
+    "Speaker: "
+    f"MODE={info['mode']} source={info['source']} model={info['model_id']} "
+    f"backend={info['backend']} threshold={info['threshold']!r} "
+    f"threads={info['num_threads']} profiles={info['profile_count']} "
+    f"model_path={info['model_path']} profile_dir={info['profile_dir']}"
+)
+PY
+)" || exit 1
+    fi
+
     if ! command -v arecord >/dev/null 2>&1; then
         echo "Check failed: 'arecord' command not found" >&2
         exit 1
@@ -310,6 +343,7 @@ for lib in libs:
     echo "Playback: DEVICE=${APLAY_DEVICE}"
     echo "Frontend: VOICE_AUDIO_FRONTEND=${VOICE_AUDIO_FRONTEND} VOICE_KWS_USE_RAW=${VOICE_KWS_USE_RAW}"
     echo "Wake: TWO_STAGE=${WAKE_TWO_STAGE} high=${KWS_HIGH_THRESHOLD} low=${KWS_LOW_THRESHOLD} session=${VOICE_SESSION_TIMEOUT_SEC}s"
+    echo "${SPEAKER_CHECK_DESCRIPTION}"
     echo "Reply: STREAM=${VOICE_STREAM_REPLY} SENTENCE_TTS=${VOICE_SENTENCE_TTS} DIFY_API_MODE=${DIFY_API_MODE}"
     echo "Tip: override any export before launch; smoke: .venv_online/bin/python scripts/voice_capture_smoke.py --free-device --seconds 5"
 

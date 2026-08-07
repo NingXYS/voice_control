@@ -16,6 +16,7 @@ from voice_massage_controller import (
     is_ambiguous_massage_move,
     parse_massage_intent,
     parse_massage_move_intent,
+    parse_massage_start_request,
 )
 from voice_online_services import OnlineServices, parse_online_intent
 from voice_text_segmenter import StreamingTextSegmenter, split_sentences
@@ -206,9 +207,10 @@ def _controller_execution_enabled(controller) -> bool:
 
 def _handle_massage_intent(text, speaker=None, runtime=None, massage_controller=None):
     move = parse_massage_move_intent(text)
+    start_request = parse_massage_start_request(text)
     intent = parse_massage_intent(text)
     ambiguous_move = is_ambiguous_massage_move(text)
-    if move is None and intent is None and not ambiguous_move:
+    if move is None and start_request is None and intent is None and not ambiguous_move:
         return None
     if ambiguous_move:
         reply = "请说明上下左右、距离和单位，例如按摩机械臂向上五厘米。"
@@ -244,6 +246,31 @@ def _handle_massage_intent(text, speaker=None, runtime=None, massage_controller=
                 move["direction"],
                 move["distance_m"],
                 speaker=speaker,
+            )
+        ]
+    if start_request is not None:
+        complete = start_request["complete"]
+        parts = start_request["parts"] if complete else None
+        force_level = start_request["force_level"] if complete else None
+        audit_action_batch(
+            [{
+                "action": "massage_start_massage",
+                "parts": list(parts or ()),
+                "force_level": force_level,
+            }],
+            source="massage-local",
+            execution_enabled=_controller_execution_enabled(ctrl),
+        )
+        print(
+            f"💆 本地按摩启动指令命中: parts={parts} level={force_level}",
+            flush=True,
+        )
+        return [
+            ctrl.handle(
+                "start_massage",
+                speaker=speaker,
+                parts=parts,
+                force_level=force_level,
             )
         ]
     audit_action_batch(

@@ -45,8 +45,12 @@ def teach(output: Path) -> int:
     return 0
 
 
-def massage(seconds: float) -> int:
-    print("[DRY RUN] 模拟按摩开始，不会连接或驱动机械臂。", flush=True)
+def massage(seconds: float, level: int, parts: list[str]) -> int:
+    selected = "全部位置" if parts == ["all"] else "、".join(parts)
+    print(
+        f"[DRY RUN] 模拟按摩开始：位置={selected}，力度={level}级；不会连接或驱动机械臂。",
+        flush=True,
+    )
     time.sleep(max(0.0, seconds))
     print("[DRY RUN] 模拟按摩完成。", flush=True)
     return 0
@@ -59,10 +63,21 @@ def main() -> int:
     teaching.add_argument("output", type=Path)
     massage_parser = sub.add_parser("massage")
     massage_parser.add_argument("--seconds", type=float, default=2.0)
+    massage_parser.add_argument("--level", type=int, choices=range(1, 6), required=True)
+    massage_parser.add_argument(
+        "--part",
+        action="append",
+        dest="parts",
+        choices=(
+            "left-shoulder", "right-shoulder", "back",
+            "left-waist", "right-waist", "all",
+        ),
+        required=True,
+    )
     args = parser.parse_args()
     if args.mode == "teaching":
         return teach(args.output)
-    return massage(args.seconds)
+    return massage(args.seconds, args.level, args.parts)
 
 
 if __name__ == "__main__":

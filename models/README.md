@@ -10,6 +10,9 @@
 | `sherpa-onnx-paraformer-zh-2023-09-14/` | 中文 ASR（Paraformer） | ~233MB | ✅ 指令识别 |
 | `sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20/` | 唤醒词 KWS | ~5MB | ✅ 「小西小西」 |
 | `vad/silero_vad.onnx` | 语音端点 VAD | ~0.6MB | ✅ |
+| `speaker/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx` | CAM++ 声纹提取 | ~27MB | 可选；前端登记/连续会话门控 |
+| `speaker/3dspeaker_speech_eres2net_large_sv_zh-cn_3dspeaker_16k.onnx` | ERes2Net-large 声纹候选 | ~111MB | 三模型现场评测 |
+| `speaker/3dspeaker_speech_eres2netv2_sv_zh-cn_16k-common.onnx` | ERes2NetV2 声纹候选 | ~68MB | 由 ModelScope 官方权重导出；短语评测 |
 | `tts/matcha-icefall-zh-baker/` | **默认 TTS** Matcha 标贝女声 + vocoder | ~139MB | ✅ |
 | `tts/kokoro-multi-lang-v1_0/` | Kokoro 多说话人（音质更好） | ~493MB | 可选 |
 | `tts/piper-zh/` | Piper 华严（最快） | ~79MB | 可选 |
@@ -66,5 +69,12 @@ test -f "$PIPER_MODEL_DIR/model-steps-3.onnx" && test -f "$TTS_VOCODER" && echo 
 - Piper 中文：`.../tts-models/vits-piper-zh_CN-huayan-medium.tar.bz2`
 - Melo：`.../tts-models/vits-melo-tts-zh_en.tar.bz2`
 - Kokoro：仓库原有 `models/tts/kokoro-multi-lang-v1_0/`（含 `model.onnx` / `model.int8.onnx`）
+- CAM++ 声纹：`https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx`
+- ERes2Net-large：`https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_large_sv_zh-cn_3dspeaker_16k.onnx`
+- ERes2NetV2：从 ModelScope `iic/speech_eres2netv2_sv_zh-cn_16k-common` 获取权重，并用 `scripts/export_eres2netv2_onnx.py` 按 3D-Speaker 官方结构转换和校验。
+
+声纹登记数据不会放在 `models/` 或安装目录中，而是保存到被 Git 忽略的
+`runtime_data/speaker_profiles/`。旧 v1 数据只有 embedding 和评估分数；新 v2
+登记与评估录音会以权限 `0600` 的私有 FLAC 长期保留，以便三个模型复用同一语料。
 
 > 注意：`vits-melo-tts-zh_en/model.int8.onnx` 若是 Git LFS 指针（约一百字节），不可用；请用同目录完整的 `model.onnx`。

@@ -6,7 +6,9 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -99,12 +101,14 @@ try:
     from voice_ui_server import (
         DashboardState,
         SessionStore,
+        SpeakerAdminService,
         _validated_public_origin,
         build_app,
     )
 except (ImportError, SystemExit):
     DashboardState = None
     SessionStore = None
+    SpeakerAdminService = None
     build_app = None
 
 try:
@@ -191,6 +195,99 @@ class DashboardSecurityUnitTests(unittest.TestCase):
             build_app(token="short", repo_root=ROOT)
 
 
+@unittest.skipIf(SpeakerAdminService is None, "aiohttp is not installed in the test interpreter")
+class SpeakerAdminServiceTests(unittest.TestCase):
+    def make_service(self, root: Path) -> SpeakerAdminService:
+        return SpeakerAdminService(
+            root,
+            extractor_factory=mock.Mock(),
+            audio_factory=mock.Mock(),
+            vad_factory=mock.Mock(),
+        )
+
+    def test_excluding_probe_retains_private_audio_and_invalidates_report(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = self.make_service(Path(temp_dir))
+            sample = service.dataset.save_audio(
+                np.zeros(1600, dtype=np.float32),
+                16000,
+                kind="probe",
+                actual_speaker_id=None,
+                group_id="field_evaluation",
+                subject_batch="passerby-a",
+            )
+            before = service.dataset.evaluation_fingerprint()
+            audio_path = service.dataset.root / sample["audio_path"]
+            result = service.exclude_sample(sample["sample_id"])
+            self.assertEqual(result["status"], "excluded")
+            self.assertTrue(audio_path.is_file())
+            self.assertNotEqual(before, service.dataset.evaluation_fingerprint())
+
+    def test_experiment_busy_flag_is_released_after_failure(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = self.make_service(Path(temp_dir))
+            with mock.patch("voice_ui_server.SpeakerExperimentRunner") as runner_type:
+                runner_type.return_value.run.side_effect = RuntimeError("model failure")
+                with self.assertRaisesRegex(RuntimeError, "model failure"):
+                    service.rebuild_experiments()
+            self.assertFalse(service.busy)
+
+    def test_obsolete_report_is_exposed_as_stale_and_not_ready(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = self.make_service(Path(temp_dir))
+            signature = service.dataset.evaluation_fingerprint()
+            service.dataset.save_reports({
+                "version": 2,
+                "report_format_version": 2,
+                "evaluation_signature": signature,
+                "ready": True,
+                "models": [],
+            })
+            report = service.status()["experiments"]
+            self.assertTrue(report["stale"])
+            self.assertFalse(report["ready"])
+            self.assertIn("格式", report["stale_reason"])
+
+    def test_cancelling_a_complete_uncommitted_group_marks_audio_abandoned(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = self.make_service(Path(temp_dir))
+            sample = service.dataset.save_audio(
+                np.zeros(1600, dtype=np.float32),
+                16000,
+                kind="enrollment",
+                actual_speaker_id="a" * 32,
+                group_id="group_1",
+            )
+            service._session = {
+                "session_id": "session-1",
+                "created_monotonic": time.monotonic(),
+                "sample_ids": [sample["sample_id"]],
+                "embeddings": [np.ones(4, dtype=np.float32)] * 8,
+                "audio": mock.Mock(),
+            }
+            self.assertTrue(service.cancel_enrollment("session-1"))
+            stored = next(
+                item for item in service.dataset.list_samples()
+                if item["sample_id"] == sample["sample_id"]
+            )
+            self.assertEqual(stored["status"], "abandoned")
+
+    def test_legacy_profile_revocation_also_revokes_retained_draft(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = self.make_service(Path(temp_dir))
+            profile = service.store.save_profile("Alice", [np.ones(4, dtype=np.float32)])
+            service.dataset.get_or_create_draft(
+                "Alice",
+                speaker_id=profile.speaker_id,
+            )
+            self.assertTrue(service.delete_profile(profile.speaker_id))
+            self.assertEqual(service.store.list_profiles(), [])
+            self.assertEqual(service.dataset.list_drafts(), [])
+            audit = service.dataset.list_drafts(include_revoked=True)
+            self.assertEqual(len(audit), 1)
+            self.assertTrue(audit[0]["revoked"])
+
+
 @unittest.skipIf(build_app is None, "aiohttp is not installed in the current test interpreter")
 @unittest.skipUnless(SOCKET_TESTS_AVAILABLE, "socket creation is blocked by the test sandbox")
 class DashboardHttpTests(unittest.IsolatedAsyncioTestCase):
@@ -213,9 +310,17 @@ class DashboardHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(auth.status, 200)
         self.assertIn("Content-Security-Policy", auth.headers)
         csrf_token = (await auth.json())["csrf_token"]
+        restored = await self.client.get("/api/session")
+        self.assertEqual(restored.status, 200)
+        self.assertEqual((await restored.json())["csrf_token"], csrf_token)
         status = await self.client.get("/api/status")
         self.assertEqual(status.status, 200)
-        self.assertEqual((await status.json())["runtime"], "offline")
+        status_payload = await status.json()
+        self.assertEqual(status_payload["runtime"], "offline")
+        self.assertIn("speaker", status_payload)
+        speakers = await self.client.get("/api/speakers")
+        self.assertEqual(speakers.status, 200)
+        self.assertIn("profiles", await speakers.json())
         ws = await self.client.ws_connect("/ws")
         snapshot = await ws.receive_json(timeout=2)
         self.assertEqual(snapshot["type"], "dashboard.snapshot")

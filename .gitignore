@@ -18,6 +18,7 @@ log*/
 
 # Runtime and privacy-sensitive artifacts
 debug_audio*/
+/runtime_data/
 models/tts/phrase_cache/
 massage_data/logs/
 massage_data/_rokae_log_/

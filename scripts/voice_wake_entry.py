@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+from dataclasses import dataclass
+import json
+import math
 import os
+from pathlib import Path
 import signal
+from typing import Any
 
 import numpy as np
 
@@ -50,6 +55,11 @@ from voice_runtime_config import (
     VOICE_DEBUG_AUDIO_RETENTION_FILES,
     VOICE_KWS_USE_RAW,
     VOICE_SESSION_TIMEOUT_SEC,
+    SPEAKER_MODEL_PATH,
+    SPEAKER_NUM_THREADS,
+    SPEAKER_PROFILE_DIR,
+    SPEAKER_THRESHOLD,
+    SPEAKER_VERIFY_MODE,
     session_end_phrases,
     WAKE_ASR_CHECK_INTERVAL_SEC,
     WAKE_TWO_STAGE,
@@ -65,10 +75,192 @@ from voice_runtime_config import (
 from voice_asr_wake_word import AsrWakeWordDetector
 from voice_wake_runtime import WakeWordRuntime
 from voice_wake_verifier import WakeAsrVerifier
+from voice_speaker_verifier import (
+    SpeakerEvaluationStore,
+    SpeakerProfileStore,
+    SpeakerVerifier,
+)
+from voice_speaker_dataset import create_model_extractor, resolve_active_bundle
 from voice_wake_word import DualStageWakeWordDetector, WakeWordDetector
 from voice_runtime_container import VoiceRuntimeContainer
 
 voice_runtime = None
+
+
+@dataclass(frozen=True)
+class SpeakerRuntimeSettings:
+    model_id: str
+    backend: str
+    model_path: str
+    profile_dir: str
+    threshold: float
+    num_threads: int
+    source: str
+    active_bundle: dict[str, Any] | None
+
+
+def _active_pointer(profile_dir: str) -> dict[str, Any] | None:
+    """Read the deployment pointer strictly so corruption cannot enable fallback."""
+    path = Path(profile_dir) / "dataset_v2" / "active_bundle.json"
+    if path.is_symlink():
+        raise RuntimeError("active speaker bundle pointer must not be a symlink")
+    if not path.exists():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("active speaker bundle pointer is unreadable or invalid") from exc
+    if not isinstance(value, dict):
+        raise RuntimeError("active speaker bundle pointer must be a JSON object")
+    return value
+
+
+def _positive_thread_count(value: Any, *, setting: str) -> int:
+    if isinstance(value, bool):
+        raise RuntimeError(f"{setting} must be a positive integer")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"{setting} must be a positive integer") from exc
+    if parsed <= 0 or str(value).strip() != str(parsed):
+        raise RuntimeError(f"{setting} must be a positive integer")
+    return parsed
+
+
+def resolve_speaker_runtime_settings() -> SpeakerRuntimeSettings:
+    """Resolve exactly the speaker assets the runtime will load.
+
+    Candidate bundles bind their own inference thread count and safety evidence.
+    Environment values remain the legacy CAM++ settings used after rollback.
+    """
+    pointer = _active_pointer(SPEAKER_PROFILE_DIR)
+    if pointer is not None and pointer.get("legacy") is True:
+        if (
+            pointer.get("bundle_id") != "legacy-v1"
+            or pointer.get("model_id") != "campplus"
+            or pointer.get("ready") is not True
+        ):
+            raise RuntimeError("legacy CAM++ rollback pointer is invalid")
+        active_bundle = None
+        source = "legacy-rollback"
+    else:
+        active_bundle = resolve_active_bundle(SPEAKER_PROFILE_DIR)
+        if pointer is not None and active_bundle is None:
+            raise RuntimeError("active speaker bundle pointer did not resolve")
+        source = "active-bundle" if active_bundle is not None else "legacy-default"
+
+    if active_bundle is None:
+        settings = SpeakerRuntimeSettings(
+            model_id="campplus",
+            backend="sherpa",
+            model_path=str(SPEAKER_MODEL_PATH),
+            profile_dir=str(SPEAKER_PROFILE_DIR),
+            threshold=float(SPEAKER_THRESHOLD),
+            num_threads=_positive_thread_count(
+                SPEAKER_NUM_THREADS,
+                setting="VOICE_SPEAKER_NUM_THREADS",
+            ),
+            source=source,
+            active_bundle=None,
+        )
+    else:
+        safety_keys = (
+            "bundle_format_version",
+            "preprocessing_signature",
+            "num_threads",
+            "threshold_hex",
+            "evaluation_signature",
+            "profiles_manifest_path",
+            "profiles_manifest_sha256",
+        )
+        missing = [key for key in safety_keys if key not in active_bundle]
+        if missing:
+            raise RuntimeError(
+                "active speaker bundle predates safety binding "
+                f"({', '.join(missing)} missing); roll back to CAM++ and rebuild the report"
+            )
+        if active_bundle["bundle_format_version"] != 3:
+            raise RuntimeError(
+                "active speaker bundle format is obsolete; roll back to CAM++ and rebuild the report"
+            )
+        settings = SpeakerRuntimeSettings(
+            model_id=str(active_bundle["model_id"]),
+            backend=str(active_bundle["model_backend"]),
+            model_path=str(active_bundle["model_path"]),
+            profile_dir=str(active_bundle["profile_dir"]),
+            threshold=float(active_bundle["threshold"]),
+            num_threads=_positive_thread_count(
+                active_bundle["num_threads"],
+                setting="active bundle num_threads",
+            ),
+            source=source,
+            active_bundle=active_bundle,
+        )
+
+    if not math.isfinite(settings.threshold) or not 0.0 <= settings.threshold <= 1.0:
+        raise RuntimeError("effective speaker threshold must be between 0 and 1")
+    if settings.backend not in {"sherpa", "onnx_fbank"}:
+        raise RuntimeError(f"unsupported active speaker backend: {settings.backend}")
+    if not Path(settings.model_path).is_file():
+        raise RuntimeError(f"effective speaker model is missing: {settings.model_path}")
+    return settings
+
+
+def _validate_speaker_enforcement(
+    settings: SpeakerRuntimeSettings,
+    store: SpeakerProfileStore,
+) -> None:
+    profiles = store.list_profiles()
+    if not profiles:
+        raise RuntimeError("speaker verification is enabled but no profiles are enrolled")
+    if SPEAKER_VERIFY_MODE != "enforce" or settings.active_bundle is not None:
+        return
+    evaluation = SpeakerEvaluationStore(SPEAKER_PROFILE_DIR).summary(
+        store.revision,
+        threshold=settings.threshold,
+    )
+    if not evaluation["ready"] or evaluation.get("false_accept_rate") != 0.0:
+        context = "legacy CAM++ rollback" if settings.source == "legacy-rollback" else "legacy CAM++"
+        raise RuntimeError(
+            f"{context} is not enforce-ready: it requires a current evaluation with "
+            ">=30 genuine, >=100 impostor, FRR<=10%, FAR=0%, p95<=300ms"
+        )
+
+
+def inspect_speaker_runtime() -> dict[str, Any]:
+    """Return the effective deployment for launcher diagnostics."""
+    if SPEAKER_VERIFY_MODE == "off":
+        return {
+            "mode": "off",
+            "source": "disabled",
+            "model_id": "none",
+            "backend": "none",
+            "model_path": "",
+            "profile_dir": str(SPEAKER_PROFILE_DIR),
+            "threshold": None,
+            "num_threads": None,
+            "profile_count": 0,
+        }
+    settings = resolve_speaker_runtime_settings()
+    store = SpeakerProfileStore(settings.profile_dir)
+    _validate_speaker_enforcement(settings, store)
+    extractor = create_model_extractor(
+        settings.backend,
+        settings.model_path,
+        num_threads=settings.num_threads,
+    )
+    verifier = SpeakerVerifier(store, extractor, threshold=settings.threshold)
+    return {
+        "mode": SPEAKER_VERIFY_MODE,
+        "source": settings.source,
+        "model_id": settings.model_id,
+        "backend": settings.backend,
+        "model_path": settings.model_path,
+        "profile_dir": settings.profile_dir,
+        "threshold": settings.threshold,
+        "num_threads": settings.num_threads,
+        "profile_count": len(verifier.profiles),
+    }
 
 
 def recognize_audio(samples, sample_rate):
@@ -157,6 +349,23 @@ def _build_audio_session():
     )
 
 
+def _build_speaker_verifier():
+    if SPEAKER_VERIFY_MODE == "off":
+        return None
+    settings = resolve_speaker_runtime_settings()
+    store = SpeakerProfileStore(settings.profile_dir)
+    _validate_speaker_enforcement(settings, store)
+    extractor = create_model_extractor(
+        settings.backend,
+        settings.model_path,
+        num_threads=settings.num_threads,
+    )
+    verifier = SpeakerVerifier(store, extractor, threshold=settings.threshold)
+    verifier.active_bundle = settings.active_bundle
+    verifier.runtime_settings = settings
+    return verifier
+
+
 def main():
     global voice_runtime
     validate_runtime_config()
@@ -227,6 +436,19 @@ def main():
                 "🔁 Continuous session: off (single-turn; set VOICE_SESSION_TIMEOUT_SEC=60)",
                 flush=True,
             )
+        speaker_verifier = _build_speaker_verifier()
+        if SPEAKER_VERIFY_MODE == "off":
+            print("🪪 Speaker verification: off", flush=True)
+        else:
+            settings = speaker_verifier.runtime_settings
+            print(
+                f"🪪 Speaker verification: {SPEAKER_VERIFY_MODE} "
+                f"profiles={len(speaker_verifier.profiles)} "
+                f"threshold={speaker_verifier.threshold:g} "
+                f"model={settings.model_id} backend={settings.backend} "
+                f"threads={settings.num_threads} source={settings.source}",
+                flush=True,
+            )
         runtime = WakeWordRuntime(
             audio=_build_audio_session(),
             wake_detector=_build_wake_detector(container),
@@ -250,6 +472,8 @@ def main():
             end_phrases=session_end_phrases(),
             wake_verifier=_build_wake_verifier(container),
             followup_max_duration=FOLLOWUP_COMMAND_MAX_DURATION_SEC,
+            speaker_verifier=speaker_verifier,
+            speaker_verify_mode=SPEAKER_VERIFY_MODE,
         )
         _sig_count = {"n": 0}
 
