@@ -55,9 +55,14 @@ from voice_runtime_config import (
     VOICE_DEBUG_AUDIO_RETENTION_FILES,
     VOICE_KWS_USE_RAW,
     VOICE_SESSION_TIMEOUT_SEC,
+    SPEAKER_MIN_RMS,
+    SPEAKER_MIN_SPEECH_MS,
     SPEAKER_MODEL_PATH,
     SPEAKER_NUM_THREADS,
     SPEAKER_PROFILE_DIR,
+    SPEAKER_SCORE_MODE,
+    SPEAKER_SESSION_RELAX,
+    SPEAKER_SESSION_TRUST,
     SPEAKER_THRESHOLD,
     SPEAKER_VERIFY_MODE,
     session_end_phrases,
@@ -365,7 +370,17 @@ def _build_speaker_verifier():
         settings.model_path,
         num_threads=settings.num_threads,
     )
-    verifier = SpeakerVerifier(store, extractor, threshold=settings.threshold)
+    score_mode = SPEAKER_SCORE_MODE
+    if settings.active_bundle and settings.active_bundle.get("score_mode"):
+        score_mode = str(settings.active_bundle["score_mode"]).strip().lower() or score_mode
+    verifier = SpeakerVerifier(
+        store,
+        extractor,
+        threshold=settings.threshold,
+        score_mode=score_mode,
+        min_speech_ms=SPEAKER_MIN_SPEECH_MS,
+        min_rms=SPEAKER_MIN_RMS,
+    )
     verifier.active_bundle = settings.active_bundle
     verifier.runtime_settings = settings
     return verifier
@@ -450,6 +465,9 @@ def main():
                 f"🪪 Speaker verification: {SPEAKER_VERIFY_MODE} "
                 f"profiles={len(speaker_verifier.profiles)} "
                 f"threshold={speaker_verifier.threshold:g} "
+                f"score_mode={speaker_verifier.score_mode} "
+                f"min_speech_ms={speaker_verifier.min_speech_ms} "
+                f"session_trust={SPEAKER_SESSION_TRUST} "
                 f"model={settings.model_id} backend={settings.backend} "
                 f"threads={settings.num_threads} source={settings.source}",
                 flush=True,
@@ -479,6 +497,8 @@ def main():
             followup_max_duration=FOLLOWUP_COMMAND_MAX_DURATION_SEC,
             speaker_verifier=speaker_verifier,
             speaker_verify_mode=SPEAKER_VERIFY_MODE,
+            speaker_session_trust=SPEAKER_SESSION_TRUST,
+            speaker_session_relax=SPEAKER_SESSION_RELAX,
         )
         _sig_count = {"n": 0}
 

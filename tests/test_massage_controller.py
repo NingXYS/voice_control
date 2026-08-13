@@ -82,6 +82,9 @@ class MassageIntentTests(unittest.TestCase):
             "可以开始按摩": "confirm_start",
             "取消启动": "cancel_start",
             "当前按摩状态": "status",
+            "重置按摩状态": "reset_state",
+            "清除按摩异常": "reset_state",
+            "恢复按摩就绪": "reset_state",
         }
         for text, expected in cases.items():
             with self.subTest(text=text):
@@ -123,6 +126,27 @@ class MassageIntentTests(unittest.TestCase):
             "开始按摩擦左肩力度一级": {
                 "parts": ("left-shoulder",), "force_level": 1, "complete": True,
             },
+            # Colloquial force levels (primary spoken interface).
+            "开始按摩左肩，轻一点": {
+                "parts": ("left-shoulder",), "force_level": 2, "complete": True,
+            },
+            "帮我按摩背部很重": {
+                "parts": ("back",), "force_level": 5, "complete": True,
+            },
+            "执行按摩全部位置适中": {
+                "parts": ("all",), "force_level": 3, "complete": True,
+            },
+            "开始按摩右腰，很轻": {
+                "parts": ("right-waist",), "force_level": 1, "complete": True,
+            },
+            "启动按摩左肩和右肩重一点": {
+                "parts": ("left-shoulder", "right-shoulder"),
+                "force_level": 4,
+                "complete": True,
+            },
+            "按摩左肩，轻一些": {
+                "parts": ("left-shoulder",), "force_level": 2, "complete": True,
+            },
         }
         for text, expected in cases.items():
             with self.subTest(text=text):
@@ -133,6 +157,7 @@ class MassageIntentTests(unittest.TestCase):
             "开始按摩", "开始按摩左肩", "开始按摩三级", "开始按摩左肩六级",
             "开始按摩左腿三级", "开始按摩左肩三级随便执行",
             "开始按摩全部位置和左肩三级", "开始按摩左肩三级四级",
+            "开始按摩左肩轻一点重一点",
             "帮我按摩左肩", "按摩右腰",
         ):
             with self.subTest(text=text):
@@ -282,7 +307,7 @@ class MassageControllerTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def controller(self, *, popen=None, run=None):
+    def controller(self, *, popen=None, run=None, music_player=None):
         return MassageController(
             enabled=True,
             sdk_root=str(self.sdk),
@@ -291,6 +316,7 @@ class MassageControllerTests(unittest.TestCase):
             teaching_bin=str(self.teaching),
             massage_bin=str(self.massage),
             build_timeout=1,
+            music_player=music_player if music_player is not None else MagicMock(),
             popen_factory=popen or (lambda *a, **k: FinishedProcess()),
             run_factory=run or (
                 lambda *a, **k: subprocess.CompletedProcess(a[0], 0, "built")
@@ -473,28 +499,101 @@ class MassageControllerTests(unittest.TestCase):
         self.assertIn("old", active.read_text())
         self.assertEqual(self.massage.read_text(), "old-binary")
 
-    def test_massage_failure_enters_error(self):
+    def test_massage_failure_recovers_to_ready_and_allows_retry(self):
         (self.data / "captured_postures.h").write_text(header(5))
         ctrl = self.controller(popen=lambda *a, **k: FinishedProcess(7))
         ctrl.start_massage(("back",), 1)
         ctrl.confirm_start()
-        self.wait_state(ctrl, "error")
+        self.wait_state(ctrl, "ready")
         self.assertIn("code=7", ctrl.last_error)
+        # Complete plan remains usable without restarting the voice stack.
+        out = ctrl.start_massage(("back",), 1)
+        self.assertEqual(ctrl.state, "awaiting_confirmation")
+        self.assertFalse(out["started"])
+        self.assertIn("确认开始", out["reply"])
+
+    def test_teaching_failure_clears_process_and_keeps_prior_plan(self):
+        (self.data / "captured_postures.h").write_text(header(5))
+        proc = RunningProcess()
+        ctrl = self.controller(popen=lambda *a, **k: proc)
+        ctrl.start_teaching()
+        self.assertEqual(ctrl.state, "teaching")
+        proc.returncode = 9
+        proc.done.set()
+        self.wait_state(ctrl, "ready")
+        self.assertIsNone(ctrl._teaching_proc)
+        self.assertIn("code=9", ctrl.last_error)
+        out = ctrl.start_massage(("left-shoulder",), 2)
+        self.assertEqual(ctrl.state, "awaiting_confirmation")
+        self.assertIn("确认开始", out["reply"])
+
+    def test_sticky_error_reconciles_before_start(self):
+        (self.data / "captured_postures.h").write_text(header(5))
+        ctrl = self.controller()
+        ctrl.state = "error"
+        ctrl.last_error = "legacy sticky failure"
+        out = ctrl.start_massage(("back",), 3)
+        self.assertEqual(ctrl.state, "awaiting_confirmation")
+        self.assertIn("确认开始", out["reply"])
+
+    def test_reset_state_clears_error_and_pending_selection(self):
+        (self.data / "captured_postures.h").write_text(header(5))
+        ctrl = self.controller()
+        ctrl.start_massage(("back",), 1)
+        self.assertEqual(ctrl.state, "awaiting_confirmation")
+        out = ctrl.reset_state()
+        self.assertTrue(out["reset"])
+        self.assertEqual(ctrl.state, "ready")
+        self.assertIsNone(ctrl._pending_selection)
+
+    def test_external_arm_process_blocks_start(self):
+        (self.data / "captured_postures.h").write_text(header(5))
+        ctrl = self.controller()
+        ctrl._find_external_arm_processes = lambda: [(4242, "u_chui")]
+        out = ctrl.start_massage(("back",), 2)
+        self.assertFalse(out["started"])
+        self.assertTrue(out.get("arm_busy"))
+        self.assertIn("仍在运行", out["reply"])
+        self.assertIn("4242", out["reply"])
+        self.assertEqual(ctrl.state, "ready")
+
+    def test_close_stops_running_massage_process(self):
+        (self.data / "captured_postures.h").write_text(header(5))
+        proc = RunningProcess()
+        stopped = []
+        ctrl = self.controller(popen=lambda *a, **k: proc)
+        ctrl.start_massage(("back",), 1)
+        ctrl.confirm_start()
+        self.assertEqual(ctrl.state, "massaging")
+
+        def stop(**_kwargs):
+            stopped.append(True)
+            proc.returncode = -15
+            proc.done.set()
+
+        ctrl._stop_massage_process = stop
+        ctrl.close()
+        self.assertTrue(stopped)
 
     def test_confirm_passes_locked_selection_to_u_chui(self):
         (self.data / "captured_postures.h").write_text(header(5))
         proc = RunningProcess()
         popen = MagicMock(return_value=proc)
         ctrl = self.controller(popen=popen)
+        music = MagicMock()
         out = ctrl.start_massage(("right-waist", "left-shoulder"), 4)
         self.assertEqual(out["parts"], ["left-shoulder", "right-waist"])
         status = ctrl.report_status()
-        self.assertIn("左肩、右腰，力度4级（50牛）", status["reply"])
+        self.assertIn("左肩、右腰，重一点（50牛）", status["reply"])
         repeated = ctrl.start_massage(None, None)
-        self.assertIn("当前锁定左肩、右腰，力度4级（50牛）", repeated["reply"])
+        self.assertIn("当前锁定左肩、右腰，重一点（50牛）", repeated["reply"])
 
+        # Re-create with music mock so confirm hooks are verified.
+        ctrl = self.controller(popen=popen, music_player=music)
+        ctrl.start_massage(("right-waist", "left-shoulder"), 4)
         out = ctrl.confirm_start()
         self.assertTrue(out["started"])
+        music.start_random.assert_called_once()
         command = popen.call_args.args[0]
         self.assertEqual(
             command,
@@ -506,6 +605,7 @@ class MassageControllerTests(unittest.TestCase):
         proc.returncode = 0
         proc.done.set()
         self.wait_state(ctrl, "ready")
+        music.stop.assert_called()
 
     def test_all_positions_use_all_cli_flag_and_cancel_clears_selection(self):
         (self.data / "captured_postures.h").write_text(header(5))
@@ -538,7 +638,8 @@ class MassageControllerTests(unittest.TestCase):
             with self.subTest(parts=parts, level=level):
                 out = ctrl.start_massage(parts, level)
                 self.assertFalse(out["started"])
-                self.assertIn("位置和一至五级力度", out["reply"])
+                self.assertIn("位置和力度", out["reply"])
+                self.assertIn("轻一点", out["reply"])
 
 
 if __name__ == "__main__":

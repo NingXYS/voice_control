@@ -532,11 +532,29 @@ class SpeakerAdminService:
             "stale_reason": stale_reason,
             "ready": bool(reports.get("ready")) and not stale,
         }
+        # Live corpus counts (update immediately after each probe capture).
+        # Report metrics stay frozen until "重新计算三模型报告".
+        live_genuine = 0
+        live_impostor = 0
+        for sample in self.dataset.list_samples(status="accepted"):
+            if sample.get("kind") != "probe":
+                continue
+            if sample.get("actual_speaker_id"):
+                live_genuine += 1
+            else:
+                live_impostor += 1
         evaluation = (
             legacy_evaluation
             if context["legacy"]
             else self._experiment_evaluation(reports, context["model_id"])
         )
+        if not context["legacy"]:
+            evaluation = dict(evaluation) | {
+                "live_genuine_count": live_genuine,
+                "live_impostor_count": live_impostor,
+                "report_stale": stale,
+                "report_stale_reason": stale_reason,
+            }
         drafts = self.dataset.list_drafts()
         legacy_rollback_ready = bool(
             self.model_path.is_file()
@@ -926,8 +944,19 @@ class SpeakerAdminService:
                         effective_store,
                         extractor,
                         threshold=context["threshold"],
+                        score_mode=os.environ.get(
+                            "VOICE_SPEAKER_SCORE_MODE", "max_template"
+                        ).strip().lower()
+                        or "max_template",
+                        min_speech_ms=0,
+                        min_rms=0.0,
                     )
-                    decision = verifier.decide_embedding(embedding, duration_ms=elapsed)
+                    decision = verifier.decide_embedding(
+                        embedding,
+                        duration_ms=elapsed,
+                        audio_ms=captured.audio_ms,
+                        rms=captured.rms,
+                    )
                 else:
                     # A first installation has a complete v2 enrollment draft
                     # but no legacy production profile yet.  Raw evaluation
@@ -987,6 +1016,8 @@ class SpeakerAdminService:
                 self.model_specs,
                 extractor_factory=self.extractor_factory,
                 num_threads=int(os.environ.get("VOICE_SPEAKER_NUM_THREADS", "1")),
+                score_mode=os.environ.get("VOICE_SPEAKER_SCORE_MODE", "max_template").strip().lower()
+                or "max_template",
             )
             return runner.run()
         finally:
@@ -1017,6 +1048,8 @@ class SpeakerAdminService:
                 self.model_specs,
                 extractor_factory=self.extractor_factory,
                 num_threads=int(os.environ.get("VOICE_SPEAKER_NUM_THREADS", "1")),
+                score_mode=os.environ.get("VOICE_SPEAKER_SCORE_MODE", "max_template").strip().lower()
+                or "max_template",
             )
             bundle = runner.build_bundle(model_id)
             self.dataset.activate_bundle(bundle)

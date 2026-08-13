@@ -24,6 +24,10 @@ massage_data/logs/
 massage_data/_rokae_log_/
 massage_data/*.candidate.h
 
+# User-supplied massage background music (keep README only)
+/massage_music/*
+!/massage_music/README.md
+
 # Downloaded model artifacts (keep only usage documentation in Git)
 /models/*
 !/models/README.md

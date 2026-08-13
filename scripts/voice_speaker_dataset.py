@@ -25,9 +25,12 @@ from uuid import uuid4
 import numpy as np
 
 from voice_speaker_verifier import (
+    DEFAULT_SCORE_MODE,
+    SCORE_MODES,
     SherpaSpeakerEmbeddingExtractor,
     SpeakerProfileStore,
     normalize_embedding,
+    score_templates,
 )
 
 
@@ -970,6 +973,7 @@ class SpeakerExperimentRunner:
         *,
         extractor_factory: Callable[..., Any] = SherpaSpeakerEmbeddingExtractor,
         num_threads: int = 1,
+        score_mode: str = DEFAULT_SCORE_MODE,
     ) -> None:
         self.dataset = dataset
         self.model_specs = tuple(model_specs)
@@ -977,6 +981,10 @@ class SpeakerExperimentRunner:
         self.num_threads = int(num_threads)
         if self.num_threads <= 0:
             raise ValueError("speaker model num_threads must be positive")
+        mode = str(score_mode).strip().lower()
+        if mode not in SCORE_MODES:
+            raise ValueError("speaker score_mode must be centroid or max_template")
+        self.score_mode = mode
 
     def _extractor(self, spec: SpeakerModelSpec):
         backend = str(spec.backend).strip().lower()
@@ -1194,6 +1202,7 @@ class SpeakerExperimentRunner:
         extractor = self._extractor(spec)
         cache_id = self.dataset.prepare_embedding_cache(binding)
         sample_by_id = {item["sample_id"]: item for item in samples}
+        templates: dict[str, np.ndarray] = {}
         centroids: dict[str, np.ndarray] = {}
         for draft in drafts:
             if len(draft.get("groups", [])) < len(ENROLLMENT_GROUPS):
@@ -1208,8 +1217,12 @@ class SpeakerExperimentRunner:
                     embedding, _ = self._embedding(extractor, cache_id, sample)
                     embeddings.append(embedding)
                 group_centroids.append(robust_group_centroid(embeddings))
-            centroids[draft["speaker_id"]] = normalize_embedding(np.mean(group_centroids, axis=0))
-        if not centroids:
+            matrix = np.stack([normalize_embedding(item) for item in group_centroids])
+            templates[draft["speaker_id"]] = matrix
+            # Bundle binding still fingerprints the mean template so centroid and
+            # max_template deployments share the same enrollment identity hash.
+            centroids[draft["speaker_id"]] = normalize_embedding(np.mean(matrix, axis=0))
+        if not templates:
             return {
                 "model_id": spec.model_id,
                 "label": spec.label,
@@ -1224,7 +1237,7 @@ class SpeakerExperimentRunner:
             item for item in samples
             if item.get("kind") == "probe"
             and item.get("status") == "accepted"
-            and (not item.get("actual_speaker_id") or item.get("actual_speaker_id") in centroids)
+            and (not item.get("actual_speaker_id") or item.get("actual_speaker_id") in templates)
         ]
         split_assignments = self._split_assignments(probes)
         records: list[dict[str, Any]] = []
@@ -1234,7 +1247,10 @@ class SpeakerExperimentRunner:
             # embeddings remain cached, but cache hits must not turn latency
             # into a misleading 0 ms on subsequent comparisons.
             embedding, elapsed = self._embedding(extractor, cache_id, sample, force=True)
-            scores = {speaker_id: float(np.dot(centroid, embedding)) for speaker_id, centroid in centroids.items()}
+            scores = {
+                speaker_id: score_templates(matrix, embedding, mode=self.score_mode)
+                for speaker_id, matrix in templates.items()
+            }
             best_id, best_score = max(scores.items(), key=lambda item: item[1])
             actual = sample.get("actual_speaker_id")
             records.append({
@@ -1251,15 +1267,15 @@ class SpeakerExperimentRunner:
         holdout = [item for item in records if item["split"] == "holdout"]
         genuine_by_speaker = {
             speaker_id: sum(item["actual_speaker_id"] == speaker_id for item in records)
-            for speaker_id in centroids
+            for speaker_id in templates
         }
         calibration_genuine_by_speaker = {
             speaker_id: sum(item["actual_speaker_id"] == speaker_id for item in calibration)
-            for speaker_id in centroids
+            for speaker_id in templates
         }
         holdout_genuine_by_speaker = {
             speaker_id: sum(item["actual_speaker_id"] == speaker_id for item in holdout)
-            for speaker_id in centroids
+            for speaker_id in templates
         }
         impostor_count = sum(not item["actual_speaker_id"] for item in records)
         impostor_batches = {
@@ -1267,7 +1283,7 @@ class SpeakerExperimentRunner:
             for sample in probes
             if not sample.get("actual_speaker_id") and sample.get("subject_batch")
         }
-        selected = self._select_calibration_thresholds(calibration, centroids)
+        selected = self._select_calibration_thresholds(calibration, templates)
         if selected is None:
             return {
                 "model_id": spec.model_id,
@@ -1275,6 +1291,7 @@ class SpeakerExperimentRunner:
                 "available": True,
                 **{key: value for key, value in binding.items() if key != "model_id"},
                 "embedding_cache_key": cache_id,
+                "score_mode": self.score_mode,
                 "threshold": None,
                 "threshold_hex": None,
                 "threshold_min": None,
@@ -1309,9 +1326,9 @@ class SpeakerExperimentRunner:
             and calibration_far == 0.0
             and total_far == 0.0
             and holdout_far == 0.0
-            and set(calibration_frr_by_speaker) == set(centroids)
-            and set(holdout_frr_by_speaker) == set(centroids)
-            and set(total_frr_by_speaker) == set(centroids)
+            and set(calibration_frr_by_speaker) == set(templates)
+            and set(holdout_frr_by_speaker) == set(templates)
+            and set(total_frr_by_speaker) == set(templates)
             and all(rate <= 0.10 for rate in calibration_frr_by_speaker.values())
             and all(rate <= 0.10 for rate in holdout_frr_by_speaker.values())
             and all(rate <= 0.10 for rate in total_frr_by_speaker.values())
@@ -1323,6 +1340,7 @@ class SpeakerExperimentRunner:
             "available": True,
             **{key: value for key, value in binding.items() if key != "model_id"},
             "embedding_cache_key": cache_id,
+            "score_mode": self.score_mode,
             "profile_template_sha256": _profile_template_sha256(centroids),
             **_threshold_payload(threshold),
             **_threshold_range_payload(threshold_min, threshold_max),
@@ -1496,6 +1514,7 @@ class SpeakerExperimentRunner:
             "profiles_manifest_sha256": manifest_sha256,
             "profile_template_sha256": template_sha256,
             "evaluation_signature": evaluation_signature,
+            "score_mode": self.score_mode,
             **_threshold_payload(threshold),
             **_threshold_range_payload(threshold_min, threshold_max),
             "ready": True,

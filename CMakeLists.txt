@@ -55,6 +55,7 @@ set(VOICE_PYTHON_MODULES
   scripts/voice_llm_client.py
   scripts/voice_assembly_controller.py
   scripts/voice_massage_controller.py
+  scripts/voice_massage_music.py
   scripts/voice_online_services.py
   scripts/voice_massage_dry_run.py
   scripts/voice_qwen_llm.py

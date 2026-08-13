@@ -204,6 +204,17 @@ SPEAKER_PROFILE_DIR = os.environ.get(
 ).strip()
 SPEAKER_THRESHOLD = _configured_float("VOICE_SPEAKER_THRESHOLD", 0.60)
 SPEAKER_NUM_THREADS = _configured_int("VOICE_SPEAKER_NUM_THREADS", 1)
+# Scoring: max_template is more robust for short online commands than a single
+# mean centroid. centroid keeps the historical mean-template behavior.
+SPEAKER_SCORE_MODE = os.environ.get("VOICE_SPEAKER_SCORE_MODE", "max_template").strip().lower()
+# Reject utterances shorter than this before CAM++ scoring (ms). Short crops
+# collapse genuine cosine scores into the 0.5 band.
+SPEAKER_MIN_SPEECH_MS = _configured_int("VOICE_SPEAKER_MIN_SPEECH_MS", 1000)
+SPEAKER_MIN_RMS = _configured_float("VOICE_SPEAKER_MIN_RMS", 0.002)
+# Session trust after a successful verify within a continuous dialogue window:
+# off | after_first (skip re-check) | relaxed (threshold - SPEAKER_SESSION_RELAX).
+SPEAKER_SESSION_TRUST = os.environ.get("VOICE_SPEAKER_SESSION_TRUST", "after_first").strip().lower()
+SPEAKER_SESSION_RELAX = _configured_float("VOICE_SPEAKER_SESSION_RELAX", 0.05)
 # Short anti double-wake after a turn. Combined with POST_TTS_GUARD this is the
 # blackout before the next "小西小西" is accepted. Was 1.5s and felt like "dead"
 # if the user re-woke immediately after TTS.
@@ -289,6 +300,16 @@ VOICE_MASSAGE_BUILD_TARGET = os.environ.get(
     "VOICE_MASSAGE_BUILD_TARGET", "u_chui"
 ).strip() or "u_chui"
 VOICE_MASSAGE_BUILD_TIMEOUT_SEC = _configured_float("VOICE_MASSAGE_BUILD_TIMEOUT_SEC", 180)
+# 按摩开始时随机播放的背景音乐目录；用户可自行放入 mp3/wav 等。
+VOICE_MASSAGE_MUSIC_DIR = os.environ.get(
+    "VOICE_MASSAGE_MUSIC_DIR", f"{_SOURCE_ROOT}/massage_music"
+).strip() or f"{_SOURCE_ROOT}/massage_music"
+VOICE_MASSAGE_MUSIC_VOLUME = _configured_float("VOICE_MASSAGE_MUSIC_VOLUME", 0.6)
+
+
+def massage_music_enabled() -> bool:
+    """Whether confirm-start should auto-play a random track from the music dir."""
+    return _configured_bool("VOICE_MASSAGE_MUSIC_ENABLED", default=True)
 
 
 # --- 装配演示：拍照节点 + auto_demo + /assembly_count ---
@@ -434,6 +455,16 @@ def validate_runtime_config() -> None:
         raise ValueError("VOICE_SPEAKER_THRESHOLD must be between 0 and 1")
     if SPEAKER_NUM_THREADS <= 0:
         raise ValueError("VOICE_SPEAKER_NUM_THREADS must be positive")
+    if SPEAKER_SCORE_MODE not in {"centroid", "max_template"}:
+        raise ValueError("VOICE_SPEAKER_SCORE_MODE must be centroid or max_template")
+    if SPEAKER_MIN_SPEECH_MS < 0:
+        raise ValueError("VOICE_SPEAKER_MIN_SPEECH_MS must be non-negative")
+    if not 0.0 <= SPEAKER_MIN_RMS <= 1.0:
+        raise ValueError("VOICE_SPEAKER_MIN_RMS must be between 0 and 1")
+    if SPEAKER_SESSION_TRUST not in {"off", "after_first", "relaxed"}:
+        raise ValueError("VOICE_SPEAKER_SESSION_TRUST must be off, after_first, or relaxed")
+    if not 0.0 <= SPEAKER_SESSION_RELAX <= 0.5:
+        raise ValueError("VOICE_SPEAKER_SESSION_RELAX must be between 0 and 0.5")
     if not SPEAKER_PROFILE_DIR:
         raise ValueError("VOICE_SPEAKER_PROFILE_DIR must not be empty")
     if not 0.0 < ASR_TARGET_RMS <= 1.0:

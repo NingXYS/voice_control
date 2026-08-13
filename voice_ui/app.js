@@ -115,18 +115,38 @@ function evaluationRows(evaluation, { legacy = false } = {}) {
     heading.textContent = "历史 CAM++ 评估（只读参考）";
     rows.push(heading);
   }
+  const liveGenuine = evaluation.live_genuine_count;
+  const liveImpostor = evaluation.live_impostor_count;
+  const reportGenuine = evaluation.genuine_count || 0;
+  const reportImpostor = evaluation.impostor_count || 0;
+  // Prefer live corpus totals so each new probe visibly increments the counter.
+  // Report FRR/FAR stay from the last computed report (may be stale).
+  const genuineLabel = liveGenuine == null
+    ? `${reportGenuine} / 30`
+    : `${liveGenuine} / 30${liveGenuine !== reportGenuine ? `（报告 ${reportGenuine}）` : ""}`;
+  const impostorLabel = liveImpostor == null
+    ? `${reportImpostor} / 100`
+    : `${liveImpostor} / 100${liveImpostor !== reportImpostor ? `（报告 ${reportImpostor}）` : ""}`;
   rows.push(
-    summaryRow(legacy ? "历史本人样本" : "本人样本", `${evaluation.genuine_count || 0} / 30`, "evaluation-row"),
-    summaryRow(legacy ? "历史非本人样本" : "非本人样本", `${evaluation.impostor_count || 0} / 100`, "evaluation-row"),
+    summaryRow(legacy ? "历史本人样本" : "本人样本", genuineLabel, "evaluation-row"),
+    summaryRow(legacy ? "历史非本人样本" : "非本人样本", impostorLabel, "evaluation-row"),
     summaryRow(legacy ? "历史误拒率 FRR" : "误拒率 FRR", percentLabel(evaluation.false_reject_rate), "evaluation-row"),
     summaryRow(legacy ? "历史误接收率 FAR" : "误接收率 FAR", percentLabel(evaluation.false_accept_rate), "evaluation-row"),
     summaryRow(legacy ? "历史 P95 延迟" : "P95 延迟", evaluation.p95_latency_ms == null ? "样本不足" : `${evaluation.p95_latency_ms} ms`, "evaluation-row")
   );
   if (!legacy) {
+    const readyLabel = evaluation.report_stale
+      ? "报告已过期（请重新计算）"
+      : (evaluation.ready ? "已达标" : "未达标");
     rows.push(
       summaryRow("部署阈值", evaluation.threshold == null && evaluation.recommended_threshold == null ? "样本不足" : Number(evaluation.threshold ?? evaluation.recommended_threshold).toFixed(2), "evaluation-row"),
-      summaryRow("强制门控条件", evaluation.ready ? "已达标" : "未达标", "evaluation-row")
+      summaryRow("强制门控条件", readyLabel, "evaluation-row")
     );
+    if (evaluation.report_stale && evaluation.report_stale_reason) {
+      rows.push(
+        summaryRow("说明", `${evaluation.report_stale_reason}；新录音已保存，点「重新计算三模型报告」后数字与阈值会更新`, "evaluation-row")
+      );
+    }
   }
   return rows;
 }
@@ -197,7 +217,7 @@ function renderSpeaker(data) {
         ? "登记和评估前请先停止语音模块。"
         : experimentBusy
           ? "三模型评测或模型切换正在进行，请等待完成。"
-        : "每位用户登记3组×8条；新录音保存为本机私有FLAC，生产声纹在评测通过前保持不变。";
+        : "每位用户登记3组×8条；评测请多采真实短指令（约1–2秒）。生产打分默认 max_template，过短语音会被质量门拒绝。";
   ui.speakerHelp.textContent = state.notices.speaker || defaultSpeakerHelp;
 
   const draftBySpeaker = new Map(drafts.map((draft) => [draft.speaker_id, draft]));
@@ -434,7 +454,7 @@ function addLog(event) {
   const timing = event.type === "voice.timing"
     ? `耗时 · ${event.payload?.stage || "stage"} · ${JSON.stringify(event.payload || {})}`
     : event.type === "voice.speaker"
-      ? `声纹 · ${event.payload?.accepted ? "匹配" : "未匹配"} · ${event.payload?.display_name || "无"} · score=${event.payload?.score}${event.payload?.threshold != null ? ` / thr=${event.payload.threshold}` : ""} · ${event.payload?.duration_ms}ms`
+      ? `声纹 · ${event.payload?.accepted ? "匹配" : "未匹配"} · ${event.payload?.display_name || "无"} · score=${event.payload?.score}${event.payload?.threshold != null ? ` / thr=${event.payload.threshold}` : ""}${event.payload?.audio_ms != null ? ` · audio=${event.payload.audio_ms}ms` : ""}${event.payload?.score_mode ? ` · ${event.payload.score_mode}` : ""}${event.payload?.reason === "session_trusted" ? " · trusted" : ""} · ${event.payload?.duration_ms}ms`
     : "";
   line.append(document.createTextNode(event.payload?.message || timing || JSON.stringify(event.payload || {})));
   ui.logs.appendChild(line);

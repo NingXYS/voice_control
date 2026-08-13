@@ -20,6 +20,8 @@ from voice_speaker_verifier import (
     SpeakerVerifier,
     CapturedUtterance,
     normalize_embedding,
+    score_templates,
+    utterance_quality,
 )
 from voice_speaker_dataset import (
     SpeakerDatasetStore,
@@ -96,18 +98,82 @@ class SpeakerVerifierTests(unittest.TestCase):
             alice = store.save_profile("Alice", [[1, 0, 0], [0.9, 0.1, 0]])
             bob = store.save_profile("Bob", [[0, 1, 0], [0.1, 0.9, 0]])
 
-            accepted = SpeakerVerifier(store, FakeExtractor([0.95, 0.05, 0]), threshold=0.8).verify(
-                np.ones(16000, dtype=np.float32), 16000
-            )
+            # Loud enough and long enough to pass quality gates.
+            audio = np.full(16000, 0.05, dtype=np.float32)
+            accepted = SpeakerVerifier(
+                store, FakeExtractor([0.95, 0.05, 0]), threshold=0.8, min_speech_ms=0
+            ).verify(audio, 16000)
             self.assertTrue(accepted.accepted)
             self.assertEqual(accepted.speaker_id, alice.speaker_id)
             self.assertGreater(accepted.scores[alice.speaker_id], accepted.scores[bob.speaker_id])
+            self.assertEqual(accepted.score_mode, "max_template")
+            self.assertIsNotNone(accepted.audio_ms)
 
-            rejected = SpeakerVerifier(store, FakeExtractor([0, 0, 1]), threshold=0.8).verify(
-                np.ones(16000, dtype=np.float32), 16000
-            )
+            rejected = SpeakerVerifier(
+                store, FakeExtractor([0, 0, 1]), threshold=0.8, min_speech_ms=0
+            ).verify(audio, 16000)
             self.assertFalse(rejected.accepted)
             self.assertEqual(rejected.reason, "speaker_mismatch")
+
+    def test_max_template_picks_nearest_enrollment_vector(self):
+        templates = np.asarray([[1, 0, 0], [0, 1, 0]], dtype=np.float32)
+        query = normalize_embedding([0.2, 0.98, 0])
+        self.assertGreater(
+            score_templates(templates, query, mode="max_template"),
+            score_templates(templates, query, mode="centroid"),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SpeakerProfileStore(temp_dir)
+            store.save_profile("A", [[1, 0, 0], [0, 1, 0]])
+            audio = np.full(16000, 0.05, dtype=np.float32)
+            max_decision = SpeakerVerifier(
+                store,
+                FakeExtractor([0.05, 0.95, 0]),
+                threshold=0.8,
+                score_mode="max_template",
+                min_speech_ms=0,
+            ).verify(audio, 16000)
+            mean_decision = SpeakerVerifier(
+                store,
+                FakeExtractor([0.05, 0.95, 0]),
+                threshold=0.8,
+                score_mode="centroid",
+                min_speech_ms=0,
+            ).verify(audio, 16000)
+            self.assertTrue(max_decision.accepted)
+            self.assertFalse(mean_decision.accepted)
+            self.assertGreater(max_decision.score, mean_decision.score)
+
+    def test_short_or_quiet_audio_is_rejected_before_scoring(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SpeakerProfileStore(temp_dir)
+            store.save_profile("A", [[1, 0, 0]])
+            short = SpeakerVerifier(
+                store,
+                FakeExtractor([1, 0, 0]),
+                threshold=0.6,
+                min_speech_ms=1000,
+            ).verify(np.full(8000, 0.05, dtype=np.float32), 16000)
+            self.assertFalse(short.accepted)
+            self.assertEqual(short.reason, "audio_too_short_for_sv")
+            self.assertEqual(short.audio_ms, 500)
+
+            quiet = SpeakerVerifier(
+                store,
+                FakeExtractor([1, 0, 0]),
+                threshold=0.6,
+                min_speech_ms=0,
+                min_rms=0.01,
+            ).verify(np.full(16000, 0.001, dtype=np.float32), 16000)
+            self.assertFalse(quiet.accepted)
+            self.assertEqual(quiet.reason, "speech_level_too_low")
+
+        audio_ms, rms, reason = utterance_quality(
+            np.full(16000, 0.05, dtype=np.float32), 16000, min_speech_ms=500
+        )
+        self.assertEqual(reason, None)
+        self.assertEqual(audio_ms, 1000)
+        self.assertGreater(rms, 0.0)
 
     def test_short_audio_is_a_closed_decision(self):
         class ShortExtractor(FakeExtractor):
@@ -117,9 +183,9 @@ class SpeakerVerifierTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             store = SpeakerProfileStore(temp_dir)
             store.save_profile("A", [[1, 0, 0]])
-            decision = SpeakerVerifier(store, ShortExtractor([1, 0, 0]), threshold=0.6).verify(
-                np.ones(20, dtype=np.float32), 16000
-            )
+            decision = SpeakerVerifier(
+                store, ShortExtractor([1, 0, 0]), threshold=0.6, min_speech_ms=0, min_rms=0.0
+            ).verify(np.ones(20, dtype=np.float32), 16000)
             self.assertFalse(decision.accepted)
             self.assertEqual(decision.reason, "audio_too_short")
 
@@ -601,8 +667,11 @@ class RuntimeSpeakerGateTests(unittest.TestCase):
     class Verifier:
         def __init__(self, accepted):
             self.accepted = accepted
+            self.threshold = 0.6
+            self.calls = 0
 
-        def verify(self, _audio, _sample_rate):
+        def verify(self, _audio, _sample_rate, **_kwargs):
+            self.calls += 1
             return SpeakerDecision(
                 self.accepted,
                 0.9 if self.accepted else 0.2,
@@ -611,10 +680,13 @@ class RuntimeSpeakerGateTests(unittest.TestCase):
                 "matched" if self.accepted else "speaker_mismatch",
                 12,
                 {"alice": 0.9 if self.accepted else 0.2},
+                threshold=self.threshold,
+                audio_ms=1200,
+                score_mode="max_template",
             )
 
     @staticmethod
-    def runtime(mode, accepted):
+    def runtime(mode, accepted, *, session_trust="off", session_timeout=0.0):
         emitter = RuntimeSpeakerGateTests.Emitter()
         runtime = WakeWordRuntime(
             audio=object(), wake_detector=object(), vad=object(),
@@ -623,6 +695,8 @@ class RuntimeSpeakerGateTests(unittest.TestCase):
             cooldown=0, event_emitter=emitter,
             speaker_verifier=RuntimeSpeakerGateTests.Verifier(accepted),
             speaker_verify_mode=mode,
+            session_timeout=session_timeout,
+            speaker_session_trust=session_trust,
         )
         return runtime, emitter
 
@@ -637,6 +711,20 @@ class RuntimeSpeakerGateTests(unittest.TestCase):
         accepted, _ = self.runtime("enforce", True)
         self.assertFalse(rejected._speaker_accepts(np.zeros(1600, dtype=np.float32)))
         self.assertTrue(accepted._speaker_accepts(np.zeros(1600, dtype=np.float32)))
+
+    def test_session_trust_skips_after_first_accept(self):
+        runtime, emitter = self.runtime(
+            "enforce", True, session_trust="after_first", session_timeout=60.0
+        )
+        runtime._begin_or_extend_session()
+        self.assertTrue(runtime._speaker_accepts(np.zeros(1600, dtype=np.float32)))
+        self.assertEqual(runtime.speaker_verifier.calls, 1)
+        self.assertTrue(runtime._speaker_accepts(np.zeros(1600, dtype=np.float32)))
+        self.assertEqual(runtime.speaker_verifier.calls, 1)
+        self.assertEqual(emitter.events[-1][1]["reason"], "session_trusted")
+        runtime._clear_session()
+        self.assertTrue(runtime._speaker_accepts(np.zeros(1600, dtype=np.float32)))
+        self.assertEqual(runtime.speaker_verifier.calls, 2)
 
     def test_followup_capture_does_not_extend_session_before_verification(self):
         now = [0.0]

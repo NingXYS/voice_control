@@ -253,6 +253,62 @@ class SpeakerProfileStore:
         return np.stack([normalize_embedding(row) for row in matrix])
 
 
+SCORE_MODES = frozenset({"centroid", "max_template"})
+DEFAULT_SCORE_MODE = "max_template"
+DEFAULT_MIN_SPEECH_MS = 1000
+DEFAULT_MIN_RMS = 0.002
+
+
+def score_templates(
+    templates: np.ndarray | Iterable[Iterable[float]],
+    query: Iterable[float],
+    *,
+    mode: str = DEFAULT_SCORE_MODE,
+) -> float:
+    """Score a query embedding against one speaker's enrollment templates.
+
+    ``centroid``: cosine against the L2-normalized mean of templates.
+    ``max_template``: maximum cosine against any single template (better for
+    short online commands that only match one enrollment condition).
+    """
+    matrix = np.stack([normalize_embedding(row) for row in np.asarray(templates, dtype=np.float32)])
+    if matrix.ndim != 2 or matrix.shape[0] == 0:
+        raise ValueError("speaker templates must be a non-empty matrix")
+    vector = normalize_embedding(query)
+    if vector.size != matrix.shape[1]:
+        raise ValueError("speaker query and template dimensions differ")
+    normalized = str(mode).strip().lower()
+    if normalized == "centroid":
+        return float(np.dot(normalize_embedding(np.mean(matrix, axis=0)), vector))
+    if normalized == "max_template":
+        return float(np.max(matrix @ vector))
+    raise ValueError(f"unsupported speaker score mode: {mode}")
+
+
+def utterance_quality(
+    audio: np.ndarray,
+    sample_rate: int,
+    *,
+    min_speech_ms: int = DEFAULT_MIN_SPEECH_MS,
+    min_rms: float = DEFAULT_MIN_RMS,
+) -> tuple[int, float, str | None]:
+    """Return ``(audio_ms, rms, reject_reason)`` for a verification utterance."""
+    samples = np.asarray(audio, dtype=np.float32).reshape(-1)
+    if samples.size == 0 or not np.all(np.isfinite(samples)):
+        return 0, 0.0, "invalid_audio"
+    if int(sample_rate) <= 0:
+        return 0, 0.0, "invalid_audio"
+    audio_ms = int(round(samples.size / float(sample_rate) * 1000.0))
+    rms = float(np.sqrt(np.mean(np.square(samples), dtype=np.float64)))
+    if not math.isfinite(rms):
+        return audio_ms, 0.0, "invalid_audio"
+    if int(min_speech_ms) > 0 and audio_ms < int(min_speech_ms):
+        return audio_ms, rms, "audio_too_short_for_sv"
+    if float(min_rms) > 0.0 and rms < float(min_rms):
+        return audio_ms, rms, "speech_level_too_low"
+    return audio_ms, rms, None
+
+
 @dataclass(frozen=True)
 class SpeakerDecision:
     accepted: bool
@@ -263,6 +319,9 @@ class SpeakerDecision:
     duration_ms: int
     scores: dict[str, float]
     threshold: float | None = None
+    audio_ms: int | None = None
+    rms: float | None = None
+    score_mode: str | None = None
 
     def event_payload(self, *, mode: str) -> dict[str, Any]:
         payload = {
@@ -276,6 +335,12 @@ class SpeakerDecision:
         }
         if self.threshold is not None and math.isfinite(float(self.threshold)):
             payload["threshold"] = round(float(self.threshold), 4)
+        if self.audio_ms is not None:
+            payload["audio_ms"] = int(self.audio_ms)
+        if self.rms is not None and math.isfinite(float(self.rms)):
+            payload["rms"] = round(float(self.rms), 5)
+        if self.score_mode:
+            payload["score_mode"] = self.score_mode
         return payload
 
 
@@ -313,7 +378,7 @@ class SherpaSpeakerEmbeddingExtractor:
 
 
 class SpeakerVerifier:
-    """Compare a query embedding with normalized per-speaker centroids."""
+    """Compare a query embedding with per-speaker enrollment templates."""
 
     def __init__(
         self,
@@ -321,6 +386,9 @@ class SpeakerVerifier:
         extractor: Any,
         *,
         threshold: float,
+        score_mode: str = DEFAULT_SCORE_MODE,
+        min_speech_ms: int = DEFAULT_MIN_SPEECH_MS,
+        min_rms: float = DEFAULT_MIN_RMS,
         clock=time.perf_counter,
     ) -> None:
         self.store = store
@@ -328,30 +396,51 @@ class SpeakerVerifier:
         self.threshold = float(threshold)
         if not 0.0 <= self.threshold <= 1.0:
             raise ValueError("speaker threshold must be between 0 and 1")
+        mode = str(score_mode).strip().lower()
+        if mode not in SCORE_MODES:
+            raise ValueError("speaker score_mode must be centroid or max_template")
+        self.score_mode = mode
+        self.min_speech_ms = max(0, int(min_speech_ms))
+        self.min_rms = float(min_rms)
+        if not math.isfinite(self.min_rms) or self.min_rms < 0.0:
+            raise ValueError("speaker min_rms must be a finite non-negative value")
         self.clock = clock
         self.profiles = store.list_profiles()
         if not self.profiles:
             raise RuntimeError("no speaker profiles are enrolled")
+        self._templates: dict[str, np.ndarray] = {}
         self._centroids: dict[str, np.ndarray] = {}
         for profile in self.profiles:
             matrix = store.load_embeddings(profile.speaker_id)
             if int(getattr(extractor, "dimension", matrix.shape[1])) != matrix.shape[1]:
                 raise RuntimeError("speaker profile and model dimensions differ")
+            self._templates[profile.speaker_id] = matrix
             self._centroids[profile.speaker_id] = normalize_embedding(np.mean(matrix, axis=0))
         self._by_id = {profile.speaker_id: profile for profile in self.profiles}
 
     def extract_embedding(self, audio: np.ndarray, sample_rate: int) -> np.ndarray:
         return normalize_embedding(self.extractor.extract(audio, sample_rate))
 
-    def decide_embedding(self, embedding: Iterable[float], *, duration_ms: int = 0) -> SpeakerDecision:
+    def decide_embedding(
+        self,
+        embedding: Iterable[float],
+        *,
+        duration_ms: int = 0,
+        audio_ms: int | None = None,
+        rms: float | None = None,
+        threshold: float | None = None,
+    ) -> SpeakerDecision:
         query = normalize_embedding(embedding)
+        effective_threshold = self.threshold if threshold is None else float(threshold)
+        if not 0.0 <= effective_threshold <= 1.0:
+            raise ValueError("speaker threshold must be between 0 and 1")
         scores = {
-            speaker_id: float(np.dot(centroid, query))
-            for speaker_id, centroid in self._centroids.items()
+            speaker_id: score_templates(matrix, query, mode=self.score_mode)
+            for speaker_id, matrix in self._templates.items()
         }
         speaker_id, score = max(scores.items(), key=lambda item: item[1])
         profile = self._by_id[speaker_id]
-        accepted = bool(math.isfinite(score) and score >= self.threshold)
+        accepted = bool(math.isfinite(score) and score >= effective_threshold)
         return SpeakerDecision(
             accepted=accepted,
             score=score,
@@ -360,20 +449,68 @@ class SpeakerVerifier:
             reason="matched" if accepted else "speaker_mismatch",
             duration_ms=int(duration_ms),
             scores=scores,
-            threshold=self.threshold,
+            threshold=effective_threshold,
+            audio_ms=None if audio_ms is None else int(audio_ms),
+            rms=None if rms is None else float(rms),
+            score_mode=self.score_mode,
         )
 
-    def verify(self, audio: np.ndarray, sample_rate: int) -> SpeakerDecision:
+    def verify(
+        self,
+        audio: np.ndarray,
+        sample_rate: int,
+        *,
+        threshold: float | None = None,
+    ) -> SpeakerDecision:
         started = self.clock()
+        audio_ms, rms, quality_reason = utterance_quality(
+            audio,
+            sample_rate,
+            min_speech_ms=self.min_speech_ms,
+            min_rms=self.min_rms,
+        )
+        if quality_reason is not None:
+            elapsed = round((self.clock() - started) * 1000.0)
+            effective_threshold = self.threshold if threshold is None else float(threshold)
+            return SpeakerDecision(
+                False,
+                -1.0,
+                None,
+                None,
+                quality_reason,
+                elapsed,
+                {},
+                threshold=effective_threshold,
+                audio_ms=audio_ms,
+                rms=rms,
+                score_mode=self.score_mode,
+            )
         try:
             embedding = self.extract_embedding(audio, sample_rate)
             elapsed = round((self.clock() - started) * 1000.0)
-            return self.decide_embedding(embedding, duration_ms=elapsed)
+            return self.decide_embedding(
+                embedding,
+                duration_ms=elapsed,
+                audio_ms=audio_ms,
+                rms=rms,
+                threshold=threshold,
+            )
         except ValueError as exc:
             elapsed = round((self.clock() - started) * 1000.0)
             reason = "audio_too_short" if str(exc) == "audio_too_short" else "invalid_audio"
+            effective_threshold = self.threshold if threshold is None else float(threshold)
             return SpeakerDecision(
-                False, -1.0, None, None, reason, elapsed, {}, threshold=self.threshold
+                False,
+                -1.0,
+                None,
+                None,
+                reason,
+                elapsed,
+                {},
+                threshold=effective_threshold,
+                audio_ms=audio_ms,
+                rms=rms,
+                score_mode=self.score_mode,
             )
 
 

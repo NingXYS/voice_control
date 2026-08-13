@@ -6,6 +6,7 @@ import os
 import re
 import select
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -31,6 +32,42 @@ _TEACHING_POINT_RE = re.compile(r"^P(\d+)\s*=")
 _TEACHING_CMD_CAPTURE = frozenset({"", "capture", "enter", "record", "点"})
 _TEACHING_CMD_QUIT = frozenset({"q", "quit", "finish", "stop", "done"})
 MASSAGE_FORCE_NEWTONS = {1: 20, 2: 30, 3: 40, 4: 50, 5: 55}
+# Spoken primary labels used in TTS / status replies (still map to levels 1–5).
+MASSAGE_FORCE_LABELS = {
+    1: "很轻",
+    2: "轻一点",
+    3: "适中",
+    4: "重一点",
+    5: "很重",
+}
+# Colloquial force phrases, longest-first for greedy matching.
+_FORCE_COLLOQUIAL_ALIASES: tuple[tuple[str, int], ...] = (
+    ("不轻不重", 3),
+    ("轻一点力", 2),
+    ("重一点力", 4),
+    ("轻点力", 2),
+    ("重点力", 4),
+    ("轻一点", 2),
+    ("轻一些", 2),
+    ("重一点", 4),
+    ("重一些", 4),
+    ("轻轻的", 1),
+    ("重重的", 5),
+    ("非常轻", 1),
+    ("非常重", 5),
+    ("最轻", 1),
+    ("最重", 5),
+    ("很轻", 1),
+    ("很重", 5),
+    ("偏轻", 2),
+    ("偏重", 4),
+    ("轻点", 2),
+    ("重点", 4),
+    ("适中", 3),
+    ("中等", 3),
+    ("正常", 3),
+    ("一般", 3),
+)
 _BODY_PART_NAMES = {
     "left-shoulder": "左肩",
     "right-shoulder": "右肩",
@@ -69,7 +106,13 @@ _MASSAGE_PART_MARKERS = (
     "左肩", "右肩", "左腰", "右腰", "背部", "后背",
     "全部位置", "所有位置", "全部部位", "所有部位",
 )
-_MASSAGE_FORCE_MARKERS = ("级", "档", "力度")
+_MASSAGE_FORCE_MARKERS = (
+    "级", "档", "力度",
+    "很轻", "很重", "最轻", "最重", "轻一点", "重一点",
+    "轻一些", "重一些", "轻点", "重点", "偏轻", "偏重",
+    "适中", "中等", "正常", "一般", "轻轻", "重重",
+    "非常轻", "非常重", "不轻不重",
+)
 _DIRECTION_NAMES = {
     "up": "向上",
     "down": "向下",
@@ -192,10 +235,72 @@ def _normalize_massage_text(text: str) -> str:
         ("力度三极", "力度三级"),
         ("力度四极", "力度四级"),
         ("力度五极", "力度五级"),
+        ("轻一点儿", "轻一点"),
+        ("重一点儿", "重一点"),
+        ("轻点儿", "轻点"),
+        ("重点儿", "重点"),
     )
     for src, dst in replacements:
         normalized = normalized.replace(src, dst)
     return normalized
+
+
+def _extract_force_level(remainder: str) -> tuple[Optional[int], str, bool]:
+    """Extract a single force level (numeric or colloquial) from residual text.
+
+    Returns ``(force_level, remainder_without_force, valid)``. Multiple distinct
+    force mentions make the selection invalid.
+    """
+    text = remainder or ""
+    force_level: Optional[int] = None
+    valid = True
+
+    # Prefer longer colloquial phrases so "轻一点" wins over "轻点".
+    hits: list[tuple[int, int, int]] = []  # (start, end, level)
+    for phrase, level in _FORCE_COLLOQUIAL_ALIASES:
+        start = 0
+        while True:
+            idx = text.find(phrase, start)
+            if idx < 0:
+                break
+            hits.append((idx, idx + len(phrase), level))
+            start = idx + len(phrase)
+
+    if hits:
+        # Drop fully nested shorter matches (e.g. 轻点 inside 轻一点).
+        hits.sort(key=lambda item: (item[0], -(item[1] - item[0])))
+        kept: list[tuple[int, int, int]] = []
+        for start, end, level in hits:
+            if any(start >= ks and end <= ke for ks, ke, _ in kept):
+                continue
+            # Partial overlap with an already-kept span → ambiguous.
+            if any(not (end <= ks or start >= ke) for ks, ke, _ in kept):
+                valid = False
+                break
+            kept.append((start, end, level))
+        if valid and kept:
+            levels = {level for _, _, level in kept}
+            if len(levels) != 1 or len(kept) != 1:
+                valid = False
+            else:
+                force_level = kept[0][2]
+                start, end, _ = kept[0]
+                text = text[:start] + text[end:]
+
+    # Numeric 一至五级 / 档 still supported.
+    force_matches = list(_FORCE_LEVEL_RE.finditer(text))
+    if force_matches:
+        if force_level is not None or len(force_matches) > 1:
+            valid = False
+        else:
+            value = force_matches[0].group(1)
+            force_level = {
+                "一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+            }.get(value, int(value) if value.isdigit() else None)
+            start, end = force_matches[0].span()
+            text = text[:start] + text[end:]
+
+    return force_level, text, valid
 
 
 def _extract_massage_selection(payload: str) -> tuple[list[str], Optional[int], str, bool]:
@@ -229,16 +334,8 @@ def _extract_massage_selection(payload: str) -> tuple[list[str], Optional[int], 
         else:
             parts = ["all"]
 
-    force_matches = list(_FORCE_LEVEL_RE.finditer(remainder))
-    force_level = None
-    if len(force_matches) == 1:
-        value = force_matches[0].group(1)
-        force_level = {
-            "一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
-        }.get(value, int(value) if value.isdigit() else None)
-        start, end = force_matches[0].span()
-        remainder = remainder[:start] + remainder[end:]
-    elif len(force_matches) > 1:
+    force_level, remainder, force_valid = _extract_force_level(remainder)
+    if not force_valid:
         valid = False
 
     remainder = _START_FILLER_RE.sub("", remainder)
@@ -370,6 +467,10 @@ def parse_massage_intent(text: str) -> Optional[str]:
         "当前按摩状态": "status",
         "查看按摩状态": "status",
         "点位状态": "status",
+        "重置按摩状态": "reset_state",
+        "清除按摩异常": "reset_state",
+        "清除异常状态": "reset_state",
+        "恢复按摩就绪": "reset_state",
     }
     return exact.get(normalized)
 
@@ -398,6 +499,7 @@ class MassageController:
         build_target: Optional[str] = None,
         build_timeout: Optional[float] = None,
         motion_interface: Optional[MassageMotionInterface] = None,
+        music_player=None,
         popen_factory=None,
         run_factory=None,
     ):
@@ -406,11 +508,14 @@ class MassageController:
             VOICE_MASSAGE_BUILD_TARGET,
             VOICE_MASSAGE_BUILD_TIMEOUT_SEC,
             VOICE_MASSAGE_DATA_DIR,
+            VOICE_MASSAGE_MUSIC_DIR,
+            VOICE_MASSAGE_MUSIC_VOLUME,
             VOICE_MASSAGE_SDK_ROOT,
             VOICE_MASSAGE_TEACHING_BIN,
             VOICE_MASSAGE_U_CHUI_BIN,
             massage_dry_run_enabled,
             massage_enabled,
+            massage_music_enabled,
         )
 
         self.enabled = massage_enabled() if enabled is None else bool(enabled)
@@ -424,6 +529,16 @@ class MassageController:
         self.build_target = build_target or VOICE_MASSAGE_BUILD_TARGET
         self.build_timeout = float(build_timeout or VOICE_MASSAGE_BUILD_TIMEOUT_SEC)
         self.motion_interface = motion_interface
+        if music_player is not None:
+            self._music = music_player
+        else:
+            from voice_massage_music import MassageMusicPlayer
+
+            self._music = MassageMusicPlayer(
+                music_dir=VOICE_MASSAGE_MUSIC_DIR,
+                enabled=massage_music_enabled(),
+                volume=VOICE_MASSAGE_MUSIC_VOLUME,
+            )
         self.header_path = self.data_dir / "captured_postures.h"
         self.candidate_path = self.data_dir / "captured_postures.candidate.h"
         self.log_dir = self.data_dir / "logs"
@@ -443,11 +558,7 @@ class MassageController:
         self._stdin_lock = threading.Lock()
         self.last_error = ""
         self.point_count = self._read_point_count(self.header_path)
-        self.state = (
-            "ready"
-            if self.point_count == REQUIRED_TEACHING_POINTS and self.massage_bin.is_file()
-            else "idle"
-        )
+        self.state = self._plan_ready_state()
         self.available, reason = self._startup_check()
         if self.enabled and not self.available:
             self.last_error = reason
@@ -474,6 +585,18 @@ class MassageController:
             missing.append(f"点位目录不可写: {exc}")
         return (not missing), "；".join(missing)
 
+    def _plan_is_complete(self) -> bool:
+        """True when five taught points and the massage binary are both present."""
+        if self.point_count != REQUIRED_TEACHING_POINTS:
+            return False
+        try:
+            return self.massage_bin.is_file()
+        except OSError:
+            return False
+
+    def _plan_ready_state(self) -> str:
+        return "ready" if self._plan_is_complete() else "idle"
+
     @staticmethod
     def _read_point_count(path: Path) -> int:
         try:
@@ -484,6 +607,156 @@ class MassageController:
         if not match or not _HEADER_COUNT_RE.search(content):
             return 0
         return int(match.group(1))
+
+    def _owned_pids(self) -> set[int]:
+        pids: set[int] = set()
+        for proc in (self._teaching_proc, self._massage_proc):
+            if proc is None:
+                continue
+            pid = getattr(proc, "pid", None)
+            if isinstance(pid, int) and pid > 0:
+                pids.add(pid)
+        return pids
+
+    @staticmethod
+    def _process_cmdline(pid: int) -> str:
+        try:
+            raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+        except OSError:
+            return ""
+        return raw.replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()
+
+    def _find_external_arm_processes(self) -> list[tuple[int, str]]:
+        """Detect leftover native teaching/massage binaries that hold the arm.
+
+        Matches by ``/proc/<pid>/exe`` (resolved path or basename), not by
+        substring search of argv — otherwise a shell line that merely
+        *mentions* ``u_chui`` would be treated as an arm client.
+        """
+        if self.dry_run:
+            return []
+        target_paths: set[Path] = set()
+        target_names: set[str] = set()
+        for path in (self.teaching_bin, self.massage_bin):
+            name = path.name.strip()
+            if name:
+                target_names.add(name)
+            try:
+                if path.exists():
+                    target_paths.add(path.resolve())
+            except OSError:
+                pass
+        for fallback in ("drag_cartesian_pose_reader", "u_chui"):
+            target_names.add(fallback)
+        owned = self._owned_pids()
+        found: list[tuple[int, str]] = []
+        try:
+            for entry in Path("/proc").iterdir():
+                if not entry.name.isdigit():
+                    continue
+                pid = int(entry.name)
+                if pid in owned or pid == os.getpid():
+                    continue
+                try:
+                    exe = Path(f"/proc/{pid}/exe").resolve()
+                except OSError:
+                    continue
+                matched: Optional[str] = None
+                if exe in target_paths:
+                    matched = exe.name
+                elif exe.name in target_names:
+                    matched = exe.name
+                if matched is None:
+                    continue
+                found.append((pid, matched))
+        except OSError:
+            return found
+        found.sort(key=lambda item: item[0])
+        return found
+
+    def _arm_busy_message(self) -> Optional[str]:
+        conflicts = self._find_external_arm_processes()
+        if not conflicts:
+            return None
+        detail = "、".join(f"{label}(pid={pid})" for pid, label in conflicts[:4])
+        return (
+            f"检测到机械臂程序仍在运行：{detail}。"
+            "请先结束原生按摩/示教程序，或重启相关进程后再试"
+        )
+
+    def _reconcile_state(self) -> str:
+        """Heal sticky/zombie states after child exits or external failures.
+
+        Keeps awaiting_confirmation and building intact. Clears dead child
+        references and demotes error/teaching/massaging zombies to ready/idle
+        when the taught plan is still valid.
+        """
+        with self._lock:
+            teaching = self._teaching_proc
+            if teaching is not None and teaching.poll() is not None:
+                code = teaching.returncode
+                # Non-zero: demote immediately so sticky "示教中" cannot block massage.
+                # Zero: leave state=teaching so finish_teaching / auto-finalize can run;
+                # the watcher clears the handle after a clean exit.
+                if self.state == "teaching" and code not in (0, None):
+                    self._teaching_proc = None
+                    self.state = self._plan_ready_state()
+                    self.last_error = (
+                        self.last_error
+                        or f"示教程序异常退出，code={code}"
+                    )
+                elif self.state != "teaching":
+                    self._teaching_proc = None
+
+            massage = self._massage_proc
+            if massage is not None and massage.poll() is not None:
+                code = massage.returncode
+                self._massage_proc = None
+                self._active_selection = None
+                if self.state == "massaging":
+                    self.state = self._plan_ready_state()
+                    if code not in (0, None):
+                        self.last_error = f"按摩程序异常退出，code={code}"
+
+            if self.state == "error":
+                # Recoverable when a complete plan remains; keep last_error for status.
+                self.state = self._plan_ready_state()
+
+            if self.state in {"teaching", "massaging", "building", "awaiting_confirmation"}:
+                return self.state
+            if self.state not in self.STATES:
+                self.state = self._plan_ready_state()
+            return self.state
+
+    def reset_state(self, speaker=None):
+        """Operator recovery: drop sticky error and re-read the taught plan."""
+        with self._lock:
+            if self.state in {"teaching", "building", "massaging"}:
+                return self._reply(
+                    "massage_reset_state",
+                    f"当前处于{self._state_name()}，无法重置。请先结束示教或等待按摩完成",
+                    speaker,
+                    reset=False,
+                )
+            if self.state == "awaiting_confirmation":
+                self._pending_selection = None
+            self.point_count = self._read_point_count(self.header_path)
+            self._teaching_proc = None
+            self._massage_proc = None
+            self._active_selection = None
+            self._pending_selection = None
+            self.state = self._plan_ready_state()
+            previous = self.last_error
+            self.last_error = ""
+            detail = self._state_name()
+            if previous:
+                detail += f"。已清除异常记录：{previous}"
+            return self._reply(
+                "massage_reset_state",
+                f"按摩状态已重置为{detail}",
+                speaker,
+                reset=True,
+            )
 
     @staticmethod
     def _speak(speaker: Optional[Speaker], text: str) -> None:
@@ -514,6 +787,7 @@ class MassageController:
             "confirm_start": self.confirm_start,
             "cancel_start": self.cancel_start,
             "status": self.report_status,
+            "reset_state": self.reset_state,
         }
         method = methods.get(intent)
         if method is None:
@@ -710,6 +984,7 @@ class MassageController:
         os.replace(tmp, path)
 
     def start_teaching(self, speaker=None):
+        self._reconcile_state()
         with self._lock:
             blocked = self._check_enabled("massage_start_teaching", speaker)
             if blocked:
@@ -718,6 +993,12 @@ class MassageController:
                 return self._reply(
                     "massage_start_teaching", f"当前处于{self._state_name()}，不能开始示教",
                     speaker, started=False,
+                )
+            busy = self._arm_busy_message()
+            if busy:
+                self.last_error = busy
+                return self._reply(
+                    "massage_start_teaching", busy, speaker, started=False, arm_busy=True,
                 )
             try:
                 self.candidate_path.unlink(missing_ok=True)
@@ -743,8 +1024,8 @@ class MassageController:
                     popen_kwargs["stderr"] = None
                 proc = self._popen(command, **popen_kwargs)
             except Exception as exc:
-                self.state = "error"
                 self.last_error = str(exc)
+                self.state = self._plan_ready_state()
                 return self._reply(
                     "massage_start_teaching", "示教程序启动失败，请检查配置和终端日志",
                     speaker, started=False,
@@ -919,10 +1200,14 @@ class MassageController:
                 return
             print(f"ℹ️ 示教程序退出，code={code}", flush=True)
             self._clear_teaching_cmd()
+            self._teaching_proc = None
             if code != 0:
-                self.state = "error"
-                self.last_error = f"示教程序异常退出，code={code}"
-                self._teaching_proc = proc
+                # Keep prior complete plan usable; do not sticky-lock error.
+                self.last_error = (
+                    f"示教程序异常退出，code={code}。"
+                    "若机械臂仍被占用，请结束残留的示教/按摩程序后重试"
+                )
+                self.state = self._plan_ready_state()
                 self._emit_teaching_status(event="exited", exit_code=code)
                 return
             # Prefer live stdout counter; fall back to saved candidate header.
@@ -932,11 +1217,7 @@ class MassageController:
             speaker = self._speaker
             if not finalize:
                 # Process ended without a complete five-point set.
-                self.state = (
-                    "ready"
-                    if self.point_count == REQUIRED_TEACHING_POINTS and self.massage_bin.is_file()
-                    else "idle"
-                )
+                self.state = self._plan_ready_state()
                 if count != REQUIRED_TEACHING_POINTS:
                     self.last_error = (
                         f"示教结束但点位数为{count}，需要{REQUIRED_TEACHING_POINTS}个"
@@ -948,6 +1229,7 @@ class MassageController:
             self._finalize_teaching(speaker)
 
     def finish_teaching(self, speaker=None):
+        self._reconcile_state()
         with self._lock:
             blocked = self._check_enabled("massage_finish_teaching", speaker)
             if blocked:
@@ -989,18 +1271,16 @@ class MassageController:
                     speaker, started=False,
                 )
             if proc is not None and proc.returncode not in (0, None):
-                self.state = "error"
+                self._teaching_proc = None
+                self.last_error = f"示教程序未正常完成，code={proc.returncode}"
+                self.state = self._plan_ready_state()
                 return self._reply(
                     "massage_finish_teaching", "示教程序未正常完成，本次点位不会生效",
                     speaker, started=False,
                 )
             count = self._read_point_count(self.candidate_path)
             if count != REQUIRED_TEACHING_POINTS:
-                self.state = (
-                    "ready"
-                    if self.point_count == REQUIRED_TEACHING_POINTS and self.massage_bin.is_file()
-                    else "idle"
-                )
+                self.state = self._plan_ready_state()
                 self._teaching_proc = None
                 self._emit_teaching_status(event="rejected", point_count=count)
                 return self._reply(
@@ -1061,11 +1341,8 @@ class MassageController:
             except OSError as rollback_exc:
                 print(f"❌ 按摩构建回滚失败: {rollback_exc}", flush=True)
             with self._lock:
-                self.state = (
-                    "ready"
-                    if self.point_count == len(MASSAGE_BODY_PARTS) and had_header and had_binary
-                    else "error"
-                )
+                self.point_count = self._read_point_count(self.header_path)
+                self.state = self._plan_ready_state()
                 self.last_error = str(exc)
             self._speak(self._speaker, "按摩程序构建失败，上一份有效方案已保留")
             print(f"❌ 按摩构建失败: {exc}，日志: {log_path}", flush=True)
@@ -1101,14 +1378,17 @@ class MassageController:
         part_names = "、".join(_BODY_PART_NAMES[part] for part in selection["parts"])
         force_level = selection["force_level"]
         force_newtons = MASSAGE_FORCE_NEWTONS[force_level]
-        return f"{part_names}，力度{force_level}级（{force_newtons}牛）"
+        force_label = MASSAGE_FORCE_LABELS[force_level]
+        return f"{part_names}，{force_label}（{force_newtons}牛）"
 
     @staticmethod
     def _selection_metadata(selection) -> dict:
+        force_level = selection["force_level"]
         return {
             "parts": list(selection["parts"]),
-            "force_level": selection["force_level"],
-            "force_newtons": MASSAGE_FORCE_NEWTONS[selection["force_level"]],
+            "force_level": force_level,
+            "force_label": MASSAGE_FORCE_LABELS[force_level],
+            "force_newtons": MASSAGE_FORCE_NEWTONS[force_level],
         }
 
     def start_massage(
@@ -1117,6 +1397,7 @@ class MassageController:
         force_level: Optional[int] = None,
         speaker=None,
     ):
+        self._reconcile_state()
         with self._lock:
             blocked = self._check_enabled("massage_start", speaker)
             if blocked:
@@ -1136,7 +1417,8 @@ class MassageController:
             if selection is None:
                 return self._reply(
                     "massage_start",
-                    "开始按摩需要同时说明位置和一至五级力度。位置可选左肩、右肩、背部、左腰、右腰或全部位置，例如开始按摩左肩，力度三级",
+                    "开始按摩需要同时说明位置和力度。位置可选左肩、右肩、背部、左腰、右腰或全部位置；"
+                    "力度可选很轻、轻一点、适中、重一点、很重，也可以说一至五级，例如开始按摩左肩，轻一点",
                     speaker, started=False,
                 )
             if self.state != "ready":
@@ -1144,11 +1426,17 @@ class MassageController:
                     "massage_start", f"当前处于{self._state_name()}，不能开始按摩",
                     speaker, started=False,
                 )
-            if self.point_count != len(MASSAGE_BODY_PARTS) or not self.massage_bin.is_file():
+            if not self._plan_is_complete():
                 self.state = "idle"
                 return self._reply(
                     "massage_start", "还没有完整的五个按摩位置，请先完成示教",
                     speaker, started=False,
+                )
+            busy = self._arm_busy_message()
+            if busy:
+                self.last_error = busy
+                return self._reply(
+                    "massage_start", busy, speaker, started=False, arm_busy=True,
                 )
             self._pending_selection = selection
             self.state = "awaiting_confirmation"
@@ -1160,6 +1448,7 @@ class MassageController:
             )
 
     def confirm_start(self, speaker=None):
+        self._reconcile_state()
         with self._lock:
             blocked = self._check_enabled("massage_confirm_start", speaker)
             if blocked:
@@ -1168,10 +1457,16 @@ class MassageController:
                 return self._reply("massage_confirm_start", "当前没有等待确认的按摩任务", speaker, started=False)
             selection = self._pending_selection
             if selection is None:
-                self.state = "ready"
+                self.state = self._plan_ready_state()
                 return self._reply(
                     "massage_confirm_start", "按摩参数已失效，请重新说明位置和力度",
                     speaker, started=False,
+                )
+            busy = self._arm_busy_message()
+            if busy:
+                self.last_error = busy
+                return self._reply(
+                    "massage_confirm_start", busy, speaker, started=False, arm_busy=True,
                 )
             part_args = []
             for part in selection["parts"]:
@@ -1188,23 +1483,29 @@ class MassageController:
                         *part_args,
                     ]
                 )
+                # Stay in the voice process group so UI stop/killpg can reclaim
+                # the arm instead of leaving an orphan u_chui holding the robot.
                 proc = self._popen(
                     command, cwd=str(self.data_dir),
                     env=sanitized_subprocess_env(),
                     stdin=subprocess.DEVNULL, stdout=None, stderr=None,
-                    start_new_session=True,
+                    start_new_session=False,
                 )
             except Exception as exc:
-                self.state = "error"
                 self.last_error = str(exc)
                 self._pending_selection = None
                 self._active_selection = None
+                self.state = self._plan_ready_state()
                 return self._reply("massage_confirm_start", "按摩程序启动失败，请检查终端日志", speaker, started=False)
             self._massage_proc = proc
             self._active_selection = selection
             self._pending_selection = None
             self._speaker = speaker
             self.state = "massaging"
+            try:
+                self._music.start_random()
+            except Exception as exc:
+                print(f"⚠️ 按摩音乐启动异常: {exc}", flush=True)
             threading.Thread(target=self._watch_massage, args=(proc,), daemon=True).start()
             metadata = self._selection_metadata(selection)
             return self._reply(
@@ -1224,13 +1525,22 @@ class MassageController:
             self._active_selection = None
             speaker = self._speaker
             self._speaker = None
+            # Always release sticky error when a complete plan remains so the
+            # next voice command can retry without restarting the whole stack.
+            self.state = self._plan_ready_state()
             if code == 0:
-                self.state = "ready"
                 reply = "按摩已正常完成"
+                self.last_error = ""
             else:
-                self.state = "error"
-                self.last_error = f"按摩程序异常退出，code={code}"
-                reply = "按摩程序异常退出，请检查机械臂和终端日志"
+                self.last_error = (
+                    f"按摩程序异常退出，code={code}。"
+                    "请检查机械臂是否被占用或处于拖动/急停状态"
+                )
+                reply = "按摩程序异常退出，请检查机械臂和终端日志。可以说按摩状态或再次开始按摩"
+        try:
+            self._music.stop()
+        except Exception as exc:
+            print(f"⚠️ 按摩音乐停止异常: {exc}", flush=True)
         self._speak(speaker, reply)
 
     def cancel_start(self, speaker=None):
@@ -1238,7 +1548,7 @@ class MassageController:
             if self.state != "awaiting_confirmation":
                 return self._reply("massage_cancel_start", "当前没有等待确认的按摩任务", speaker, cancelled=False)
             self._pending_selection = None
-            self.state = "ready"
+            self.state = self._plan_ready_state()
             return self._reply("massage_cancel_start", "已取消本次按摩启动", speaker, cancelled=True)
 
     def _state_name(self):
@@ -1253,6 +1563,7 @@ class MassageController:
         }[self.state]
 
     def report_status(self, speaker=None):
+        self._reconcile_state()
         with self._lock:
             detail = self._state_name()
             if self.state in {"ready", "awaiting_confirmation", "massaging"}:
@@ -1264,9 +1575,35 @@ class MassageController:
             )
             if selection is not None:
                 detail += f"，本次选择{self._selection_description(selection)}"
-            if self.state == "error" and self.last_error:
+            if self.last_error:
                 detail += f"。{self.last_error}"
+            busy = self._arm_busy_message()
+            if busy:
+                detail += f"。{busy}"
             return self._reply("massage_status", f"当前按摩状态是{detail}", speaker)
+
+    def _stop_child_process(self, proc, *, label: str, timeout: float = 8.0) -> None:
+        """Terminate a tracked child; prefer polite signals then escalate."""
+        if proc is None or proc.poll() is not None:
+            return
+        print(f"🛑 正在停止{label}…", flush=True)
+        for action, sig in (("terminate", signal.SIGTERM), ("kill", signal.SIGKILL)):
+            method = getattr(proc, action, None)
+            try:
+                if callable(method):
+                    method()
+                else:
+                    os.kill(proc.pid, sig)
+            except (ProcessLookupError, OSError) as exc:
+                print(f"⚠️ {label} {action} 失败: {exc}", flush=True)
+                continue
+            deadline = time.time() + max(0.5, timeout if action == "terminate" else 2.0)
+            while time.time() < deadline and proc.poll() is None:
+                time.sleep(0.1)
+            if proc.poll() is not None:
+                print(f"ℹ️ {label}已{action}，code={proc.returncode}", flush=True)
+                return
+        print(f"⚠️ {label}未能停止，请检查机械臂状态", flush=True)
 
     def _stop_teaching_process(self, *, timeout: float = 8.0) -> None:
         """Prefer cooperative q, then terminate the teaching child."""
@@ -1283,48 +1620,61 @@ class MassageController:
         if proc.poll() is not None:
             print(f"ℹ️ 示教程序已退出，code={proc.returncode}", flush=True)
             return
-        # Drag mode should be disabled by a clean quit; force-kill only as fallback.
-        for action, method in (
-            ("terminate", getattr(proc, "terminate", None)),
-            ("kill", getattr(proc, "kill", None)),
-        ):
-            if not callable(method):
-                continue
-            try:
-                method()
-            except Exception as exc:
-                print(f"⚠️ 示教程序 {action} 失败: {exc}", flush=True)
-                continue
-            try:
-                proc.wait(timeout=2.0)
-            except Exception:
-                pass
-            if proc.poll() is not None:
-                print(f"ℹ️ 示教程序已{action}，code={proc.returncode}", flush=True)
-                return
-        print("⚠️ 示教程序未能停止，请检查机械臂是否仍处于拖动模式", flush=True)
+        self._stop_child_process(proc, label="示教程序", timeout=2.0)
+
+    def _stop_massage_process(self, *, timeout: float = 5.0) -> None:
+        """Best-effort reclaim of voice-launched massage (no cooperative stop)."""
+        with self._lock:
+            proc = self._massage_proc
+        if proc is None or proc.poll() is not None:
+            return
+        print(
+            "🛑 正在停止按摩子进程（无协作式软件停止，若臂仍在动请用实体急停）…",
+            flush=True,
+        )
+        self._stop_child_process(proc, label="按摩程序", timeout=timeout)
+        try:
+            self._music.stop()
+        except Exception as exc:
+            print(f"⚠️ 停止按摩时关闭音乐失败: {exc}", flush=True)
+        with self._lock:
+            if proc is self._massage_proc:
+                self._massage_proc = None
+                self._active_selection = None
+                if self.state == "massaging":
+                    self.state = self._plan_ready_state()
+                    self.last_error = "按摩子进程已在关闭时强制停止，请确认机械臂安全"
 
     def close(self):
-        """Stop teaching on shutdown; massage has no cooperative software stop."""
+        """Stop teaching and reclaim voice-owned massage children on shutdown."""
         with self._lock:
             teaching = self._teaching_proc
             massaging = self._massage_proc is not None and self._massage_proc.poll() is None
         if teaching is not None and teaching.poll() is None:
             self._stop_teaching_process()
+        if massaging:
+            self._stop_massage_process()
+        try:
+            self._music.stop()
+        except Exception as exc:
+            print(f"⚠️ 关闭时停止按摩音乐失败: {exc}", flush=True)
         with self._lock:
             still_teaching = (
                 self._teaching_proc is not None and self._teaching_proc.poll() is None
             )
+            still_massaging = (
+                self._massage_proc is not None and self._massage_proc.poll() is None
+            )
             if still_teaching:
                 print("⚠️ 语音系统关闭时示教仍可能在运行；请检查机械臂拖动模式", flush=True)
-            if massaging or (
-                self._massage_proc is not None and self._massage_proc.poll() is None
-            ):
+            if still_massaging:
                 print(
                     "⚠️ 语音系统关闭时按摩仍在运行；请现场监护并使用实体急停处理危险",
                     flush=True,
                 )
             if not still_teaching:
                 self._teaching_proc = None
+            if not still_massaging:
+                self._massage_proc = None
             self._clear_teaching_cmd()
             self._emit_teaching_status(event="closed", active=False)

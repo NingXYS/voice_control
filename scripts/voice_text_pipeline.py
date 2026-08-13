@@ -301,8 +301,9 @@ def _handle_massage_intent(text, speaker=None, runtime=None, massage_controller=
     # Recognized as massage control but not fully parsed → local fail-closed,
     # never Dify (so Dify outages cannot block massage control).
     reply = (
-        "按摩指令请直接说：开始按摩左肩，力度一级；"
-        "位置可选左肩、右肩、背部、左腰、右腰或全部位置，力度一至五级。"
+        "按摩指令请直接说：开始按摩左肩，轻一点；"
+        "位置可选左肩、右肩、背部、左腰、右腰或全部位置；"
+        "力度可选很轻、轻一点、适中、重一点、很重，也可以说一至五级。"
         "确认现场安全后再说确认开始。"
     )
     print(f"💆 本地按摩指令兜底（未完整解析，不走 Dify）: {text!r}", flush=True)

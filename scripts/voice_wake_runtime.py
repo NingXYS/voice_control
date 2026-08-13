@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from enum import Enum, auto
+import math
 import os
 import re
 import time
-from typing import Iterable
+from typing import Any, Iterable
 
 import numpy as np
 
@@ -192,6 +193,8 @@ class WakeWordRuntime:
         event_emitter=None,
         speaker_verifier=None,
         speaker_verify_mode: str = "off",
+        speaker_session_trust: str = "off",
+        speaker_session_relax: float = 0.05,
     ):
         self.audio = audio
         self.wake_detector = wake_detector
@@ -223,6 +226,12 @@ class WakeWordRuntime:
             raise ValueError("speaker_verify_mode must be off, shadow, or enforce")
         if self.speaker_verify_mode != "off" and self.speaker_verifier is None:
             raise ValueError("speaker verifier is required when verification is enabled")
+        self.speaker_session_trust = str(speaker_session_trust).strip().lower()
+        if self.speaker_session_trust not in {"off", "after_first", "relaxed"}:
+            raise ValueError("speaker_session_trust must be off, after_first, or relaxed")
+        self.speaker_session_relax = float(speaker_session_relax)
+        if not math.isfinite(self.speaker_session_relax) or not 0.0 <= self.speaker_session_relax <= 0.5:
+            raise ValueError("speaker_session_relax must be between 0 and 0.5")
         self.events = event_emitter or get_ui_emitter()
         self._tts_speak = speaker_callback or (lambda _text: False)
         self.state = VoiceState.WAITING_WAKE_WORD
@@ -234,6 +243,7 @@ class WakeWordRuntime:
         self._rearm_listen = False
         self._session_until = 0.0
         self._in_followup = False
+        self._speaker_trusted = False
         self._emit_phase(self.state)
 
     def _emit_phase(self, state: VoiceState, *, phase: str | None = None) -> None:
@@ -354,6 +364,7 @@ class WakeWordRuntime:
     def _clear_session(self) -> None:
         self._session_until = 0.0
         self._in_followup = False
+        self._speaker_trusted = False
 
     def _reset_to_wake(self, *, reason: str | None = None) -> None:
         """Return to wake-word listening (single-turn end or session idle/exit)."""
@@ -596,10 +607,75 @@ class WakeWordRuntime:
     def _speaker_accepts(self, audio: np.ndarray) -> bool:
         if self.speaker_verify_mode == "off":
             return True
+        # Within an already-verified continuous session, optionally skip re-check.
+        if (
+            self.speaker_session_trust == "after_first"
+            and self._speaker_trusted
+            and self._session_enabled()
+            and self._session_active()
+        ):
+            payload = {
+                "mode": self.speaker_verify_mode,
+                "accepted": True,
+                "score": 1.0,
+                "speaker_id": None,
+                "display_name": None,
+                "reason": "session_trusted",
+                "duration_ms": 0,
+                "session_trust": self.speaker_session_trust,
+            }
+            if self.speaker_verifier is not None and hasattr(self.speaker_verifier, "threshold"):
+                try:
+                    payload["threshold"] = round(float(self.speaker_verifier.threshold), 4)
+                except (TypeError, ValueError):
+                    pass
+            self.events.emit("voice.speaker", payload)
+            print(
+                "🪪 声纹验证: "
+                f"mode={payload['mode']} accepted=True reason=session_trusted "
+                f"session_trust={self.speaker_session_trust}",
+                flush=True,
+            )
+            if self.speaker_verify_mode == "shadow":
+                return True
+            return True
+
         started = time.perf_counter()
+        verify_kwargs: dict[str, Any] = {}
+        effective_threshold = None
+        if (
+            self.speaker_session_trust == "relaxed"
+            and self._speaker_trusted
+            and self._session_enabled()
+            and self._session_active()
+            and self.speaker_verifier is not None
+            and hasattr(self.speaker_verifier, "threshold")
+        ):
+            try:
+                base = float(self.speaker_verifier.threshold)
+                effective_threshold = max(0.0, base - float(self.speaker_session_relax))
+                verify_kwargs["threshold"] = effective_threshold
+            except (TypeError, ValueError):
+                effective_threshold = None
         try:
-            decision = self.speaker_verifier.verify(audio, self.sample_rate)
+            decision = self.speaker_verifier.verify(audio, self.sample_rate, **verify_kwargs)
             payload = decision.event_payload(mode=self.speaker_verify_mode)
+        except TypeError:
+            # Older verifier stubs in tests may not accept threshold=.
+            try:
+                decision = self.speaker_verifier.verify(audio, self.sample_rate)
+                payload = decision.event_payload(mode=self.speaker_verify_mode)
+            except Exception as exc:
+                payload = {
+                    "mode": self.speaker_verify_mode,
+                    "accepted": False,
+                    "score": -1.0,
+                    "speaker_id": None,
+                    "display_name": None,
+                    "reason": "verifier_error",
+                    "duration_ms": round((time.perf_counter() - started) * 1000.0),
+                    "message": str(exc),
+                }
         except Exception as exc:
             payload = {
                 "mode": self.speaker_verify_mode,
@@ -611,13 +687,24 @@ class WakeWordRuntime:
                 "duration_ms": round((time.perf_counter() - started) * 1000.0),
                 "message": str(exc),
             }
+        if self.speaker_session_trust != "off":
+            payload["session_trust"] = self.speaker_session_trust
+            if self._speaker_trusted:
+                payload["session_trusted"] = True
         if (
             "threshold" not in payload
             and self.speaker_verifier is not None
             and hasattr(self.speaker_verifier, "threshold")
         ):
             try:
-                payload["threshold"] = round(float(self.speaker_verifier.threshold), 4)
+                payload["threshold"] = round(
+                    float(
+                        effective_threshold
+                        if effective_threshold is not None
+                        else self.speaker_verifier.threshold
+                    ),
+                    4,
+                )
             except (TypeError, ValueError):
                 pass
         self.events.emit("voice.speaker", payload)
@@ -626,17 +713,33 @@ class WakeWordRuntime:
             if payload.get("threshold") is not None
             else ""
         )
+        audio_ms_text = (
+            f" audio_ms={payload['audio_ms']}"
+            if payload.get("audio_ms") is not None
+            else ""
+        )
+        score_mode_text = (
+            f" score_mode={payload['score_mode']}"
+            if payload.get("score_mode")
+            else ""
+        )
         print(
             "🪪 声纹验证: "
             f"mode={payload['mode']} accepted={payload['accepted']} "
-            f"score={payload['score']}{threshold_text} "
+            f"score={payload['score']}{threshold_text}{audio_ms_text}{score_mode_text} "
             f"speaker={payload.get('display_name') or '-'} "
             f"reason={payload['reason']} duration_ms={payload['duration_ms']}",
             flush=True,
         )
         if self.speaker_verify_mode == "shadow":
+            # Observe only: still learn trust from what enforce would have accepted.
+            if payload.get("accepted") and self.speaker_session_trust != "off":
+                self._speaker_trusted = True
             return True
-        return bool(payload["accepted"])
+        accepted = bool(payload["accepted"])
+        if accepted and self.speaker_session_trust != "off":
+            self._speaker_trusted = True
+        return accepted
 
     def run(self):
         self.audio.open()

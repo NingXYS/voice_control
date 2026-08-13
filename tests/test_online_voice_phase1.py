@@ -50,7 +50,7 @@ class OnlineVoicePhase1Tests(unittest.TestCase):
             ("你有几个自由度", "自由度"),
             ("你有几个关节", "关节"),
             ("有几条手臂", "手臂"),
-            ("按摩力度怎么调", "一至五级"),
+            ("按摩力度怎么调", "轻一点"),
             ("怎么记录点位", "五个点"),
         ):
             with self.subTest(text=text):
