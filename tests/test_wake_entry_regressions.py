@@ -143,11 +143,11 @@ class WakeEntryImportTests(unittest.TestCase):
     def test_online_pipeline_rejects_partial_invalid_dify_batch(self):
         speaker = mock.Mock()
         response = [{"reply": "好的"}, {"action": "unknown"}]
-        # Disable thinking-ack so this test only asserts no dispatch speak on reject.
         with mock.patch.dict(os.environ, {"VOICE_THINKING_ACK": "0"}, clear=False), \
             mock.patch.object(voice_text_pipeline, "run_dialogue", return_value=response):
-            self.assertIsNone(voice_text_pipeline.process_text("测试", speaker=speaker))
-        speaker.assert_not_called()
+            result = voice_text_pipeline.process_text("测试", speaker=speaker)
+        self.assertEqual(result, [{"reply": voice_text_pipeline.CLARIFY_UNCLEAR}])
+        speaker.assert_called_once_with(voice_text_pipeline.CLARIFY_UNCLEAR)
 
     def test_dify_backend_does_not_send_without_api_key(self):
         session = mock.Mock()
@@ -348,8 +348,9 @@ class TtsModelSelectionTests(unittest.TestCase):
             os.environ.pop("TTS_SKIP_WARMUP", None)
             os.environ.pop("VOICE_ACTION_ACK_TEXT", None)
             os.environ.pop("VOICE_WAKE_ACK_TEXT", None)
+            os.environ.pop("VOICE_THINKING_ACK_TEXT", None)
             phrases = voice_tts._warmup_phrases()
-        self.assertEqual(phrases, ["我在", "好的，正在执行"])
+        self.assertEqual(phrases, ["我在", "小西收到", "好的，正在执行"])
 
     def test_disk_phrase_cache_enables_hit_without_model(self):
         import numpy as np

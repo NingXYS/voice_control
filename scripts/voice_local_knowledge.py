@@ -196,6 +196,7 @@ LOCAL_REPLY_RULES = [
     {
         "keywords": [
             "左臂可以怎么动", "右臂可以怎么动", "你的左手可以怎么活动",
+            "左臂可以怎么活动", "右臂可以怎么活动",
             "左臂怎么动", "右臂怎么动", "左手怎么活动",
         ],
         "reply": "我可以控制左臂或右臂进行空间移动和关节旋转。",
@@ -462,17 +463,19 @@ def normalize_joint_refs(text: str) -> str:
 
 
 _NUMBER_TOKEN_CTRL = r"(?:\d+(?:\.\d+)?|[零〇一二两三四五六七八九十百千万点]+)"
+# Longer tokens first so 「伸出/伸出去」win over 「伸」.
+CART_MOTION_VERBS = r"(?:伸出去|伸出|伸|移动|挪动|抬|降|移|走|挪)"
 # Complete local-action spans used to drop trailing ambient chatter after ASR.
 # Optional 「先」: 「右臂先向上十厘米」
 _CONTROL_SPAN_RE = re.compile(
     rf"(?:"
-    rf"(?:左臂|右臂)(?:先)?(?:向|往)?[上下左右前后](?:抬|降|移动|移|走)?"
+    rf"(?:左臂|右臂)(?:先)?(?:向|往)?[上下左右前后]{CART_MOTION_VERBS}?"
     rf"{_NUMBER_TOKEN_CTRL}\s*(?:毫米|厘米|米)"
     rf"|"
-    rf"(?:左臂|右臂)关节[1-6一二两三四五六](?:反转)?(?:旋转|转动)?"
+    rf"(?:左臂|右臂)关节[1-6一二两三四五六](?:反转)?(?:旋转|转动|转)?"
     rf"{_NUMBER_TOKEN_CTRL}\s*度"
     rf"|"
-    rf"(?:左臂|右臂)第[1-6一二两三四五六]个?关节(?:反转)?(?:旋转|转动)?"
+    rf"(?:左臂|右臂)第[1-6一二两三四五六]个?关节(?:反转)?(?:旋转|转动|转)?"
     rf"{_NUMBER_TOKEN_CTRL}\s*度"
     rf")"
 )
@@ -481,7 +484,7 @@ _CONTROL_SPAN_RE = re.compile(
 _JOINT_CHAIN_CONT_RE = re.compile(
     rf"(?:后|然后|再|接着|和|与|及|，|,)?"
     rf"(?:关节[1-6一二两三四五六]|第[1-6一二两三四五六]个?关节|[1-6一二两三四五六]个?关节)"
-    rf"(?:反转)?(?:旋转|转动)?"
+    rf"(?:反转)?(?:旋转|转动|转)?"
     rf"{_NUMBER_TOKEN_CTRL}\s*度"
 )
 # Same-arm multi-cartesian continuation (omit arm after first clause).
@@ -489,14 +492,31 @@ _JOINT_CHAIN_CONT_RE = re.compile(
 _CARTESIAN_CHAIN_CONT_RE = re.compile(
     rf"(?:后|然后|再|接着|和|与|及|，|,)?"
     rf"(?:先)?"
-    rf"(?:向|往)?[上下左右前后](?:抬|降|移动|移|走)?"
+    rf"(?:向|往)?[上下左右前后]{CART_MOTION_VERBS}?"
     rf"{_NUMBER_TOKEN_CTRL}\s*(?:毫米|厘米|米)"
 )
-# Short leading ASR garbage before a clear arm command (e.g. 「气人左臂…」).
-# Keep intentional leading content (先/请/再/你是…) so mixed intents still miss.
-_LEADING_NOISE_MAX = 4
-_LEADING_INTENTIONAL_RE = re.compile(
-    r"先|请|再|把|将|拿|帮|给|你|我|介绍|什么|怎么|几|哪|吗|呢"
+# Mixed Q&A + action must keep the full utterance so the conservative parser misses.
+_MIXED_INTENT_RE = re.compile(r"介绍|你是|你能|你会|什么机器人|谢谢")
+# Incomplete extra 左臂/右臂 beside a complete span → do not silently drop it.
+_ARM_TOKEN_RE = re.compile(r"左臂|右臂")
+_DIST_TOKEN_RE = re.compile(rf"({_NUMBER_TOKEN_CTRL})\s*(毫米|厘米|米)")
+_DIST_ONLY_RE = re.compile(rf"^{_NUMBER_TOKEN_CTRL}\s*(?:毫米|厘米|米)$")
+_CHAIN_CONN_RE = re.compile(r"(?:后|然后|再|接着|和|与|及)")
+# 小西小西 / 小溪小溪 and field near-misses glued onto a command.
+_WAKE_IN_UTTERANCE_RE = re.compile(r"(?:小[西溪喜希嘻兮席锡]|晓西){2,}")
+_BARE_CART_RE = re.compile(
+    rf"(?:向|往)?([上下左右前后]){CART_MOTION_VERBS}?"
+    rf"({_NUMBER_TOKEN_CTRL})\s*(毫米|厘米|米)"
+)
+_BARE_JOINT_RE = re.compile(
+    rf"(?:第([1-6一二两三四五六])个?关节|关节([1-6一二两三四五六]))"
+    rf"(反转)?(?:旋转|转动|转)?"
+    rf"({_NUMBER_TOKEN_CTRL})\s*度"
+)
+_JOINT_FLEX_RE = re.compile(
+    rf"关节([1-6一二两三四五六])(反转)?(?:旋转|转动|转)?"
+    rf".{{0,12}}?"
+    rf"({_NUMBER_TOKEN_CTRL})\s*度"
 )
 
 
@@ -513,72 +533,241 @@ def _extend_span_with_action_chain(text: str, end: int) -> int:
     return pos
 
 
+def strip_wake_phrases(text: str) -> str:
+    """Remove glued wake-word runs so they do not block command-span search.
+
+    Only commits the strip when an arm token still remains. Pure wake
+    (「小溪小溪」) and FAQ that happens to contain the wake phrase stay intact
+    so the session re-ack path keeps working.
+    """
+    if not isinstance(text, str) or not text:
+        return text if isinstance(text, str) else ""
+    out = _WAKE_IN_UTTERANCE_RE.sub("", text)
+    # 「小小溪小溪右臂…」leaves a leftover 小 before the arm.
+    out = re.sub(r"小+(?=左臂|右臂)", "", out)
+    if "左臂" in out or "右臂" in out:
+        return out
+    return text
+
+
+def collapse_repeated_measure_units(text: str) -> str:
+    """Fold adjacent identical 数字+单位 stutter: 五厘米五厘米 → 五厘米."""
+    if not isinstance(text, str) or not text:
+        return text if isinstance(text, str) else ""
+    pattern = re.compile(
+        rf"(({_NUMBER_TOKEN_CTRL})\s*(?:毫米|厘米|米|度))\1+"
+    )
+    prev = None
+    out = text
+    while prev != out:
+        prev = out
+        out = pattern.sub(r"\1", out)
+    return out
+
+
+def _flex_parse_one_cartesian_region(arm: str, region: str):
+    """Parse one arm's cartesian slots. Allow junk between verb and the distance."""
+    pos = 0
+    if region.startswith("先"):
+        pos = 1
+    dir_m = re.match(r"(?:向|往)?([上下左右前后])", region[pos:])
+    if not dir_m:
+        return None
+    direction = dir_m.group(1)
+    pos += dir_m.end()
+    verb_m = re.match(CART_MOTION_VERBS, region[pos:])
+    verb = verb_m.group(0) if verb_m else ""
+    if verb_m:
+        pos += verb_m.end()
+    rest = region[pos:]
+    dists = list(_DIST_TOKEN_RE.finditer(rest))
+    if not dists:
+        return None
+    # Clean same-arm chains stay on the exact-span path. Dirty multi-distance
+    # without a connector is ambiguous (十厘米五厘米) — refuse to guess.
+    values = [(match.group(1), match.group(2)) for match in dists]
+    if len({(num, unit) for num, unit in values}) > 1:
+        if _CHAIN_CONN_RE.search(rest):
+            return None
+        return "AMBIGUOUS"
+    num, unit = values[0]
+    last = dists[-1]
+    return f"{arm}向{direction}{verb}{num}{unit}", pos + last.end()
+
+
+def _flex_rebuild_cartesian(text: str):
+    """Rebuild contiguous cartesian commands when exact templates miss."""
+    arms = list(re.finditer(r"左臂|右臂", text))
+    if not arms:
+        return None
+    rebuilt: list[str] = []
+    span_start = None
+    span_end = None
+    for index, arm_m in enumerate(arms):
+        region_end = arms[index + 1].start() if index + 1 < len(arms) else len(text)
+        region = text[arm_m.end() : region_end]
+        parsed = _flex_parse_one_cartesian_region(arm_m.group(), region)
+        if parsed == "AMBIGUOUS":
+            return "AMBIGUOUS"
+        if parsed is None:
+            return None
+        cmd, used_end = parsed
+        rebuilt.append(cmd)
+        if span_start is None:
+            span_start = arm_m.start()
+        span_end = arm_m.end() + used_end
+    if not rebuilt or span_start is None or span_end is None:
+        return None
+    return "".join(rebuilt), span_start, span_end
+
+
+def _flex_rebuild_joint(text: str):
+    """Rebuild one or more joint commands, allowing short junk before the angle."""
+    arms = list(re.finditer(r"左臂|右臂", text))
+    if not arms:
+        return None
+    rebuilt: list[str] = []
+    span_start = None
+    span_end = None
+    for index, arm_m in enumerate(arms):
+        region_end = arms[index + 1].start() if index + 1 < len(arms) else len(text)
+        region = text[arm_m.end() : region_end]
+        joint_m = _JOINT_FLEX_RE.search(region)
+        if not joint_m:
+            return None
+        reverse = "反转" if joint_m.group(2) else ""
+        cmd = f"{arm_m.group()}关节{joint_m.group(1)}{reverse}旋转{joint_m.group(3)}度"
+        rebuilt.append(cmd)
+        if span_start is None:
+            span_start = arm_m.start()
+        span_end = arm_m.end() + joint_m.end()
+    if not rebuilt or span_start is None or span_end is None:
+        return None
+    return "".join(rebuilt), span_start, span_end
+
+
+def _stitch_trailing_arm(text: str):
+    """「向前伸五厘米右臂」→ rebuild arm-first when exactly one arm is named.
+
+    Only consume a bare motion/joint that ends *before* the arm. Searching
+    after the arm would steal 「下」out of 「伸一下五厘米」and rebuild
+    「右臂下五厘米」.
+    """
+    arms = list(re.finditer(r"左臂|右臂", text))
+    if len(arms) != 1:
+        return None
+    arm_m = arms[0]
+    if arm_m.start() == 0:
+        return None
+    after = text[arm_m.start() :]
+    if _CONTROL_SPAN_RE.match(after):
+        return None
+    before = text[: arm_m.start()]
+    for match in _BARE_CART_RE.finditer(before):
+        if match.end() != len(before):
+            continue
+        core = f"{arm_m.group()}{match.group(0)}"
+        return core, match.start(), arm_m.end()
+    for match in _BARE_JOINT_RE.finditer(before):
+        if match.end() != len(before):
+            continue
+        core = f"{arm_m.group()}{match.group(0)}"
+        return core, match.start(), arm_m.end()
+    return None
+
+
+def _locate_control_core(text: str):
+    """Find a complete command span. None if absent; 'AMBIGUOUS' if unsafe to extract."""
+    matches = list(_CONTROL_SPAN_RE.finditer(text))
+    if matches:
+        first = matches[0]
+        last = matches[-1]
+        span_end = _extend_span_with_action_chain(text, last.end())
+        core = text[first.start() : span_end]
+        leading = text[: first.start()]
+        trailing = text[span_end:].strip()
+        # Another 左臂/右臂 outside the complete span is an incomplete clause.
+        # Try slot-rebuild before refusing, so junk in the first clause does not
+        # hide a well-formed second clause (and vice versa).
+        if _ARM_TOKEN_RE.search(leading) or _ARM_TOKEN_RE.search(trailing):
+            flexed = _flex_rebuild_cartesian(text)
+            if flexed == "AMBIGUOUS":
+                return "AMBIGUOUS"
+            if flexed is not None:
+                return flexed
+            flexed_joint = _flex_rebuild_joint(text)
+            if flexed_joint is not None:
+                return flexed_joint
+            return "AMBIGUOUS"
+        if trailing and _DIST_ONLY_RE.match(trailing):
+            return "AMBIGUOUS"
+        return core, first.start(), span_end
+
+    stitched = _stitch_trailing_arm(text)
+    if stitched is not None:
+        return stitched
+
+    flexed = _flex_rebuild_cartesian(text)
+    if flexed == "AMBIGUOUS":
+        return "AMBIGUOUS"
+    if flexed is not None:
+        return flexed
+
+    flexed_joint = _flex_rebuild_joint(text)
+    if flexed_joint is not None:
+        return flexed_joint
+    return None
+
+
 def extract_control_span(text: str) -> str:
     """If ASR glued a clear arm command to ambient speech, keep only the command.
 
     Examples:
       「左臂向前五厘米我感觉它现在…」→「左臂向前五厘米」
       「改着改着又改回来了左臂关节3旋转六十度」→「左臂关节3旋转六十度」
+      「接臂他右臂向前伸五厘米」→「右臂向前伸五厘米」
+      「向前伸五厘米右臂」→「右臂向前伸五厘米」
     """
     if not isinstance(text, str) or not text:
         return text if isinstance(text, str) else ""
-    matches = list(_CONTROL_SPAN_RE.finditer(text))
-    if not matches:
-        return text
-    first = matches[0]
-    last = matches[-1]
-    span_end = _extend_span_with_action_chain(text, last.end())
 
-    core = text[first.start() : span_end]
-    leading = text[: first.start()]
+    located = _locate_control_core(text)
+    if located is None or located == "AMBIGUOUS":
+        return text
+
+    core, first_start, span_end = located
+    leading = text[:first_start]
     trailing_raw = text[span_end:]
     trailing = trailing_raw.strip()
 
-    # Leading: drop pure junk/chatter; keep polite/Q&A prefixes (mixed intent).
-    drop_leading = False
-    if leading.strip():
-        keep_leading = bool(
-            _LEADING_INTENTIONAL_RE.search(leading)
-            or re.search(r"(?:左臂|右臂|介绍|你是|你能|你会|什么机器人)", leading)
-        )
-        short_junk = (
-            len(leading) <= _LEADING_NOISE_MAX
-            and not _LEADING_INTENTIONAL_RE.search(leading)
-        )
-        # Chatter like 「改着改着又…」→ drop; 「先/请/你是…」→ keep full text.
-        drop_leading = short_junk or not keep_leading
-
-    # Trailing: keep Q&A mixed intents; strip long ambient only.
-    drop_trailing = False
-    keep_trailing_qa = bool(
-        trailing
-        and re.search(r"介绍|你是|你能|你会|谢谢|什么机器人|吗|呢\b", trailing)
-    )
-    if trailing and not keep_trailing_qa and len(trailing) >= 4:
-        drop_trailing = True
-
-    if not drop_leading and not drop_trailing:
+    # Mixed "question then command" must stay intact so local action misses.
+    if leading.strip() and _MIXED_INTENT_RE.search(leading):
+        if (
+            trailing
+            and not _MIXED_INTENT_RE.search(trailing)
+            and not re.search(r"吗|呢\b", trailing)
+            and len(trailing) >= 4
+        ):
+            return text[:span_end]
         return text
-    if drop_leading and drop_trailing:
-        return core
-    if drop_leading:
-        return core + (
-            trailing_raw
-            if keep_trailing_qa or (trailing and len(trailing) < 4)
-            else ""
-        )
-    # drop trailing only
-    return text[:span_end]
+
+    if trailing and _DIST_ONLY_RE.match(trailing):
+        return text
+
+    keep_trailing_qa = bool(trailing and _MIXED_INTENT_RE.search(trailing))
+    if keep_trailing_qa:
+        return core + trailing_raw
+    return core
 
 
 # Leading control clause without 左臂/右臂 (VAD/ASR often swallows soft 左/右).
 _BARE_LEADING_CTRL_RE = re.compile(
     rf"^(?:"
     rf"(?:第?[1-6一二两三四五六]个?关节|关节[1-6一二两三四五六])"
-    rf"(?:反转)?(?:旋转|转动)?"
+    rf"(?:反转)?(?:旋转|转动|转)?"
     rf"{_NUMBER_TOKEN_CTRL}\s*度"
     rf"|"
-    rf"(?:向|往)?[上下左右前后](?:抬|降|移动|移|走)?"
+    rf"(?:向|往)?[上下左右前后]{CART_MOTION_VERBS}?"
     rf"{_NUMBER_TOKEN_CTRL}\s*(?:毫米|厘米|米)"
     rf")"
 )
@@ -624,8 +813,11 @@ def recover_dropped_leading_arm(text: str) -> str:
 
     named = "右臂" if has_right else "左臂"
     named_at = text.find(named)
-    # Named arm must be a *later* clause, not inside the bare lead.
+    # Named arm must be a *later* complete command, not a trailing label
+    # for the same clause (「向前伸五厘米右臂」).
     if named_at < bare.end():
+        return text
+    if not _CONTROL_SPAN_RE.match(text[named_at:]):
         return text
 
     missing = "左臂" if has_right else "右臂"
@@ -646,8 +838,11 @@ def repair_asr_text(text: str) -> str:
     out = re.sub(r"\s+", "", stripped)
 
     out = collapse_repeated_prefix(out)
-    # Spoken arm aliases → parser vocabulary.
+    # Spoken arm aliases → parser vocabulary. Longer forms first.
+    out = out.replace("左边手臂", "左臂").replace("右边手臂", "右臂")
+    out = out.replace("左手臂", "左臂").replace("右手臂", "右臂")
     out = out.replace("左手", "左臂").replace("右手", "右臂")
+    out = out.replace("公分", "厘米")
     # Field near-misses for 左/右臂 (noisy rooms).
     # 有臂/又臂 ≈ 右臂；我臂 ≈ 左臂（现场高频误识别，不做句中误伤：仅未带左右时）
     out = re.sub(r"(?<![左右])有臂", "右臂", out)
@@ -660,6 +855,8 @@ def repair_asr_text(text: str) -> str:
     # Common ASR truncations / near-homophones (avoid rewriting 自由度 → 自自由度).
     out = re.sub(r"(?<!自)由度", "自由度", out)
     out = out.replace("游度", "自由度")
+    # Wake word glued onto the command (小溪小溪右臂…); strip before span search.
+    out = strip_wake_phrases(out)
     # VAD/ASR swallowed soft leading 左/右 before a dual-arm sentence.
     out = recover_dropped_leading_arm(out)
     # Drop spoken fillers / interjections so local action templates can fullmatch.
@@ -687,7 +884,9 @@ def repair_asr_text(text: str) -> str:
     out = normalize_joint_refs(out)
     # 「右臂先向上」→「右臂向上」（「先」只是语序助词，不改变动作）
     out = re.sub(r"(左臂|右臂)先(?=向|往|[上下左右前后])", r"\1", out)
-    # Drop trailing ambient speech after a complete control template.
+    # Fold 五厘米五厘米 before span search so the last unit is not leftover junk.
+    out = collapse_repeated_measure_units(out)
+    # Drop leading/trailing ambient speech around a complete control template.
     out = extract_control_span(out)
     # Colloquial 往X → 向X (Dify templates historically only listed 向X).
     out = re.sub(r"往([上下左右前后])", r"向\1", out)
@@ -697,6 +896,9 @@ def repair_asr_text(text: str) -> str:
         r"\1厘米",
         out,
     )
+    out = collapse_repeated_measure_units(out)
+    # 厘→厘米 may complete a span that the first extract missed.
+    out = extract_control_span(out)
     # Colloquial direction padding heard in field tests.
     out = out.replace("向后里面", "向后").replace("向前里面", "向前")
     out = out.replace("往后里面", "向后").replace("往前里面", "向前")

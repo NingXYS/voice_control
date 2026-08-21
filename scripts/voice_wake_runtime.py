@@ -174,6 +174,7 @@ class WakeWordRuntime:
         end_phrases: Iterable[str] | None = None,
         wake_verifier=None,
         followup_max_duration: float | None = None,
+        followup_vad=None,
     ):
         self.audio = audio
         self.wake_detector = wake_detector
@@ -199,6 +200,7 @@ class WakeWordRuntime:
             if str(p).strip()
         )
         self.wake_verifier = wake_verifier
+        self.followup_vad = followup_vad
         self._tts_speak = speaker_callback or (lambda _text: False)
         self.state = VoiceState.WAITING_WAKE_WORD
         self._stop = False
@@ -318,6 +320,8 @@ class WakeWordRuntime:
         self._discard_stale_audio()
         self._reset_wake_detector()
         self.vad.reset()
+        if self.followup_vad is not None:
+            self.followup_vad.reset()
         self._clear_session()
         self.state = VoiceState.WAITING_WAKE_WORD
         now = self.clock()
@@ -341,6 +345,8 @@ class WakeWordRuntime:
         """Stay in session: drain TTS bleed, short guard, no wake word required."""
         self._discard_stale_audio()
         self.vad.reset()
+        if self.followup_vad is not None:
+            self.followup_vad.reset()
         self._in_followup = True
         self.state = VoiceState.FOLLOWUP_LISTENING
         now = self.clock()
@@ -369,7 +375,8 @@ class WakeWordRuntime:
 
     def _collect_utterance(self, *, followup: bool) -> np.ndarray | None:
         """VAD-gated capture until a segment ends, max duration, or listen timeout."""
-        self.vad.reset()
+        detector = self.followup_vad if followup and self.followup_vad is not None else self.vad
+        detector.reset()
         wait_started = self.clock()
         record_started = None
         collected: list[np.ndarray] = []
@@ -386,10 +393,10 @@ class WakeWordRuntime:
 
         while not self._stop:
             chunk = self.audio.read_chunk()
-            accepted_chunk = self.vad.accept_audio(chunk)
+            accepted_chunk = detector.accept_audio(chunk)
             now = self.clock()
             if record_started is None:
-                if self.vad.speech_started:
+                if detector.speech_started:
                     record_started = now
                     self.state = VoiceState.RECORDING_COMMAND
                     collected = [accepted_chunk]
@@ -401,7 +408,7 @@ class WakeWordRuntime:
                     break
             else:
                 collected.append(accepted_chunk)
-                segment = self.vad.pop_segment()
+                segment = detector.pop_segment()
                 if segment is not None:
                     # The VAD segment already contains the complete utterance.
                     collected = [segment]
@@ -508,6 +515,12 @@ class WakeWordRuntime:
                     self.prompt_callback()
                     # Prompt playback blocks this thread; drop speaker bleed.
                     self._discard_stale_audio()
+                    if self.prompt_guard > 0:
+                        self._cooldown_until = max(
+                            self._cooldown_until,
+                            self.clock() + self.prompt_guard,
+                        )
+                        self._wait_blackout()
 
                 audio = self._collect_utterance(followup=followup)
                 if self._stop:

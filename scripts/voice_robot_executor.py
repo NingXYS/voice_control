@@ -17,16 +17,26 @@ def serialize_robot_command(command: dict) -> str:
 
 
 class RobotExecutor:
-    def __init__(self, publisher=None):
+    def __init__(self, publisher=None, connected: bool = True):
         self.publisher = publisher
+        self.last_status = "disabled"
+        self._connected = bool(connected)
 
     def initialize(self) -> bool:
         return self.publisher is not None
 
+    def controller_connected(self) -> bool:
+        return self.publisher is not None and self._connected
+
     def execute(self, command) -> bool:
         if self.publisher is None:
+            self.last_status = "disabled"
+            return False
+        if not self.controller_connected():
+            self.last_status = "disconnected"
             return False
         self.publisher(serialize_robot_command(command))
+        self.last_status = "published"
         return True
 
     def close(self) -> None:
@@ -38,6 +48,7 @@ class ROSRobotExecutor:
         if topic != ROBOT_COMMAND_TOPIC:
             raise ValueError(f"robot topic must remain {ROBOT_COMMAND_TOPIC!r}")
         self.topic = topic
+        self.last_status = "disabled"
         self._rclpy = None
         self._node = None
         self._publisher = None
@@ -66,12 +77,33 @@ class ROSRobotExecutor:
         self._string_type = String
         return True
 
+    def controller_connected(self) -> bool:
+        try:
+            self.initialize()
+        except Exception:
+            self.last_status = "disconnected"
+            return False
+        if self._publisher is None:
+            return False
+        getter = getattr(self._publisher, "get_subscription_count", None)
+        if not callable(getter):
+            return True
+        try:
+            return int(getter()) > 0
+        except Exception:
+            return False
+
     def execute(self, command) -> bool:
         payload = serialize_robot_command(command)
         self.initialize()
+        if not self.controller_connected():
+            self.last_status = "disconnected"
+            print("⚠️ /robot_command 无订阅者，未发布机械臂指令", flush=True)
+            return False
         message = self._string_type()
         message.data = payload
         self._publisher.publish(message)
+        self.last_status = "published"
         return True
 
     def close(self) -> None:

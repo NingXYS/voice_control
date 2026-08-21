@@ -12,7 +12,7 @@ import warnings
 import requests
 
 from latency_metrics import LatencyTracker  # Phase 0: 耗时追踪
-from voice_local_knowledge import match_fixed_reply
+from voice_local_knowledge import CART_MOTION_VERBS, match_fixed_reply
 
 warnings.filterwarnings("ignore")
 
@@ -215,7 +215,18 @@ _LOCAL_REPLY_MOTION_KW = [
 ]
 
 # 模糊控制输入的澄清回复常量
-LOCAL_CONTROL_CLARIFICATION_REPLY = "请说明左臂还是右臂，以及具体动作、方向、距离或关节角度。"
+CLARIFY_NEED_ARM = "请说明是左臂还是右臂。"
+CLARIFY_NEED_JOINT = "请说明是第几关节。"
+CLARIFY_NEED_DISTANCE = "请说明移动的距离，例如十厘米。"
+CLARIFY_NEED_ANGLE = "请说明旋转多少度。"
+CLARIFY_NEED_DETAIL = "请说明具体动作、方向、距离或关节角度。"
+CLARIFY_UNCLEAR = "没听清，请靠近麦克风后简短再说一次。"
+LOCAL_CONTROL_CLARIFICATION_REPLY = CLARIFY_NEED_DETAIL
+ROBOT_DISABLED_REPLY = "已解析，未执行"
+ROBOT_DISCONNECTED_REPLY = "机械臂控制未连接"
+ROBOT_BUSY_REPLY = "上一条还在执行，请稍等"
+STATUS_SENT_REPLY = "好的，已发送查询"
+DIFY_UNAVAILABLE_REPLY = "服务暂时不可用，请再说一次。"
 
 # ==================== 指令校验常量 ====================
 VALID_ACTIONS = {"move_joint", "move_cartesian", "home", "get_status"}
@@ -263,7 +274,7 @@ _RE_CARTESIAN = re.compile(
     r'(?:先)?'                 # optional spoken 「先」
     r'(?:向|往)?'               # optional 向/往
     r'([上下左右前后])'         # direction
-    r'(?:抬|降|移动|移|走)?'    # optional spoken action word
+    + CART_MOTION_VERBS + r'?'   # optional spoken action word (伸/抬/移/…)
     rf'({_NUMBER_TOKEN})'        # value (Arabic or Chinese number)
     r'\s*(毫米|厘米|米)'         # distance unit
 )
@@ -274,7 +285,7 @@ _CART_DIR_BODY = (
     r'(?:先)?'
     r'(?:向|往)?'
     r'([上下左右前后])'
-    r'(?:抬|降|移动|移|走)?'
+    + CART_MOTION_VERBS + r'?'
     rf'({_NUMBER_TOKEN})\s*(毫米|厘米|米)'
 )
 _RE_CARTESIAN_HEAD = re.compile(r'(左臂|右臂)' + _CART_DIR_BODY)
@@ -290,7 +301,7 @@ _RE_JOINT = re.compile(
     r'(左臂|右臂)'              # arm
     r'关节([1-6一二两三四五六])'  # joint 1-6 (Arabic or spoken Chinese)
     r'(反转)?'                 # reverse flag (optional)
-    r'(?:旋转|转动)?'          # 旋转/转动 (optional, "反转30度" 不需要此词)
+    r'(?:旋转|转动|转)?'       # 旋转/转动/转 (optional, "反转30度" 不需要此词)
     rf'({_NUMBER_TOKEN})'        # angle (Arabic or Chinese number)
     r'\s*度'                   # unit
 )
@@ -302,15 +313,21 @@ _RE_JOINT_HEAD = re.compile(
     r'(左臂|右臂)'
     + _JOINT_ID_TOKEN
     + r'(反转)?'
-    + r'(?:旋转|转动)?'
+    + r'(?:旋转|转动|转)?'
     + rf'({_NUMBER_TOKEN})\s*度'
 )
 _RE_JOINT_CONT = re.compile(
     r'(?:后|然后|再|接着|和|与|及|，|,)?'
     + _JOINT_ID_TOKEN
     + r'(反转)?'
-    + r'(?:旋转|转动)?'
+    + r'(?:旋转|转动|转)?'
     + rf'({_NUMBER_TOKEN})\s*度'
+)
+_RE_HOME = re.compile(r'^(?:请)?(?:把)?(左臂|右臂)(?:回零位|回零|归零|回原位)$')
+_RE_STATUS = re.compile(
+    r'^(?:请)?(?:查询|查看|问问)?'
+    r'(左臂|右臂)'
+    r'(?:的)?(?:当前)?(?:状态|位置|关节状态)$'
 )
 
 _JOINT_TOKEN_TO_INT = {
@@ -342,11 +359,11 @@ def check_simple_action_command(text, tracker=None):
     - 同臂多位置：右臂向下十厘米再向左十厘米 / 右臂先向上移十厘米再向左移十厘米
     - 多动作：右臂向前5厘米左臂向上10厘米
     - 口语：把你的右臂向后三十厘米 / 拿你的左臂…（先经 repair_asr_text）
+    - 回零 / 查状态：右臂回零 / 查询左臂状态
 
     不支持（返回 None）：
     - 省略臂、省略单位、省略数值
     - 问答、介绍、混合问答动作
-    - home、get_status 等不在 VALID_ACTIONS 中的动作
     - 模糊语义：动一下、旋转一圈、握手等
     """
     if tracker:
@@ -362,6 +379,11 @@ def check_simple_action_command(text, tracker=None):
         return None
 
     text = text.strip()
+    home_status = _parse_home_or_status(text)
+    if home_status is not None:
+        if tracker:
+            tracker.mark("local_action_parser_end")
+        return home_status
 
     # 用臂引用位置切分多个动作片段
     segments = _split_arm_segments(text)
@@ -557,6 +579,21 @@ def _parse_cartesian_chain(seg: str):
         commands.append(cmd)
         pos = m2.end()
     return commands
+
+
+def _parse_home_or_status(text: str):
+    """Parse a single full-utterance home / get_status command."""
+    if not isinstance(text, str) or not text:
+        return None
+    m = _RE_HOME.fullmatch(text)
+    if m:
+        arm = "left" if m.group(1) == "左臂" else "right"
+        return [{"action": "home", "arm": arm}]
+    m = _RE_STATUS.fullmatch(text)
+    if m:
+        arm = "left" if m.group(1) == "左臂" else "right"
+        return [{"action": "get_status", "arm": arm}]
+    return None
 
 
 def _parse_one_segment(seg):
@@ -892,8 +929,15 @@ def _match_ambiguous_control_reply(text):
         return None
 
     # --- Step 4.2: 未支持的能力词 → miss ---
-    unsupported = ["回零", "状态", "抓取", "松开", "拿", "放"]
-    if any(kw in text for kw in unsupported):
+    # 回零/状态让位给本地 home/get_status 解析。
+    # 「拿你的左臂…」是口语前缀，不是抓取；只把抓取/松开当未支持能力。
+    if any(kw in text for kw in ("回零", "归零", "状态", "位置")):
+        return None
+    if re.search(r"抓取|松开|放开|抓住", text):
+        return None
+    if re.search(r"拿(?!你的|着)", text) and not re.search(r"左臂|右臂", text):
+        return None
+    if re.search(r"(?<![回])放(?![心弃弃])", text) and re.search(r"放下|放到|放着", text):
         return None
 
     # --- Step 4.3: 明确可执行动作模板 → miss ---
@@ -917,7 +961,7 @@ def _match_ambiguous_control_reply(text):
 
     # 5a: 仅有手臂引用
     if text in ("左臂", "右臂"):
-        return LOCAL_CONTROL_CLARIFICATION_REPLY
+        return CLARIFY_NEED_DETAIL
 
     # 5b: 无手臂的模糊移动或旋转
     no_arm_vague = [
@@ -927,39 +971,55 @@ def _match_ambiguous_control_reply(text):
         "转一下", "旋转", "旋转一下",
     ]
     if text in no_arm_vague:
-        return LOCAL_CONTROL_CLARIFICATION_REPLY
+        return CLARIFY_NEED_DETAIL
+
+    # Complete cartesian / joint except the arm name.
+    if "左臂" not in text and "右臂" not in text:
+        if re.search(
+            rf'(?:第[1-6一二两三四五六]个?关节|关节[1-6一二两三四五六])'
+            rf'(?:反转)?(?:旋转|转动|转)?{_NUMBER_TOKEN}度',
+            text,
+        ):
+            return CLARIFY_NEED_ARM
+        if re.search(
+            rf'(?:向|往)?[上下左右前后](?:伸|移|抬|降)?{_NUMBER_TOKEN}(?:毫米|厘米|米)$',
+            text,
+        ):
+            return CLARIFY_NEED_ARM
+        if re.search(r"[a-zA-Z]", text) and re.search(r"旋转|关节|度", text):
+            return CLARIFY_UNCLEAR
 
     # 5c: 有手臂但缺少距离或角度的模糊动作
     if "左臂" in text or "右臂" in text:
         # 手臂 + 方向（缺少距离）："左臂向上"
         if re.match(r'^(左臂|右臂)向?[上下前后左右]$', text):
-            return LOCAL_CONTROL_CLARIFICATION_REPLY
+            return CLARIFY_NEED_DISTANCE
         # 手臂 + 方向 + 一点（缺少距离）："右臂向前一点"
         if re.match(r'^(左臂|右臂)向?[上下前后左右]一点$', text):
-            return LOCAL_CONTROL_CLARIFICATION_REPLY
+            return CLARIFY_NEED_DISTANCE
         # 手臂 + 移动一下："右臂移动一下"
         if re.match(r'^(左臂|右臂)移动一下$', text):
-            return LOCAL_CONTROL_CLARIFICATION_REPLY
+            return CLARIFY_NEED_DISTANCE
         # 手臂 + 关节N + 旋转（缺少角度）："左臂关节1旋转" / "左臂第一关节旋转"
         if re.match(
-            r'^(左臂|右臂)(?:关节[1-6一二两三四五六]|第[1-6一二两三四五六]个?关节)(?:旋转|转动)?$',
+            r'^(左臂|右臂)(?:关节[1-6一二两三四五六]|第[1-6一二两三四五六]个?关节)(?:旋转|转动|转)?$',
             text,
         ):
-            return LOCAL_CONTROL_CLARIFICATION_REPLY
+            return CLARIFY_NEED_ANGLE
         # 手臂 + 旋转/转动 + 角度（缺少关节编号）："左臂旋转三十度"
         if re.match(
-            rf'^(左臂|右臂)(?:旋转|转动|反转)(?:旋转|转动)?{_NUMBER_TOKEN}度$',
+            rf'^(左臂|右臂)(?:旋转|转动|反转|转)(?:旋转|转动|转)?{_NUMBER_TOKEN}度$',
             text,
         ):
-            return LOCAL_CONTROL_CLARIFICATION_REPLY
+            return CLARIFY_NEED_JOINT
         # 手臂 + 转一下："右臂转一下"
         if re.match(r'^(左臂|右臂)转一下$', text):
-            return LOCAL_CONTROL_CLARIFICATION_REPLY
+            return CLARIFY_NEED_DETAIL
 
     # 5d: 模糊抬手请求（缺距离/角度等参数）
     if (re.search(r'抬起?(?:你的)?(?:左|右)(?:臂|手)', text) or
         re.search(r'(?:左|右)(?:臂|手)抬(?:起来)?', text)):
-        return LOCAL_CONTROL_CLARIFICATION_REPLY
+        return CLARIFY_NEED_DISTANCE
 
     return None
 
@@ -978,7 +1038,11 @@ def check_local_reply_command(text, tracker=None):
         if tracker:
             tracker.mark("local_reply_parser_end")
         return None
-    text = text.strip()
+    from voice_local_knowledge import match_fixed_reply, repair_asr_text
+
+    raw = text.strip()
+    repaired = repair_asr_text(raw)
+    text = repaired or raw
     if not text:
         if tracker:
             tracker.mark("local_reply_parser_end")
@@ -1010,9 +1074,8 @@ def check_local_reply_command(text, tracker=None):
             tracker.mark("local_reply_parser_end")
         return None
 
-    # 3b. 含有未支持控制动作词（回零/状态/抓取/松开/拿/放）时，直接安全 miss
-    unsupported_control_kws = ["回零", "状态", "抓取", "松开", "拿", "放"]
-    if any(kw in text for kw in unsupported_control_kws):
+    # 3b. 回零/状态让位给动作解析；抓取类未支持能力也 miss 给 Dify。
+    if any(kw in text for kw in ("回零", "归零", "状态", "位置", "抓取", "松开")):
         if tracker:
             tracker.mark("local_reply_parser_end")
         return None
@@ -1031,7 +1094,10 @@ def check_local_reply_command(text, tracker=None):
                 tracker.mark("local_reply_parser_end")
             return None
     # 4. 调用 voice_local_knowledge.match_fixed_reply 获取本地固定/CSV 匹配
-    res = match_fixed_reply(text)
+    # FAQ keywords may still be written against the unrepaired surface form.
+    res = match_fixed_reply(raw)
+    if res is None and repaired != raw:
+        res = match_fixed_reply(repaired)
     if res is not None:
         fixed, errors = validate_and_fix_command(res)
         if not errors and fixed:

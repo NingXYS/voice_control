@@ -31,8 +31,13 @@ def play_prompt_tone(duration_sec=0.12, frequency_hz=880, sample_rate=16000) -> 
                 envelope = min(1.0, i / max(1, frames * 0.1), (frames - i) / max(1, frames * 0.1))
                 value = int(8000 * envelope * math.sin(2 * math.pi * frequency_hz * i / sample_rate))
                 wav.writeframesraw(struct.pack("<h", value))
+        cmd = ["aplay", "-q"]
+        device = os.environ.get("APLAY_DEVICE", "").strip()
+        if device and device.lower() not in {"x", "replace"}:
+            cmd.extend(["-D", device])
+        cmd.append(path)
         return subprocess.run(
-            ["aplay", "-q", path], stdout=subprocess.DEVNULL,
+            cmd, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, check=False,
         ).returncode == 0
     except Exception:

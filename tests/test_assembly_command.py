@@ -167,6 +167,8 @@ class AssemblyPipelineTests(unittest.TestCase):
             ctrl, "publish_assembly_count", return_value=True
         ) as pub, patch.object(
             ctrl, "_popen_bash", return_value=MagicMock(poll=lambda: None, pid=1)
+        ), patch.object(
+            ctrl, "_photo_process_alive", return_value=True
         ), patch.object(ctrl, "_terminate"), patch(
             "voice_assembly_controller.time.sleep"
         ):

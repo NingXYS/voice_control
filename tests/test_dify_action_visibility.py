@@ -24,13 +24,13 @@ class DifyActionVisibilityTests(unittest.TestCase):
 
         dialogue = Dialogue()
         result = voice_text_pipeline.process_text(
-            "右臂回零位",
+            "右臂回到初始位置",
             executor=None,
             dialogue=dialogue,
         )
 
         self.assertEqual(result, [command])
-        self.assertEqual(dialogue.last_text, "右臂回零位")
+        self.assertEqual(dialogue.last_text, "右臂回到初始位置")
 
     def test_local_template_action_visible_without_dify_when_execution_disabled(self):
         class DialogueMustNotRun:

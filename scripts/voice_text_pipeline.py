@@ -3,8 +3,14 @@ import re
 import time
 
 from voice_dialogue_backend import run_dialogue
-from voice_command_validation import validate_command_batch
+from voice_command_validation import motion_limit_reply, validate_command_batch
 from voice_llm_client import (
+    CLARIFY_UNCLEAR,
+    DIFY_UNAVAILABLE_REPLY,
+    ROBOT_BUSY_REPLY,
+    ROBOT_DISABLED_REPLY,
+    ROBOT_DISCONNECTED_REPLY,
+    STATUS_SENT_REPLY,
     check_assembly_command,
     check_local_reply_command,
     check_photo_command,
@@ -62,6 +68,30 @@ _CONTROL_MARKERS = (
     "度", "弧度", "回零", "归零", "零位", "状态", "位置",
 )
 _AMBIENT_REJECT_REPLY = "刚才没有听清有效指令，请靠近麦克风后简短再说一次。"
+_MOTION_BUSY_UNTIL = 0.0
+
+
+def _motion_cooldown_sec() -> float:
+    raw = _os.environ.get("VOICE_MOTION_COOLDOWN_SEC", "4")
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return 4.0
+
+
+def _motion_cooling() -> bool:
+    return time.monotonic() < _MOTION_BUSY_UNTIL
+
+
+def _begin_motion_cooldown() -> None:
+    global _MOTION_BUSY_UNTIL
+    gap = _motion_cooldown_sec()
+    _MOTION_BUSY_UNTIL = time.monotonic() + gap if gap > 0 else 0.0
+
+
+def reset_motion_cooldown_for_test() -> None:
+    global _MOTION_BUSY_UNTIL
+    _MOTION_BUSY_UNTIL = 0.0
 
 
 def _run_dialogue(dialogue, text):
@@ -77,6 +107,40 @@ def _execute(executor, command) -> bool:
         return False
     result = executor(command) if callable(executor) else executor.execute(command)
     return result is not False
+
+
+def _executor_status(executor) -> str:
+    if executor is None:
+        return "disabled"
+    status = getattr(executor, "last_status", None)
+    if isinstance(status, str) and status:
+        return status
+    return "published"
+
+
+def _controller_connected(executor) -> bool:
+    if executor is None:
+        return False
+    checker = getattr(executor, "controller_connected", None)
+    if callable(checker):
+        try:
+            return bool(checker())
+        except Exception:
+            return False
+    return True
+
+
+def _dialogue_error(dialogue) -> str:
+    if dialogue is None:
+        return ""
+    return str(getattr(dialogue, "last_error", "") or "")
+
+
+def _fallback_reply(dialogue) -> str:
+    err = _dialogue_error(dialogue).lower()
+    if any(token in err for token in ("dify", "http", "timeout", "not configured", "api")):
+        return DIFY_UNAVAILABLE_REPLY
+    return CLARIFY_UNCLEAR
 
 
 def _tts_phrase_ready(text: str) -> bool:
@@ -269,10 +333,15 @@ def process_text(
     if not isinstance(text, str) or not text.strip():
         return None
 
-    # Fold duplicated first syllables from ASR (你有你有 / 左臂左臂 / 左左臂).
+    # Fold duplicated first syllables from ASR (你有你有 / 左臂左臂 / 左左臂)
+    # and extract a complete arm command from exhibition-floor chatter.
+    raw_utterance = text
     text = repair_asr_text(text)
     if not text:
         return None
+    collapsed_raw = re.sub(r"\s+", "", raw_utterance.strip())
+    if text != collapsed_raw and any(marker in text for marker in ("左臂", "右臂")):
+        print(f"✂️ 抽出控制片段: '{raw_utterance}' → '{text}'", flush=True)
 
     if runtime is not None:
         executor = executor if executor is not None else getattr(runtime, "executor", None)
@@ -303,9 +372,6 @@ def process_text(
             reply = command.get("reply") if isinstance(command, dict) else None
             if not isinstance(reply, str) or not reply.strip() or speaker is None:
                 continue
-            # Instant full reply if pre-rendered; otherwise short ack first.
-            if not _tts_phrase_ready(reply):
-                _speak_thinking_ack(speaker)
             _speak_text(speaker, reply)
         return checked
 
@@ -313,9 +379,18 @@ def process_text(
     # never depend on Dify's older 「向」-only intent router.
     local_actions = check_simple_action_command(text, tracker=tracker)
     if local_actions is not None:
+        limit_reply = motion_limit_reply(local_actions)
+        if limit_reply:
+            print(f"⚠️ 本地动作超出语音幅度上限: {local_actions}", flush=True)
+            if speaker is not None:
+                _speak_text(speaker, limit_reply, sentence_tts=False)
+            return [{"reply": limit_reply}]
         checked = validate_command_batch(local_actions)
         if checked is None:
-            return None
+            reply = CLARIFY_UNCLEAR
+            if speaker is not None:
+                _speak_text(speaker, reply, sentence_tts=False)
+            return [{"reply": reply}]
         print("⚡ 本地动作解析命中，跳过 Dify")
         return _dispatch_commands(checked, executor=executor, speaker=speaker)
 
@@ -324,28 +399,37 @@ def process_text(
         print("⚠️ 识别结果过长且无控制特征，疑似环境人声，已忽略", flush=True)
         reject = [{"reply": _AMBIENT_REJECT_REPLY}]
         if speaker is not None:
-            _speak_text(speaker, _AMBIENT_REJECT_REPLY, sentence_tts=False)
+            _speak_text(speaker, reject[0]["reply"], sentence_tts=False)
         return reject
 
-    # Dify / slow path: open with a cached short ack so dead air stays under ~1s.
-    _speak_thinking_ack(speaker)
-
-    # Streaming path: first complete sentence can TTS while the rest still generates.
+    # Dify / slow path: do not block HTTP on thinking-ack (avoids 小西收到+长澄清).
     stream_fn = getattr(dialogue, "stream_reply", None) if dialogue is not None else None
     if _stream_reply_enabled() and callable(stream_fn):
-        return _process_stream_dialogue(
+        result = _process_stream_dialogue(
             dialogue,
             text,
             executor=executor,
             speaker=speaker,
         )
+        if result is not None:
+            return result
+        reply = _fallback_reply(dialogue)
+        if speaker is not None:
+            _speak_text(speaker, reply, sentence_tts=False)
+        return [{"reply": reply}]
 
     commands = _run_dialogue(dialogue, text)
     if commands is None:
-        return None
+        reply = _fallback_reply(dialogue)
+        if speaker is not None:
+            _speak_text(speaker, reply, sentence_tts=False)
+        return [{"reply": reply}]
     checked = validate_command_batch(commands)
     if checked is None:
-        return None
+        reply = CLARIFY_UNCLEAR
+        if speaker is not None:
+            _speak_text(speaker, reply, sentence_tts=False)
+        return [{"reply": reply}]
 
     return _dispatch_commands(checked, executor=executor, speaker=speaker)
 
@@ -438,26 +522,46 @@ def _process_stream_dialogue(dialogue, text, executor=None, speaker=None):
 def _dispatch_commands(checked, executor=None, speaker=None, skip_reply_tts=False):
     """Execute validated action/reply batch and speak acks. Shared by local+Dify."""
     actions = [command for command in checked if "reply" not in command]
-    # 先检查是否存在需要确认的动作指令（无论 executor 是否启用）
     has_acknowledged_action = any(
         command.get("action") in ACKNOWLEDGED_ACTIONS for command in actions
     )
+    has_status_query = any(
+        command.get("action") == "get_status" for command in actions
+    )
 
-    if actions and executor is None:
-        # VOICE_ENABLE_ROBOT_COMMAND defaults to off for safety.  A valid
-        # command must still be returned to the wake runtime so the terminal can
-        # display what was produced instead of incorrectly showing <无有效输出>.
-        print("ℹ️ 已解析有效机械臂指令；机器人执行未启用，仅显示不执行", flush=True)
-    else:
-        for command in actions:
-            if not _execute(executor, command):
-                return None
-
-    # 只要解析出 ACKNOWLEDGED_ACTIONS 中的指令就播报确认音，不依赖 executor 是否启用
-    if has_acknowledged_action and speaker is not None:
-        # Skip if identical to thinking ack (avoid double "好的").
-        if ACTION_EXECUTION_REPLY != THINKING_ACK_TEXT:
-            speaker(ACTION_EXECUTION_REPLY)
+    if actions:
+        if executor is None:
+            print("ℹ️ 已解析有效机械臂指令；机器人执行未启用，仅显示不执行", flush=True)
+            if speaker is not None:
+                speaker(ROBOT_DISABLED_REPLY)
+        elif has_acknowledged_action and _motion_cooling():
+            print("ℹ️ 语音侧运动冷却中，本轮不连发", flush=True)
+            if speaker is not None:
+                speaker(ROBOT_BUSY_REPLY)
+            return [{"reply": ROBOT_BUSY_REPLY}]
+        elif not _controller_connected(executor):
+            print("ℹ️ 机械臂控制未连接，已解析但不发布", flush=True)
+            if speaker is not None:
+                speaker(ROBOT_DISCONNECTED_REPLY)
+            return checked
+        else:
+            for command in actions:
+                if not _execute(executor, command):
+                    status = _executor_status(executor)
+                    if status == "disconnected":
+                        reply = ROBOT_DISCONNECTED_REPLY
+                    else:
+                        reply = CLARIFY_UNCLEAR
+                    if speaker is not None:
+                        speaker(reply)
+                    return None
+            if has_acknowledged_action:
+                _begin_motion_cooldown()
+            if has_acknowledged_action and speaker is not None:
+                if ACTION_EXECUTION_REPLY != THINKING_ACK_TEXT:
+                    speaker(ACTION_EXECUTION_REPLY)
+            elif has_status_query and speaker is not None:
+                speaker(STATUS_SENT_REPLY)
 
     if not skip_reply_tts:
         for command in checked:

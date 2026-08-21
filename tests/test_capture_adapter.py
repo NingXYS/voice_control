@@ -39,6 +39,52 @@ class FakeCaptureSource:
 
 
 class CaptureFormatAdapterTests(unittest.TestCase):
+    def test_discard_during_resample_does_not_index_error(self):
+        """后台 TTS discard 与采音并发时不得崩溃（回归 IndexError size 0）。"""
+        import threading
+        import time
+
+        stereo = np.column_stack(
+            (
+                np.full(4800, 0.2, dtype=np.float32),
+                np.full(4800, 0.4, dtype=np.float32),
+            ),
+        )
+        # 足够多 chunk 供并发读
+        chunks = [stereo.copy() for _ in range(200)]
+        source = FakeCaptureSource(chunks, sample_rate=48000, channels=2)
+        adapter = CaptureFormatAdapter(
+            source,
+            AudioFormat(sample_rate=16000, channels=1),
+            chunk_ms=100,
+        )
+        adapter.open()
+        errors: list[BaseException] = []
+
+        def reader():
+            try:
+                for _ in range(30):
+                    adapter.read_chunk()
+            except BaseException as exc:  # noqa: BLE001 — collect for assert
+                errors.append(exc)
+
+        def discarder():
+            try:
+                for _ in range(40):
+                    adapter.discard_buffered()
+                    time.sleep(0.001)
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        t1 = threading.Thread(target=reader)
+        t2 = threading.Thread(target=discarder)
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+        adapter.close()
+        self.assertEqual(errors, [], msg=f"unexpected errors: {errors}")
+
     def test_resamples_stereo_channel_0_by_default(self):
         stereo = np.column_stack(
             (

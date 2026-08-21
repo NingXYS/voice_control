@@ -173,6 +173,8 @@ VOICE_SESSION_END_PHRASES = os.environ.get(
 # blackout before the next "小西小西" is accepted. Was 1.5s and felt like "dead"
 # if the user re-woke immediately after TTS.
 WAKE_COOLDOWN_SEC = float(os.environ.get("WAKE_COOLDOWN_SEC", "0.6"))
+# Voice-side gap between published motions so MoveIt is less likely to stack.
+VOICE_MOTION_COOLDOWN_SEC = float(os.environ.get("VOICE_MOTION_COOLDOWN_SEC", "4.0"))
 
 
 def session_end_phrases() -> tuple[str, ...]:
@@ -339,6 +341,7 @@ def validate_runtime_config() -> None:
         ("FOLLOWUP_VAD_SILENCE_SEC", FOLLOWUP_VAD_SILENCE_SEC),
         ("FOLLOWUP_COMMAND_MAX_DURATION_SEC", FOLLOWUP_COMMAND_MAX_DURATION_SEC),
         ("WAKE_COOLDOWN_SEC", WAKE_COOLDOWN_SEC),
+        ("VOICE_MOTION_COOLDOWN_SEC", VOICE_MOTION_COOLDOWN_SEC),
         ("PROMPT_GUARD_DURATION_SEC", PROMPT_GUARD_DURATION_SEC),
         ("POST_TTS_GUARD_DURATION_SEC", POST_TTS_GUARD_DURATION_SEC),
         ("VOICE_SESSION_TIMEOUT_SEC", VOICE_SESSION_TIMEOUT_SEC),

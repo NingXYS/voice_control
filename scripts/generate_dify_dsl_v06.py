@@ -37,7 +37,7 @@ def main(user_text: str) -> dict:
     has_home = any(keyword in text for keyword in ('回零', '归零', '零位'))
     has_status = '状态' in text or ('查询' in text and '位置' in text)
     single_action_patterns = (
-        rf'(?:左臂|右臂)(?:向|往)?[上下左右前后](?:抬|降|移动|移|走)?{number_token}(?:毫米|厘米|米)',
+        rf'(?:左臂|右臂)(?:向|往)?[上下左右前后](?:伸出去|伸出|伸|移动|挪动|抬|降|移|走|挪)?{number_token}(?:毫米|厘米|米)',
         rf'(?:左臂|右臂)关节[1-6](?:反转)?(?:旋转|转动)?{number_token}(?:度|弧度)',
         r'(?:左臂|右臂)(?:回零位?|归零|零位)',
         r'(?:查询)?(?:左臂|右臂)(?:状态|位置)',
@@ -205,7 +205,7 @@ def _parse_number(value: str) -> float | None:
 
 def _is_single_action(text: str) -> bool:
     patterns = (
-        rf'(?:左臂|右臂)(?:向|往)?[上下左右前后](?:抬|降|移动|移|走)?{_NUMBER_TOKEN}(?:毫米|厘米|米)',
+        rf'(?:左臂|右臂)(?:向|往)?[上下左右前后](?:伸出去|伸出|伸|移动|挪动|抬|降|移|走|挪)?{_NUMBER_TOKEN}(?:毫米|厘米|米)',
         rf'(?:左臂|右臂)关节[1-6](?:反转)?(?:旋转|转动)?{_NUMBER_TOKEN}(?:度|弧度)',
         r'(?:左臂|右臂)(?:回零位?|归零|零位)',
         r'(?:查询)?(?:左臂|右臂)(?:状态|位置)',

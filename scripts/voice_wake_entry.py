@@ -33,6 +33,7 @@ from voice_runtime_config import (
     COMMAND_START_TIMEOUT_SEC,
     COMMAND_VAD_GATE,
     FOLLOWUP_COMMAND_MAX_DURATION_SEC,
+    FOLLOWUP_VAD_SILENCE_SEC,
     VAD_MAX_SPEECH_DURATION_SEC,
     KWS_HIGH_THRESHOLD,
     KWS_KEYWORDS_SCORE,
@@ -214,6 +215,19 @@ def main():
                 f"audio={kws_path}",
                 flush=True,
             )
+        followup_vad = None
+        if abs(FOLLOWUP_VAD_SILENCE_SEC - VAD_SILENCE_DURATION_SEC) > 1e-6:
+            followup_vad = CommandVadDetector(
+                VAD_MODEL_PATH,
+                VAD_MIN_SPEECH_DURATION_SEC,
+                FOLLOWUP_VAD_SILENCE_SEC,
+                max_speech_sec=VAD_MAX_SPEECH_DURATION_SEC,
+            )
+            print(
+                f"🎛️ Follow-up VAD silence: {FOLLOWUP_VAD_SILENCE_SEC:g}s "
+                f"(wake command uses {VAD_SILENCE_DURATION_SEC:g}s)",
+                flush=True,
+            )
         if VOICE_SESSION_TIMEOUT_SEC > 0:
             print(
                 f"🔁 Continuous session: idle {VOICE_SESSION_TIMEOUT_SEC:.0f}s "
@@ -248,6 +262,7 @@ def main():
             end_phrases=session_end_phrases(),
             wake_verifier=_build_wake_verifier(container),
             followup_max_duration=FOLLOWUP_COMMAND_MAX_DURATION_SEC,
+            followup_vad=followup_vad,
         )
         _sig_count = {"n": 0}
 

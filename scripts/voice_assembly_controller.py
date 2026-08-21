@@ -372,23 +372,148 @@ class AssemblyController:
                 return True, path
         return False, ""
 
+    @staticmethod
+    def _pid_alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+            return True
+        except (ProcessLookupError, PermissionError, OSError):
+            return False
+
+    @staticmethod
+    def _list_gemini_detector_pids(exclude: set[int] | None = None) -> list[int]:
+        """列出本机所有 gemini_detector 相关 PID（含手动启动的孤儿）。"""
+        exclude = set(exclude or ())
+        exclude.add(os.getpid())
+        patterns = ("gemini_detector", "gemini_335l_detector")
+        found: set[int] = set()
+        try:
+            out = subprocess.check_output(
+                ["pgrep", "-af", "gemini"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+            return []
+        for line in out.splitlines():
+            low = line.lower()
+            if not any(p in low for p in patterns):
+                continue
+            if "pgrep" in low:
+                continue
+            parts = line.strip().split(None, 1)
+            if not parts:
+                continue
+            try:
+                pid = int(parts[0])
+            except ValueError:
+                continue
+            if pid in exclude:
+                continue
+            found.add(pid)
+        return sorted(found)
+
+    @classmethod
+    def _kill_pids(cls, pids: list[int], label: str) -> None:
+        if not pids:
+            return
+        print(f"🛑 清理{label}: {pids}", flush=True)
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            if not any(cls._pid_alive(p) for p in pids):
+                break
+            time.sleep(0.15)
+        for pid in pids:
+            if not cls._pid_alive(pid):
+                continue
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+            try:
+                os.waitpid(pid, os.WNOHANG)
+            except (ChildProcessError, OSError):
+                pass
+
+    def ensure_single_gemini_detector(self, *, keep_pids: set[int] | None = None) -> int:
+        """保证全局最多保留 keep_pids 内的检测进程；其余全部杀掉。
+
+        返回清理后仍存活的 gemini 相关进程数。
+        """
+        keep = set(keep_pids or ())
+        keep.add(os.getpid())
+        pids = self._list_gemini_detector_pids(exclude=keep)
+        if pids:
+            self._kill_pids(pids, "多余/孤儿 gemini_detector")
+            time.sleep(0.6)
+        left = self._list_gemini_detector_pids(exclude={os.getpid()})
+        # 若要求 keep 为空，left 应为 0；否则 left 应 ⊆ keep 的进程树
+        if keep_pids is None or not keep_pids:
+            if left:
+                # 再强杀一轮
+                self._kill_pids(left, "残留 gemini_detector")
+                time.sleep(0.4)
+                left = self._list_gemini_detector_pids(exclude={os.getpid()})
+        print(
+            f"📷 gemini_detector 实例数={len(left)} (目标: 全局最多 1 棵进程树)",
+            flush=True,
+        )
+        return len(left)
+
+    def _process_tree_pids(self, root_pid: int) -> set[int]:
+        """root_pid 及其子孙 PID（用于启动后保留本轮 ros2+python）。"""
+        tree = {root_pid}
+        try:
+            out = subprocess.check_output(
+                ["ps", "-eo", "pid,ppid", "--no-headers"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+            return tree
+        children: dict[int, list[int]] = {}
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            try:
+                pid, ppid = int(parts[0]), int(parts[1])
+            except ValueError:
+                continue
+            children.setdefault(ppid, []).append(pid)
+        stack = [root_pid]
+        while stack:
+            cur = stack.pop()
+            for c in children.get(cur, []):
+                if c not in tree:
+                    tree.add(c)
+                    stack.append(c)
+        return tree
+
     def _stop_previous_photo(self) -> None:
-        """关闭上一次拍照节点并等待退出，避免旧话题/旧进程干扰重拍。"""
+        """关闭上一次拍照节点 + 清理全部孤儿，保证启新前全局 0 个检测实例。"""
         with self._lock:
             proc = self._photo_proc
             self._photo_proc = None
             self._photo_ready = False
-        if proc is None:
-            return
-        self._terminate(proc, "上一次拍照节点")
-        # 等进程真正退出
-        try:
-            proc.wait(timeout=3)
-        except Exception:
-            pass
-        # 给 DDS 图一点时间收敛（旧 publisher 从图上消失）
-        time.sleep(0.6)
-        print("📷 上一次拍照节点已关闭，准备重新拍照", flush=True)
+        if proc is not None:
+            self._terminate(proc, "上一次拍照节点")
+            try:
+                proc.wait(timeout=3)
+            except Exception:
+                pass
+        # 只记了 Popen 壳时，真实 python 会成孤儿 —— 一律扫净
+        n = self.ensure_single_gemini_detector(keep_pids=set())
+        time.sleep(0.4)
+        print(
+            f"📷 拍照前已清空检测进程 (残留={n})，即将启动唯一实例",
+            flush=True,
+        )
 
     def _wait_for_targets(
         self,
@@ -544,8 +669,24 @@ class AssemblyController:
                 if gen != self._photo_gen:
                     # 启动瞬间又被重拍：立刻杀掉刚起的进程
                     self._terminate(proc, "作废的拍照节点")
+                    self.ensure_single_gemini_detector(keep_pids=set())
                     return
                 self._photo_proc = proc
+            # 给 ros2 拉起 python 子进程一点时间，再清掉非本轮进程树
+            time.sleep(0.5)
+            keep = self._process_tree_pids(proc.pid)
+            extras = [
+                p
+                for p in self._list_gemini_detector_pids(exclude=keep)
+            ]
+            if extras:
+                self._kill_pids(extras, "非本轮 gemini_detector")
+            n = len(self._list_gemini_detector_pids(exclude={os.getpid()}))
+            print(
+                f"📷 本轮检测 PID={proc.pid} 进程树={sorted(keep)}；"
+                f"当前 gemini 相关进程数={n}（应≈1～2：ros2 包装+python）",
+                flush=True,
+            )
             print(f"📷 检测日志: {log_path}", flush=True)
 
             timeout = float(_cfg("photo_timeout", 45) or 45)
@@ -788,6 +929,11 @@ class AssemblyController:
             self._photo_proc = None
             self._photo_ready = False
             self._photo_busy = False
+        # 退出语音时清掉所有检测实例，避免占相机
+        try:
+            self.ensure_single_gemini_detector(keep_pids=set())
+        except Exception:
+            pass
         if self._node is not None:
             try:
                 self._node.destroy_node()

@@ -1,6 +1,7 @@
 """Normalize microphone capture into the format consumed by voice models."""
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -208,34 +209,40 @@ class CaptureFormatAdapter:
         self._output = np.empty(0, dtype=np.float32)
         self._input = np.empty(0, dtype=np.float32)
         self._input_position = 0.0
+        # 后台 TTS（拍照完成播报）会 discard，与主线程采音并发，必须加锁
+        self._io_lock = threading.RLock()
 
     def open(self) -> None:
         """Open the source and reset all conversion state."""
-        self.source.open()
-        self._reset_buffers()
+        with self._io_lock:
+            self.source.open()
+            self._reset_buffers()
 
     def read_chunk(self) -> np.ndarray:
         """Read exactly one target-format chunk from the source."""
-        while self._output.size < self.chunk_samples:
-            source_chunk = self._to_mono(self.source.read_chunk())
-            if source_chunk.size == 0:
-                raise CaptureFormatError("capture source returned an empty chunk")
-            self._append_converted(source_chunk)
+        with self._io_lock:
+            while self._output.size < self.chunk_samples:
+                source_chunk = self._to_mono(self.source.read_chunk())
+                if source_chunk.size == 0:
+                    raise CaptureFormatError("capture source returned an empty chunk")
+                self._append_converted(source_chunk)
 
-        output = self._output[: self.chunk_samples].copy()
-        self._output = self._output[self.chunk_samples :]
-        return output
+            output = self._output[: self.chunk_samples].copy()
+            self._output = self._output[self.chunk_samples :]
+            return output
 
     def discard_buffered(self) -> int:
         """Discard source and adapter audio accumulated before a new turn."""
-        discarded = self.source.discard_buffered()
-        self._reset_buffers()
-        return discarded
+        with self._io_lock:
+            discarded = self.source.discard_buffered()
+            self._reset_buffers()
+            return discarded
 
     def close(self) -> None:
         """Close the source and release conversion buffers."""
-        self._reset_buffers()
-        self.source.close()
+        with self._io_lock:
+            self._reset_buffers()
+            self.source.close()
 
     def _reset_buffers(self) -> None:
         self._output = np.empty(0, dtype=np.float32)
@@ -257,33 +264,63 @@ class CaptureFormatAdapter:
 
     def _append_converted(self, mono: np.ndarray) -> None:
         if self.source_format.sample_rate == self.target_format.sample_rate:
-            self._output = np.concatenate((self._output, mono))
+            if mono.size:
+                self._output = np.concatenate((self._output, mono))
             return
 
+        mono = np.asarray(mono, dtype=np.float32).reshape(-1)
+        if mono.size == 0:
+            return
         if self._input.size:
             self._input = np.concatenate((self._input, mono))
         else:
             self._input = mono.copy()
-        ratio = self.source_format.sample_rate / self.target_format.sample_rate
-        available = self._input.size - 1 - self._input_position
-        if available <= 0:
+        # 至少需要 2 个输入样点才能线性插值
+        if self._input.size < 2:
             return
-        count = min(
-            self.chunk_samples - self._output.size,
-            int(np.ceil(available / ratio)),
-        )
+        ratio = self.source_format.sample_rate / self.target_format.sample_rate
+        if ratio <= 0:
+            return
+        available = float(self._input.size - 1) - float(self._input_position)
+        if available <= 1e-9:
+            return
+        max_out = self.chunk_samples - int(self._output.size)
+        if max_out <= 0:
+            return
+        # 与历史实现一致用 ceil，保证 48k→16k 整块输入能出满一帧
+        count = min(max_out, int(np.ceil(available / ratio)))
         if count <= 0:
             return
-        positions = self._input_position + ratio * np.arange(count)
+        positions = self._input_position + ratio * np.arange(count, dtype=np.float64)
         left = np.floor(positions).astype(np.intp)
-        fraction = positions - left
+        # 防御：并发 discard / 浮点误差导致空缓冲或 left+1 越界
+        max_left = int(self._input.size) - 2
+        if max_left < 0 or self._input.size < 2:
+            self._reset_buffers()
+            return
+        # 丢掉会越界的尾部样点（极少）
+        valid = left <= max_left
+        if not np.any(valid):
+            return
+        if not np.all(valid):
+            count = int(np.count_nonzero(valid))
+            positions = positions[:count]
+            left = left[:count]
+        left = np.clip(left, 0, max_left)
+        fraction = (positions - np.floor(positions)).astype(np.float32)
         converted = (
             self._input[left] * (1.0 - fraction)
             + self._input[left + 1] * fraction
         ).astype(np.float32)
         self._output = np.concatenate((self._output, converted))
-        self._input_position += count * ratio
+        self._input_position += float(count) * ratio
         drop = int(np.floor(self._input_position))
-        if drop:
-            self._input = self._input[drop:]
-            self._input_position -= drop
+        if drop > 0:
+            if drop >= self._input.size:
+                self._input = np.empty(0, dtype=np.float32)
+                self._input_position = 0.0
+            else:
+                self._input = self._input[drop:]
+                self._input_position -= float(drop)
+            if self._input_position < 0:
+                self._input_position = 0.0

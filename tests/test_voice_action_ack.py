@@ -68,7 +68,7 @@ class VoiceActionAcknowledgementTests(unittest.TestCase):
             [("speak", voice_text_pipeline.ACTION_EXECUTION_REPLY)],
         )
 
-    def test_does_not_acknowledge_status_query(self):
+    def test_status_query_speaks_sent_ack_after_publish(self):
         spoken = []
         commands = [{"action": "get_status", "arm": "left"}]
 
@@ -80,10 +80,10 @@ class VoiceActionAcknowledgementTests(unittest.TestCase):
         )
 
         self.assertEqual(result, commands)
-        self.assertEqual(spoken, [])
+        self.assertEqual(spoken, [voice_text_pipeline.STATUS_SENT_REPLY])
 
-    def test_still_acknowledges_when_robot_execution_is_disabled(self):
-        """执行未启用时仍播报确认，终端可看到解析结果且语音反馈一致。"""
+    def test_disabled_executor_says_parsed_not_running(self):
+        """执行未启用时说真话，不再假装正在执行。"""
         spoken = []
         commands = [
             {
@@ -104,9 +104,9 @@ class VoiceActionAcknowledgementTests(unittest.TestCase):
         )
 
         self.assertEqual(result, commands)
-        self.assertEqual(spoken, [voice_text_pipeline.ACTION_EXECUTION_REPLY])
+        self.assertEqual(spoken, [voice_text_pipeline.ROBOT_DISABLED_REPLY])
 
-    def test_thinking_ack_plays_before_dify_on_slow_path(self):
+    def test_dify_slow_path_does_not_prefix_thinking_ack(self):
         spoken = []
         commands = [{"reply": "这是完整回答"}]
 
@@ -123,8 +123,7 @@ class VoiceActionAcknowledgementTests(unittest.TestCase):
                 )
 
         self.assertEqual(result, commands)
-        self.assertEqual(spoken[0], "小西收到")
-        self.assertEqual(spoken[-1], "这是完整回答")
+        self.assertEqual(spoken, ["这是完整回答"])
 
     def test_thinking_ack_skipped_when_local_reply_already_cached(self):
         spoken = []

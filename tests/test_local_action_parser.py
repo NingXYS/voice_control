@@ -539,6 +539,153 @@ class LocalActionParserTests(unittest.TestCase):
                 commands = check_simple_action_command(text)
                 self.assertEqual(commands, [expected])
 
+    def test_exhibition_noise_extracts_embedded_cartesian_command(self):
+        """现场串音/唤醒词/「伸」/臂在句末应从整句抽出完整指令。"""
+        import voice_local_knowledge as local_knowledge
+
+        expected = {
+            "action": "move_cartesian",
+            "arm": "right",
+            "x": 0,
+            "y": 0.05,
+            "z": 0,
+            "relative": True,
+        }
+        hits = [
+            "右臂向前伸五厘米",
+            "接臂他右臂向前伸五厘米",
+            "小溪小溪右臂向前伸五厘米",
+            "测手手不起来了吧小溪小溪右臂向前伸五厘米",
+            "向右臂向前伸五厘米",
+            "向前伸五厘米右臂",
+            "右臂向前伸多少五五五格五厘米五厘米",
+            "右臂向前五厘米",
+            "右臂向前伸五厘米好吗",
+            "右臂向前伸五厘米吧",
+            "请小溪小溪右臂向前伸五厘米",
+            "右手臂向前伸五厘米",
+            "右边手臂向前伸五厘米",
+            "右臂向前伸五公分",
+            "右臂往前伸个五厘米",
+            "右臂向前伸一下五厘米",
+        ]
+        for text in hits:
+            with self.subTest(text=text):
+                commands = check_simple_action_command(text)
+                self.assertEqual(commands, [expected], text)
+                repaired = local_knowledge.repair_asr_text(text)
+                self.assertIn("右臂", repaired)
+                self.assertIn("五厘米", repaired)
+                self.assertNotIn("右臂下", repaired)
+
+        misses = [
+            "你是什么机器人然后右臂向上5厘米",
+            "左臂向上10厘米然后你是谁",
+            "右臂向前",
+            "向前伸五厘米",
+            "右臂向前十厘米五厘米",
+            "没有啊",
+            "就一直在反馈无用的话",
+            "左臂向上右臂向前五厘米",
+            "右臂向前五厘米左臂向上",
+            "左臂右臂向前五厘米",
+        ]
+        for text in misses:
+            with self.subTest(text=text):
+                self.assertIsNone(check_simple_action_command(text), text)
+
+        from voice_text_pipeline import process_text
+
+        class DialogueMustNotRun:
+            def run(self, _text):
+                raise AssertionError("embedded field command must not call dialogue")
+
+            def stream_reply(self, _text):
+                raise AssertionError("embedded field command must not stream dialogue")
+
+        for text in hits:
+            with self.subTest(process=text):
+                result = process_text(text, dialogue=DialogueMustNotRun())
+                self.assertEqual(result, [expected], text)
+
+    def test_exhibition_noise_extracts_embedded_joint_and_chain(self):
+        """现场前缀/唤醒词下的关节与同臂链式指令仍应本地命中。"""
+        import voice_local_knowledge as local_knowledge
+        from voice_text_pipeline import process_text
+
+        joint = check_simple_action_command("接臂他右臂关节3旋转三十度")
+        self.assertIsNotNone(joint)
+        self.assertEqual(joint[0]["action"], "move_joint")
+        self.assertEqual(joint[0]["arm"], "right")
+        self.assertEqual(joint[0]["joint"], 3)
+
+        self.assertEqual(
+            local_knowledge.repair_asr_text("小溪小溪右臂关节一旋转三十度"),
+            "右臂关节1旋转三十度",
+        )
+        spoken = check_simple_action_command("测手手不起来了吧右臂第四关节旋转二十度")
+        self.assertIsNotNone(spoken)
+        self.assertEqual(spoken[0]["joint"], 4)
+
+        junk_angle = check_simple_action_command("右臂关节3旋转多少三十度")
+        self.assertIsNotNone(junk_angle)
+        self.assertEqual(junk_angle[0]["joint"], 3)
+
+        self.assertEqual(
+            local_knowledge.repair_asr_text("关节3旋转三十度右臂"),
+            "右臂关节3旋转三十度",
+        )
+
+        chain = check_simple_action_command("旁人说话右臂向下十厘米再向左十厘米")
+        self.assertIsNotNone(chain)
+        self.assertEqual(len(chain), 2)
+        self.assertEqual(chain[0]["z"], -0.1)
+        self.assertEqual(chain[1]["x"], -0.1)
+
+        dual = check_simple_action_command(
+            "接臂他右臂向前伸多少五厘米左臂向上十厘米"
+        )
+        self.assertIsNotNone(dual)
+        self.assertEqual(len(dual), 2)
+        self.assertEqual(dual[0]["arm"], "right")
+        self.assertEqual(dual[0]["y"], 0.05)
+        self.assertEqual(dual[1]["arm"], "left")
+        self.assertEqual(dual[1]["z"], 0.1)
+
+        dual_joint = check_simple_action_command(
+            "右臂关节3旋转多少三十度左臂关节1旋转二十度"
+        )
+        self.assertIsNotNone(dual_joint)
+        self.assertEqual(len(dual_joint), 2)
+        self.assertEqual(dual_joint[0]["joint"], 3)
+        self.assertEqual(dual_joint[1]["joint"], 1)
+
+        class DialogueMustNotRun:
+            def run(self, _text):
+                raise AssertionError("joint/chain field command must not call dialogue")
+
+            def stream_reply(self, _text):
+                raise AssertionError("joint/chain field command must not stream dialogue")
+
+        result = process_text("小溪小溪右臂关节一旋转三十度", dialogue=DialogueMustNotRun())
+        self.assertEqual(result[0]["action"], "move_joint")
+        self.assertEqual(result[0]["joint"], 1)
+
+    def test_wake_phrase_strip_does_not_eat_bare_wake_or_faq(self):
+        """纯唤醒词和夹带唤醒词的问答不得被抽成空串。"""
+        import voice_local_knowledge as local_knowledge
+        from voice_wake_runtime import is_wake_ack_only
+
+        self.assertEqual(local_knowledge.repair_asr_text("小溪小溪"), "小溪小溪")
+        self.assertEqual(local_knowledge.repair_asr_text("小西小西"), "小西小西")
+        self.assertTrue(is_wake_ack_only(local_knowledge.repair_asr_text("小溪小溪")))
+        self.assertEqual(
+            local_knowledge.repair_asr_text("你是小溪小溪吗"),
+            "你是小溪小溪吗",
+        )
+        self.assertIsNone(check_simple_action_command("小溪小溪"))
+        self.assertIsNone(check_simple_action_command("你是谁"))
+
     def test_misses_unsupported_or_ambiguous_commands(self):
         cases = [
             "左臂向上10",
@@ -559,17 +706,20 @@ class LocalActionParserTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertIsNone(check_simple_action_command(text))
 
-    def test_misses_home_and_status_spoken_phrases(self):
-        """口语回零/状态查询不应被本地动作解析器转为控制 JSON。"""
-        cases = [
-            "右臂回零",
-            "左臂回到初始位置",
-            "查询右臂状态",
-            "右臂状态",
-        ]
-        for text in cases:
-            with self.subTest(text=text):
-                self.assertIsNone(check_simple_action_command(text))
+    def test_parses_home_and_status_spoken_phrases(self):
+        self.assertEqual(
+            check_simple_action_command("右臂回零"),
+            [{"action": "home", "arm": "right"}],
+        )
+        self.assertEqual(
+            check_simple_action_command("查询右臂状态"),
+            [{"action": "get_status", "arm": "right"}],
+        )
+        self.assertEqual(
+            check_simple_action_command("右臂状态"),
+            [{"action": "get_status", "arm": "right"}],
+        )
+        self.assertIsNone(check_simple_action_command("左臂回到初始位置"))
 
     def test_tracker_records_local_action_parser_duration(self):
         tracker = LatencyTracker(source="test")

@@ -109,27 +109,19 @@ class OnlineVoicePhase1Tests(unittest.TestCase):
         self.assertEqual(result, [expected])
         executor.execute.assert_called_once_with(expected)
 
-    def test_non_template_control_still_reaches_dialogue(self):
-        """Spoken home/status (not local action templates) still go to Dify."""
+    def test_spoken_home_is_parsed_locally(self):
+        """右臂回零位 is a complete home command and must not depend on Dify."""
 
-        class Dialogue:
-            response = [{"action": "home", "arm": "right"}]
+        class DialogueMustNotRun:
+            def run(self, _text):
+                raise AssertionError("local home must bypass Dify")
 
-            def __init__(self):
-                self.calls = []
-
-            def run(self, text):
-                self.calls.append(text)
-                return self.response
-
-        dialogue = Dialogue()
         result = voice_text_pipeline.process_text(
             "右臂回零位",
             executor=None,
-            dialogue=dialogue,
+            dialogue=DialogueMustNotRun(),
         )
-        self.assertEqual(result, dialogue.response)
-        self.assertEqual(dialogue.calls, ["右臂回零位"])
+        self.assertEqual(result, [{"action": "home", "arm": "right"}])
 
     def test_dify_code_fence_output_is_parsed(self):
         self.assertEqual(
@@ -143,9 +135,10 @@ class OnlineVoicePhase1Tests(unittest.TestCase):
         response = [{"action": "home", "arm": "left"}, {"action": "unknown"}]
         with mock.patch.dict(os.environ, {"VOICE_THINKING_ACK": "0"}, clear=False):
             with mock.patch.object(voice_text_pipeline, "run_dialogue", return_value=response):
-                self.assertIsNone(voice_text_pipeline.process_text("回家", executor, speaker))
+                result = voice_text_pipeline.process_text("回家", executor, speaker)
         executor.execute.assert_not_called()
-        speaker.assert_not_called()
+        self.assertEqual(result[0]["reply"], voice_text_pipeline.CLARIFY_UNCLEAR)
+        speaker.assert_called()
 
     def test_valid_command_is_serialized_for_ros_string(self):
         payloads = []

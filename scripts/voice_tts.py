@@ -306,10 +306,38 @@ def _local_reply_phrases() -> list[str]:
     _add("小西收到")
     _add("刚才没有听清有效指令，请靠近麦克风后简短再说一次。")
     try:
-        from voice_llm_client import INTRO_TEXT, LOCAL_CONTROL_CLARIFICATION_REPLY
+        from voice_llm_client import (
+            CLARIFY_NEED_ANGLE,
+            CLARIFY_NEED_ARM,
+            CLARIFY_NEED_DETAIL,
+            CLARIFY_NEED_DISTANCE,
+            CLARIFY_NEED_JOINT,
+            CLARIFY_UNCLEAR,
+            DIFY_UNAVAILABLE_REPLY,
+            INTRO_TEXT,
+            LOCAL_CONTROL_CLARIFICATION_REPLY,
+            ROBOT_BUSY_REPLY,
+            ROBOT_DISABLED_REPLY,
+            ROBOT_DISCONNECTED_REPLY,
+            STATUS_SENT_REPLY,
+        )
 
         _add(INTRO_TEXT)
         _add(LOCAL_CONTROL_CLARIFICATION_REPLY)
+        for phrase in (
+            CLARIFY_NEED_ARM,
+            CLARIFY_NEED_JOINT,
+            CLARIFY_NEED_DISTANCE,
+            CLARIFY_NEED_ANGLE,
+            CLARIFY_NEED_DETAIL,
+            CLARIFY_UNCLEAR,
+            ROBOT_DISABLED_REPLY,
+            ROBOT_DISCONNECTED_REPLY,
+            ROBOT_BUSY_REPLY,
+            STATUS_SENT_REPLY,
+            DIFY_UNAVAILABLE_REPLY,
+        ):
+            _add(phrase)
     except Exception:
         _add(
             "我是一款面向精密装配场景的具身智能双臂机器人，"
