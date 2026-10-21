@@ -726,6 +726,29 @@ class RuntimeSpeakerGateTests(unittest.TestCase):
         self.assertTrue(runtime._speaker_accepts(np.zeros(1600, dtype=np.float32)))
         self.assertEqual(runtime.speaker_verifier.calls, 2)
 
+    def test_session_trust_off_rechecks_every_turn(self):
+        runtime, _ = self.runtime(
+            "enforce", True, session_trust="off", session_timeout=60.0
+        )
+        runtime._begin_or_extend_session()
+        self.assertTrue(runtime._speaker_accepts(np.zeros(1600, dtype=np.float32)))
+        self.assertTrue(runtime._speaker_accepts(np.zeros(1600, dtype=np.float32)))
+        self.assertEqual(runtime.speaker_verifier.calls, 2)
+
+    def test_stop_skips_dialogue_after_asr(self):
+        processed = []
+        runtime, _ = self.runtime("off", True)
+        runtime.asr_callback = lambda *_: runtime.request_stop() or "你好"
+        runtime.process_callback = lambda text, speaker: processed.append(text)
+        try:
+            text = runtime._handle_turn_audio(np.zeros(1600, dtype=np.float32))
+            self.assertEqual(text, "你好")
+            self.assertEqual(processed, [])
+            self.assertFalse(runtime._reply_speaker("还在播"))
+        finally:
+            from voice_tts import clear_playback_stop
+            clear_playback_stop()
+
     def test_followup_capture_does_not_extend_session_before_verification(self):
         now = [0.0]
 

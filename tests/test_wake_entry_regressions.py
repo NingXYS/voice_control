@@ -410,24 +410,21 @@ class TtsModelSelectionTests(unittest.TestCase):
                 os.environ,
                 {
                     "APLAY_DEVICE": "plughw:Generic_1,0",
-                    # Exercise batch play path (subprocess.run).
+                    # 批量播放在 PCM 边界模拟，避免测试打开真实扬声器。
                     "TTS_STREAM_PLAYBACK": "0",
                 },
                 clear=False,
             ),
             mock.patch.object(
-                voice_tts.subprocess,
-                "run",
-                return_value=mock.Mock(returncode=0),
-            ) as run,
+                voice_tts,
+                "_run_aplay_raw",
+                return_value=(0, ""),
+            ) as play,
         ):
             self.assertTrue(voice_tts.tts_speak("好的"))
 
-        command = run.call_args.args[0]
-        self.assertEqual(
-            command[:4],
-            ["aplay", "-q", "-D", "plughw:Generic_1,0"],
-        )
+        play.assert_called_once()
+        self.assertEqual(play.call_args.args[1], "plughw:Generic_1,0")
 
     def test_tts_stream_playback_uses_generate_callback(self):
         chunks = [

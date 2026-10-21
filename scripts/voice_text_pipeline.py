@@ -119,9 +119,19 @@ def _speak_thinking_ack(speaker) -> bool:
         return False
 
 
+def _playback_aborted() -> bool:
+    try:
+        from voice_tts import playback_stop_requested
+    except Exception:
+        return False
+    return bool(playback_stop_requested())
+
+
 def _speak_text(speaker, text: str, *, sentence_tts: bool | None = None) -> None:
     """Speak a reply; optionally split into sentences for lower time-to-first-audio."""
     if speaker is None or not isinstance(text, str) or not text.strip():
+        return
+    if _playback_aborted():
         return
     use_sentences = _sentence_tts_enabled() if sentence_tts is None else sentence_tts
     if not use_sentences or _tts_phrase_ready(text):
@@ -136,6 +146,9 @@ def _speak_text(speaker, text: str, *, sentence_tts: bool | None = None) -> None
         return
     print(f"🗣️ 句级 TTS: {len(parts)} 句", flush=True)
     for index, part in enumerate(parts, start=1):
+        if _playback_aborted():
+            print("🛑 已停止，跳过剩余播报", flush=True)
+            return
         t0 = time.perf_counter()
         speaker(part)
         print(
@@ -605,6 +618,9 @@ def _process_stream_dialogue(dialogue, text, executor=None, speaker=None):
                 if json_mode:
                     continue
                 for sentence in segmenter.feed(payload):
+                    if _playback_aborted():
+                        print("🛑 已停止，跳过剩余流式播报", flush=True)
+                        return []
                     if speaker is not None:
                         if first_sentence_at is None:
                             first_sentence_at = time.perf_counter()
@@ -623,8 +639,11 @@ def _process_stream_dialogue(dialogue, text, executor=None, speaker=None):
         commands = _run_dialogue(dialogue, text)
 
     # Flush trailing prose if we were speaking stream text.
-    if not json_mode and speaker is not None:
+    if not json_mode and speaker is not None and not _playback_aborted():
         for sentence in segmenter.flush():
+            if _playback_aborted():
+                print("🛑 已停止，跳过剩余流式播报", flush=True)
+                return []
             if first_sentence_at is None:
                 first_sentence_at = time.perf_counter()
                 print(

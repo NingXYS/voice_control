@@ -4,7 +4,7 @@ import subprocess
 
 import numpy as np
 
-from voice_subprocess import sanitized_subprocess_env
+from voice_subprocess import parent_bound_command, sanitized_subprocess_env
 
 
 class PersistentAudioSession:
@@ -26,7 +26,7 @@ class PersistentAudioSession:
 
     def _arecord_command(self) -> list[str]:
         """Build the arecord argv for the configured hardware format."""
-        return [
+        command = [
             "arecord",
             "-q",
             "-D",
@@ -40,6 +40,16 @@ class PersistentAudioSession:
             "-t",
             "raw",
         ]
+        buffer_ms = os.environ.get("VOICE_CAPTURE_BUFFER_MS", "").strip()
+        period_ms = os.environ.get("VOICE_CAPTURE_PERIOD_MS", "").strip()
+        if buffer_ms or period_ms:
+            buffer_ms, period_ms = int(buffer_ms), int(period_ms)
+            if not 20 <= buffer_ms <= 500 or not 5 <= period_ms <= buffer_ms / 2:
+                raise ValueError("capture buffer/period milliseconds are invalid")
+            # 避免 arecord 默认的大缓冲把应答尾音和说话开头延迟到丢弃窗口。
+            command.extend(["--buffer-time", str(buffer_ms * 1000),
+                            "--period-time", str(period_ms * 1000)])
+        return command
 
     def _stderr_text(self, process: subprocess.Popen | None) -> str:
         if process is None or process.stderr is None:
@@ -54,7 +64,7 @@ class PersistentAudioSession:
         if self._process is not None:
             return
         process = subprocess.Popen(
-            self._arecord_command(),
+            parent_bound_command(self._arecord_command()),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             bufsize=0,

@@ -213,7 +213,8 @@ SPEAKER_MIN_SPEECH_MS = _configured_int("VOICE_SPEAKER_MIN_SPEECH_MS", 1000)
 SPEAKER_MIN_RMS = _configured_float("VOICE_SPEAKER_MIN_RMS", 0.002)
 # Session trust after a successful verify within a continuous dialogue window:
 # off | after_first (skip re-check) | relaxed (threshold - SPEAKER_SESSION_RELAX).
-SPEAKER_SESSION_TRUST = os.environ.get("VOICE_SPEAKER_SESSION_TRUST", "after_first").strip().lower()
+# Default off: a nearby unenrolled talker must not inherit the owner's pass.
+SPEAKER_SESSION_TRUST = os.environ.get("VOICE_SPEAKER_SESSION_TRUST", "off").strip().lower()
 SPEAKER_SESSION_RELAX = _configured_float("VOICE_SPEAKER_SESSION_RELAX", 0.05)
 # Short anti double-wake after a turn. Combined with POST_TTS_GUARD this is the
 # blackout before the next "小西小西" is accepted. Was 1.5s and felt like "dead"

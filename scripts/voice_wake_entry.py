@@ -386,14 +386,17 @@ def _build_speaker_verifier():
     return verifier
 
 
-def main():
+def main(runtime_factory=None, vad_factory=None):
+    """允许专用入口注入运行时及指令 VAD；默认保留原有行为。"""
     global voice_runtime
     validate_runtime_config()
-    container = build_voice_runtime()
+    container = (runtime_factory or build_voice_runtime)()
     try:
         container.initialize()
         voice_runtime = container
-        if not container.dialogue_backend.configured:
+        if getattr(container, "force_only", False):
+            print("按摩语音仅力度模式：设置、增减和查询目标力。", flush=True)
+        elif not container.dialogue_backend.configured:
             print("⚠️ DIFY_API_KEY is not configured; Dify requests will be skipped")
 
         if AUDIO_FRONTEND_MODE == "ns":
@@ -475,7 +478,7 @@ def main():
         runtime = WakeWordRuntime(
             audio=_build_audio_session(),
             wake_detector=_build_wake_detector(container),
-            vad=CommandVadDetector(
+            vad=(vad_factory or CommandVadDetector)(
                 VAD_MODEL_PATH,
                 VAD_MIN_SPEECH_DURATION_SEC,
                 VAD_SILENCE_DURATION_SEC,
@@ -483,6 +486,7 @@ def main():
             ),
             asr_callback=recognize_audio,
             process_callback=process_text,
+            result_events_in_callback=getattr(container, "emits_result_events", False),
             prompt_callback=make_wake_prompt_callback(container.speak),
             start_timeout=COMMAND_START_TIMEOUT_SEC,
             max_duration=COMMAND_MAX_DURATION_SEC,
@@ -504,6 +508,9 @@ def main():
 
         def _on_signal(signum, _frame):
             _sig_count["n"] += 1
+            if getattr(container, "force_only", False) and hasattr(signal, "alarm"):
+                # 录音读取或模型调用卡住时，首次退出也有硬截止；子进程由父退出保护清理。
+                signal.alarm(3)
             print(
                 f"\n🛑 收到信号 {signum}，正在停止"
                 f"（再按一次强制退出）…",

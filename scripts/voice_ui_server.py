@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import secrets
 import signal
+import sys
 import threading
 import time
 from typing import Any
@@ -26,6 +27,7 @@ except ImportError as exc:  # pragma: no cover - exercised by launcher preflight
 
 from voice_massage_controller import REQUIRED_TEACHING_POINTS, MassageController
 from voice_ui_events import EVENT_PREFIX, redact
+from voice_subprocess import parent_bound_command
 from voice_speaker_verifier import (
     SherpaSpeakerEmbeddingExtractor,
     SpeakerDecision,
@@ -52,6 +54,10 @@ from voice_speaker_dataset import (
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WEB_ROOT = REPO_ROOT / "voice_ui"
+FORCE_ROOT = REPO_ROOT / "VoiceUi"
+sys.path.insert(0, str(FORCE_ROOT))
+from force_telemetry import ForceTelemetry
+from force_console_tail import ConsoleForceTail
 MAX_HTTP_BODY = 16 * 1024
 MAX_EVENT_TEXT = 16 * 1024
 MAX_WS_CLIENTS = 32
@@ -90,6 +96,16 @@ def utc_now() -> str:
 
 def env_flag(name: str, default: str = "0") -> bool:
     return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _constant_time_text_equal(supplied: object, expected: str) -> bool:
+    if not isinstance(supplied, str):
+        return False
+    try:
+        # compare_digest 的 str 模式只支持 ASCII，转字节后仍保持精确比较。
+        return hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8"))
+    except UnicodeError:
+        return False
 
 
 def _bounded_text(value: str, limit: int = MAX_EVENT_TEXT) -> str:
@@ -1079,6 +1095,8 @@ class DashboardState:
         log_limit=500,
         conversation_limit=100,
         speaker_service: SpeakerAdminService | None = None,
+        disconnect_grace_sec: float = 5.0,
+        shutdown_callback=None,
     ):
         self.repo_root = Path(repo_root)
         self.logs: deque[dict[str, Any]] = deque(maxlen=log_limit)
@@ -1088,6 +1106,7 @@ class DashboardState:
         self.phase = "stopped"
         self.runtime_error = ""
         self.process: asyncio.subprocess.Process | None = None
+        self._pgid: int | None = None
         self._expected_stop = False
         self._sequence = 0
         self._lock = asyncio.Lock()
@@ -1096,6 +1115,12 @@ class DashboardState:
         self._lifecycle_lock = asyncio.Lock()
         self._reader_tasks: list[asyncio.Task] = []
         self._wait_task: asyncio.Task | None = None
+        self._closing = False
+        self._disconnect_task: asyncio.Task | None = None
+        self.disconnect_grace_sec = float(disconnect_grace_sec)
+        self._shutdown_callback = shutdown_callback or self._exit_ui
+        console_log = os.environ.get("VOICE_FORCE_LOG_FILE", str(self.repo_root / "VoiceUi" / "massage-live.log"))
+        self.force_telemetry = ForceTelemetry(self.publish, console_tail=ConsoleForceTail(console_log) if console_log else None)
         self.speakers = speaker_service or SpeakerAdminService(self.repo_root)
         self.teaching = {
             "active": False,
@@ -1105,6 +1130,49 @@ class DashboardState:
             "next_part": "",
             "parts": ["左肩", "右肩", "背部", "左腰", "右腰"],
         }
+
+    @staticmethod
+    def _exit_ui():
+        def exit_loop():
+            raise web.GracefulExit()
+        # 在循环回调中退出，避免留下未取出的 Task 异常日志。
+        asyncio.get_running_loop().call_soon(exit_loop)
+
+    def client_connected(self, client):
+        if self._disconnect_task is not None:
+            self._disconnect_task.cancel()
+            self._disconnect_task = None
+        self.clients.add(client)
+
+    def client_disconnected(self, client):
+        self.clients.discard(client)
+        if not self.clients and not self._closing and self._disconnect_task is None:
+            self._disconnect_task = asyncio.create_task(self._exit_after_disconnect())
+
+    async def _exit_after_disconnect(self):
+        await asyncio.sleep(self.disconnect_grace_sec)
+        if self.clients or self._closing:
+            return
+        self._disconnect_task = None
+        self._closing = True
+        await self.stop_runtime()
+        self._shutdown_callback()
+
+    async def shutdown(self):
+        self._closing = True
+        task, self._disconnect_task = self._disconnect_task, None
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await self.stop_runtime()
+        if self.clients:
+            try:
+                await asyncio.wait_for(asyncio.gather(*(
+                    client.close(code=1001, message=b"server shutdown")
+                    for client in tuple(self.clients)
+                ), return_exceptions=True), timeout=2)
+            except asyncio.TimeoutError:
+                pass
 
     def massage_data_dir(self) -> Path:
         configured = os.environ.get("VOICE_MASSAGE_DATA_DIR", "").strip()
@@ -1160,6 +1228,8 @@ class DashboardState:
             await client.close(code=1013, message=b"slow client")
 
     async def publish(self, event_type: str, payload: Any = None, *, turn_id=None):
+        if event_type == "force.command":
+            payload = self.force_telemetry.command(payload) or {}
         event = self.event(event_type, payload, turn_id=turn_id)
         if event_type.startswith("conversation.") or event_type == "action.result":
             self.conversation.append(event)
@@ -1199,9 +1269,9 @@ class DashboardState:
             "pid": self.process.pid if self.process and self.process.returncode is None else None,
             "resources": self.resource_status(),
             "safety": {
-                "robot_command_enabled": env_flag("VOICE_ENABLE_ROBOT_COMMAND"),
-                "massage_enabled": env_flag("VOICE_ENABLE_MASSAGE"),
-                "massage_dry_run": env_flag("VOICE_MASSAGE_DRY_RUN"),
+                "robot_command_enabled": False,
+                "massage_enabled": False,
+                "force_only": True,
             },
             "teaching": dict(self.teaching),
             "speaker": self.speakers.status() if speaker_payload is None else speaker_payload,
@@ -1226,14 +1296,32 @@ class DashboardState:
                 "status": self.status_payload(speaker_payload),
                 "conversation": list(self.conversation),
                 "logs": list(self.logs),
+                "force": self.force_telemetry.snapshot(),
             },
         )
 
+    def _kill_runtime_group(self, pgid: int | None, sig: int) -> None:
+        if not pgid:
+            return
+        try:
+            os.killpg(pgid, sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
     async def start_runtime(self) -> tuple[bool, str]:
         async with self._lock:
+            if self._closing:
+                return False, "UI 正在退出，无法启动语音"
+            if self._wait_task is not None and not self._wait_task.done() and self.process and self.process.returncode is not None:
+                await asyncio.shield(self._wait_task)
             if self.process and self.process.returncode is None:
                 return True, "语音模块已经在运行"
-            launcher = self.repo_root / "scripts" / "run_voice_wake.sh"
+            # A previous stop may have reaped the bash wrapper while Python/aplay
+            # kept speaking in the same session. Reclaim that group first.
+            if self._pgid:
+                self._kill_runtime_group(self._pgid, signal.SIGKILL)
+                self._pgid = None
+            launcher = self.repo_root / "VoiceUi" / "run_force_voice.sh"
             if not launcher.is_file():
                 return False, f"启动脚本不存在：{launcher}"
             env = os.environ.copy()
@@ -1244,6 +1332,7 @@ class DashboardState:
             ):
                 env.pop(name, None)
             env["VOICE_UI_EVENTS"] = "1"
+            env["VOICE_PROCESS_GUARD"] = "1"
             self.runtime_status = "starting"
             self.runtime_error = ""
             self.phase = "starting"
@@ -1251,8 +1340,7 @@ class DashboardState:
             await self._publish_status()
             try:
                 self.process = await asyncio.create_subprocess_exec(
-                    "bash",
-                    str(launcher),
+                    *parent_bound_command(["bash", str(launcher)], enabled=True),
                     cwd=str(self.repo_root),
                     env=env,
                     stdout=asyncio.subprocess.PIPE,
@@ -1265,11 +1353,13 @@ class DashboardState:
                 self.runtime_error = str(exc)
                 await self._publish_status()
                 return False, self.runtime_error
+            self._pgid = int(self.process.pid)
             self._reader_tasks = [
                 asyncio.create_task(self._read_stream(self.process.stdout, "stdout")),
                 asyncio.create_task(self._read_stream(self.process.stderr, "stderr")),
             ]
-            self._wait_task = asyncio.create_task(self._wait_for_exit(self.process))
+            self._wait_task = asyncio.create_task(self._wait_for_exit(
+                self.process, self._pgid, tuple(self._reader_tasks)))
             return True, "语音模块正在启动"
 
     async def _read_stream(self, stream, source: str) -> None:
@@ -1306,11 +1396,20 @@ class DashboardState:
             if text:
                 await self.publish("runtime.log", {"source": source, "message": text})
 
-    async def _wait_for_exit(self, process: asyncio.subprocess.Process) -> None:
-        code = await process.wait()
-        await asyncio.gather(*self._reader_tasks, return_exceptions=True)
-        if self.process is process:
-            self.process = None
+    async def _wait_for_exit(self, process, pgid, readers) -> None:
+        # wait() 可能等继承 stdout 的子进程 EOF；先观察解释器退出，再清理其进程组。
+        while process.returncode is None:
+            await asyncio.sleep(0.02)
+        code = process.returncode
+        self._kill_runtime_group(pgid, signal.SIGKILL)
+        try:
+            await asyncio.wait_for(asyncio.gather(*readers, return_exceptions=True), timeout=1)
+        except asyncio.TimeoutError:
+            pass
+        if self.process is not process:
+            return
+        self.process = None
+        self._pgid = None
         self.phase = "stopped"
         if self._expected_stop or code == 0:
             self.runtime_status = "offline"
@@ -1322,42 +1421,45 @@ class DashboardState:
         await self._publish_status()
 
     async def stop_runtime(self) -> tuple[bool, str]:
+        # 停止全过程串行化，避免旧任务清理时覆盖新进程的句柄与进程组。
         async with self._lock:
             process = self.process
-            if not process or process.returncode is not None:
-                self.runtime_status = "offline"
-                self.phase = "stopped"
-                self.teaching["active"] = False
-                await self._publish_status()
-                return True, "语音模块已经停止"
+            pgid = self._pgid if self._pgid is not None else (
+                int(process.pid) if process is not None else None
+            )
             self._expected_stop = True
-            self.runtime_status = "stopping"
-            await self._publish_status()
-            # Best-effort cooperative quit before killing the process group.
-            if self.teaching.get("active"):
+            if process is not None and process.returncode is None:
+                self.runtime_status = "stopping"
+                await self._publish_status()
+                self._kill_runtime_group(pgid, signal.SIGTERM)
                 try:
-                    MassageController.write_teaching_command_file(
-                        self.teaching_cmd_path(), "quit"
-                    )
-                except OSError:
+                    await asyncio.wait_for(process.wait(), timeout=2)
+                except asyncio.TimeoutError:
                     pass
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-        try:
-            await asyncio.wait_for(process.wait(), timeout=10.0)
-        except asyncio.TimeoutError:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            await process.wait()
-        wait_task = self._wait_task
-        if wait_task is not None and not wait_task.done():
-            await asyncio.shield(wait_task)
-        self.teaching["active"] = False
-        return True, "语音模块已停止；外部机械臂任务可能仍需现场确认或实体急停"
+            self._kill_runtime_group(pgid, signal.SIGKILL)
+            task = self._wait_task
+            if task is not None and not task.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(task), timeout=2)
+                except asyncio.TimeoutError:
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+            if process is not None:
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=1)
+                except asyncio.TimeoutError:
+                    self.runtime_status = "error"
+                    self.runtime_error = "语音进程尚未退出，请再次停止；已保留进程句柄。"
+                    await self._publish_status()
+                    return False, self.runtime_error
+            self.process = None
+            self._pgid = None
+            self.phase = "stopped"
+            self.runtime_status = "offline"
+            self.runtime_error = ""
+            self.teaching["active"] = False
+            await self._publish_status()
+            return True, "语音模块及其录音、播报进程已停止"
 
     async def clear_conversation(self) -> None:
         self.conversation.clear()
@@ -1376,7 +1478,7 @@ def build_app(
     session_ttl_sec: int = 28_800,
     speaker_service: SpeakerAdminService | None = None,
 ) -> web.Application:
-    if not token or len(token) < 16:
+    if not isinstance(token, str) or len(token) < 16:
         raise ValueError("VOICE_UI_TOKEN must contain at least 16 characters")
     public_origin = _validated_public_origin(public_origin)
     state = DashboardState(repo_root=repo_root, speaker_service=speaker_service)
@@ -1387,12 +1489,12 @@ def build_app(
         if not public_origin:
             return
         supplied = request.headers.get("Origin", "").rstrip("/")
-        if not supplied or not hmac.compare_digest(supplied, public_origin):
+        if not supplied or not _constant_time_text_equal(supplied, public_origin):
             raise web.HTTPForbidden(text="请求来源不受信任")
 
     @web.middleware
     async def auth_middleware(request, handler):
-        public = request.path in {"/", "/index.html", "/styles.css", "/app.js", "/api/auth"}
+        public = request.path in {"/", "/index.html", "/styles.css", "/app.js", "/force-chart.js", "/force-chart.css", "/back-atlas.css", "/back-torso-sage.png", "/api/auth"}
         session = None if public else sessions.get(request.cookies.get("voice_ui_session"))
         if not public and session is None:
             raise web.HTTPUnauthorized(text="需要登录")
@@ -1401,7 +1503,7 @@ def build_app(
             check_origin(request)
         if not public and request.method not in {"GET", "HEAD", "OPTIONS"}:
             csrf = request.headers.get("X-CSRF-Token", "")
-            if session is None or not hmac.compare_digest(csrf, session.csrf_token):
+            if session is None or not _constant_time_text_equal(csrf, session.csrf_token):
                 raise web.HTTPForbidden(text="CSRF 校验失败")
         return await handler(request)
 
@@ -1430,15 +1532,37 @@ def build_app(
             raise web.HTTPNotFound()
         return web.FileResponse(WEB_ROOT / name)
 
+    async def force_asset(request):
+        name = request.match_info["name"]
+        # 固定白名单提供静态素材，避免暴露 VoiceUi 中的配置、录音和备份。
+        assets = {"force-chart.js": FORCE_ROOT / "force-chart.js",
+                  "force-chart.css": FORCE_ROOT / "force-chart.css",
+                  "back-atlas.css": FORCE_ROOT / "back-atlas.css",
+                  "back-torso-sage.png": FORCE_ROOT / "assets" / "back-torso-sage.png"}
+        if name not in assets:
+            raise web.HTTPNotFound()
+        return web.FileResponse(assets[name])
+
+    async def force_history(_request):
+        return web.json_response(state.force_telemetry.snapshot())
+
+    async def force_sample_push(request):
+        try:
+            sample = await state.force_telemetry.ingest(await request.json(), source="push")
+        except (ValueError, TypeError) as exc:
+            return web.json_response({"ok": False, "message": str(exc)}, status=400)
+        return web.json_response({"ok": True, "sample": sample})
+
     async def auth(request):
         peer = request.remote or "unknown"
         if not limiter.allowed(peer):
             raise web.HTTPTooManyRequests(text="登录尝试过多，请稍后重试")
         try:
-            supplied = str((await request.json()).get("token", ""))
+            body = await request.json()
+            supplied = body.get("token", "") if isinstance(body, dict) else ""
         except (ValueError, AttributeError):
             supplied = ""
-        if not hmac.compare_digest(supplied, token):
+        if not _constant_time_text_equal(supplied, token):
             limiter.fail(peer)
             raise web.HTTPUnauthorized(text="访问令牌错误")
         limiter.succeed(peer)
@@ -1728,30 +1852,42 @@ def build_app(
             return speaker_error(exc)
 
     async def websocket(request):
+        if state._closing:
+            raise web.HTTPServiceUnavailable(text="UI 正在退出")
         if len(state.clients) >= MAX_WS_CLIENTS:
             raise web.HTTPServiceUnavailable(text="连接数已满")
         ws = web.WebSocketResponse(heartbeat=20, max_msg_size=1024)
         await ws.prepare(request)
-        state.clients.add(ws)
-        speaker_payload = await asyncio.to_thread(state.speakers.status)
-        await ws.send_json(state.snapshot(speaker_payload))
+        state.client_connected(ws)
         try:
+            speaker_payload = await asyncio.to_thread(state.speakers.status)
+            await ws.send_json(state.snapshot(speaker_payload))
             async for message in ws:
                 if message.type == WSMsgType.ERROR:
                     break
+        except ConnectionResetError:
+            pass
         finally:
-            state.clients.discard(ws)
+            state.client_disconnected(ws)
         return ws
 
+    async def startup(_app):
+        state.force_telemetry.start(lambda: bool(state.clients))
+
+    async def shutdown(_app):
+        await state.shutdown()
+
     async def cleanup(_app):
+        await state.force_telemetry.stop()
         await asyncio.to_thread(state.speakers.cancel_enrollment)
-        await state.stop_runtime()
-        for client in tuple(state.clients):
-            await client.close(code=1001, message=b"server shutdown")
+        await state.shutdown()
 
     app.router.add_get("/", index)
     app.router.add_get("/index.html", index)
     app.router.add_get("/{name:styles.css|app.js}", static_file)
+    app.router.add_get("/{name:force-chart.js|force-chart.css|back-atlas.css|back-torso-sage.png}", force_asset)
+    app.router.add_get("/api/force/history", force_history)
+    app.router.add_post("/api/force/telemetry", force_sample_push)
     app.router.add_post("/api/auth", auth)
     app.router.add_post("/api/logout", logout)
     app.router.add_get("/api/session", session_info)
@@ -1783,6 +1919,8 @@ def build_app(
     app.router.add_post("/api/speakers/experiments/{model_id}/activate", speaker_experiment_activate)
     app.router.add_post("/api/speakers/threshold", speaker_set_threshold)
     app.router.add_get("/ws", websocket)
+    app.on_startup.append(startup)
+    app.on_shutdown.append(shutdown)
     app.on_cleanup.append(cleanup)
     return app
 

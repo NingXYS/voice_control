@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>小西语音助手</title>
   <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/force-chart.css">
+  <link rel="stylesheet" href="/back-atlas.css">
 </head>
 <body>
   <div class="ambient ambient--one"></div>
@@ -28,7 +30,7 @@
         <span class="brand-dot"></span>
         <div>
           <strong>小西语音助手</strong>
-          <span>按摩机器人语音控制台</span>
+          <span>按摩力度语音控制台</span>
         </div>
       </div>
       <div class="top-status">
@@ -51,7 +53,7 @@
           <h2>运行资源</h2>
           <div class="resource-list" id="resourceList"></div>
           <div class="divider"></div>
-          <p class="eyebrow">SAFETY</p>
+          <p class="eyebrow">CONTROL MODE</p>
           <div class="safety-card" id="safetyCard"></div>
           <div class="device-card">
             <span>音频输入</span>
@@ -124,7 +126,7 @@
         <div class="voice-copy">
           <p class="eyebrow">REALTIME VOICE</p>
           <h1 id="phaseTitle">等待启动</h1>
-          <p id="phaseHint">启动后，说“小西小西”开始对话</p>
+          <p id="phaseHint">启动后，说“小西小西”，再说“重一点”或“轻一点”</p>
         </div>
         <div class="orb-wrap" id="orbWrap">
           <div class="orb-ring orb-ring--outer"></div>
@@ -161,6 +163,100 @@
         <p class="control-message" id="controlMessage"></p>
       </section>
 
+      <section class="back-panel panel" id="backPanel" aria-labelledby="backTitle">
+        <div class="back-head">
+          <div><p class="eyebrow">BACK ACUPOINTS</p><h2 id="backTitle">背部穴位</h2></div>
+          <span class="back-view-tag">后视图</span>
+        </div>
+        <figure class="back-figure">
+            <svg class="back-atlas" viewBox="0 0 360 410" role="img" aria-labelledby="backAtlasTitle backAtlasDescription">
+              <title id="backAtlasTitle">背部常见穴位示意图</title>
+              <desc id="backAtlasDescription">后视图，标注大椎、肺俞、心俞、膈俞、肝俞、脾俞、肾俞和腰阳关。绿色穴位左右成对，金色穴位位于后正中线；图中位置为示意。</desc>
+              <image href="/back-torso-sage.png" x="62" y="8" width="236" height="394" preserveAspectRatio="none"/>
+              <path class="back-midline" d="M180 74 V351"/>
+              <path class="back-lateral" d="M158 117 V313 M202 117 V313"/>
+              <g class="back-point back-point--midline">
+                <title>大椎 GV14：C7 下方，后正中线</title>
+                <path class="back-leader" d="M180 74 H87"/>
+                <circle class="back-point-halo" cx="180" cy="74" r="7"/>
+                <circle class="back-point-dot" cx="180" cy="74" r="3.6"/>
+                <text class="back-point-name" x="12" y="72">大椎</text>
+                <text class="back-point-code" x="12" y="86">GV14</text>
+              </g>
+              <g class="back-point back-point--paired">
+                <title>肺俞 BL13：T3 下缘水平，后正中线旁开 1.5 骨度分寸</title>
+                <path class="back-leader" d="M202 117 H269"/>
+                <circle class="back-point-halo" cx="158" cy="117" r="7"/>
+                <circle class="back-point-dot" cx="158" cy="117" r="3.6"/>
+                <circle class="back-point-halo" cx="202" cy="117" r="7"/>
+                <circle class="back-point-dot" cx="202" cy="117" r="3.6"/>
+                <text class="back-point-name" x="275" y="115">肺俞</text>
+                <text class="back-point-code" x="275" y="129">BL13</text>
+              </g>
+              <g class="back-point back-point--paired">
+                <title>心俞 BL15：T5 下缘水平，后正中线旁开 1.5 骨度分寸</title>
+                <path class="back-leader" d="M158 153 H87"/>
+                <circle class="back-point-halo" cx="158" cy="153" r="7"/>
+                <circle class="back-point-dot" cx="158" cy="153" r="3.6"/>
+                <circle class="back-point-halo" cx="202" cy="153" r="7"/>
+                <circle class="back-point-dot" cx="202" cy="153" r="3.6"/>
+                <text class="back-point-name" x="12" y="151">心俞</text>
+                <text class="back-point-code" x="12" y="165">BL15</text>
+              </g>
+              <g class="back-point back-point--paired">
+                <title>膈俞 BL17：T7 下缘水平，后正中线旁开 1.5 骨度分寸</title>
+                <path class="back-leader" d="M202 189 H269"/>
+                <circle class="back-point-halo" cx="158" cy="189" r="7"/>
+                <circle class="back-point-dot" cx="158" cy="189" r="3.6"/>
+                <circle class="back-point-halo" cx="202" cy="189" r="7"/>
+                <circle class="back-point-dot" cx="202" cy="189" r="3.6"/>
+                <text class="back-point-name" x="275" y="187">膈俞</text>
+                <text class="back-point-code" x="275" y="201">BL17</text>
+              </g>
+              <g class="back-point back-point--paired">
+                <title>肝俞 BL18：T9 下缘水平，后正中线旁开 1.5 骨度分寸</title>
+                <path class="back-leader" d="M158 225 H87"/>
+                <circle class="back-point-halo" cx="158" cy="225" r="7"/>
+                <circle class="back-point-dot" cx="158" cy="225" r="3.6"/>
+                <circle class="back-point-halo" cx="202" cy="225" r="7"/>
+                <circle class="back-point-dot" cx="202" cy="225" r="3.6"/>
+                <text class="back-point-name" x="12" y="223">肝俞</text>
+                <text class="back-point-code" x="12" y="237">BL18</text>
+              </g>
+              <g class="back-point back-point--paired">
+                <title>脾俞 BL20：T11 下缘水平，后正中线旁开 1.5 骨度分寸</title>
+                <path class="back-leader" d="M202 261 H269"/>
+                <circle class="back-point-halo" cx="158" cy="261" r="7"/>
+                <circle class="back-point-dot" cx="158" cy="261" r="3.6"/>
+                <circle class="back-point-halo" cx="202" cy="261" r="7"/>
+                <circle class="back-point-dot" cx="202" cy="261" r="3.6"/>
+                <text class="back-point-name" x="275" y="259">脾俞</text>
+                <text class="back-point-code" x="275" y="273">BL20</text>
+              </g>
+              <g class="back-point back-point--paired">
+                <title>肾俞 BL23：L2 下缘水平，后正中线旁开 1.5 骨度分寸</title>
+                <path class="back-leader" d="M158 313 H87"/>
+                <circle class="back-point-halo" cx="158" cy="313" r="7"/>
+                <circle class="back-point-dot" cx="158" cy="313" r="3.6"/>
+                <circle class="back-point-halo" cx="202" cy="313" r="7"/>
+                <circle class="back-point-dot" cx="202" cy="313" r="3.6"/>
+                <text class="back-point-name" x="12" y="311">肾俞</text>
+                <text class="back-point-code" x="12" y="325">BL23</text>
+              </g>
+              <g class="back-point back-point--midline">
+                <title>腰阳关 GV3：L4 下方，后正中线</title>
+                <path class="back-leader" d="M180 351 H269"/>
+                <circle class="back-point-halo" cx="180" cy="351" r="7"/>
+                <circle class="back-point-dot" cx="180" cy="351" r="3.6"/>
+                <text class="back-point-name" x="275" y="349">腰阳关</text>
+                <text class="back-point-code" x="275" y="363">GV3</text>
+              </g>
+            </svg>
+          <figcaption class="back-caption"><span><i class="back-legend-dot"></i>左右对称穴位</span><span><i class="back-legend-dot back-legend-dot--midline"></i>正中线穴位</span></figcaption>
+        </figure>
+        <p class="back-note">常见穴位位置示意</p>
+      </section>
+
       <section class="conversation-panel panel">
         <div class="conversation-head">
           <div><p class="eyebrow">CONVERSATION</p><h2>实时对话</h2></div>
@@ -174,8 +270,41 @@
           </div>
         </div>
       </section>
+      <section class="force-panel panel" id="forcePanel" aria-labelledby="forceTitle">
+        <div class="force-head">
+          <div><p class="eyebrow">FORCE RESPONSE</p><h2 id="forceTitle">力度实时响应</h2></div>
+          <span class="force-connection" data-force="connection" role="status">等待力控数据接入</span>
+          <div class="force-toolbar">
+            <select data-force="window" aria-label="曲线时间范围"><option value="30">最近 30 秒</option><option value="60" selected>最近 60 秒</option><option value="180">最近 3 分钟</option></select>
+            <button data-force="pause" type="button" aria-pressed="false">暂停显示</button>
+            <button data-force="clear" type="button">清空视图</button>
+            <button data-force="export" type="button">导出 CSV</button>
+          </div>
+        </div>
+        <div class="force-metrics">
+          <div class="force-metric"><span>请求目标力</span><strong><b data-force="requested_n">—</b> <small>N</small></strong></div>
+          <div class="force-metric"><span>斜坡目标力</span><strong><b data-force="target_n">—</b> <small>N</small></strong></div>
+          <div class="force-metric"><span>控制器反馈力</span><strong><b data-force="measured_n">—</b> <small>N</small></strong></div>
+          <div class="force-metric"><span>反馈 − 斜坡目标</span><strong><b data-force="error">—</b> <small>N</small></strong></div>
+        </div>
+        <div class="force-plot" data-force="plot" tabindex="0" aria-label="时间与力曲线，可用下方复选框选择曲线">
+          <svg data-force="svg" viewBox="0 0 900 220" preserveAspectRatio="none" role="img" aria-label="横坐标时间，纵坐标力，单位牛顿"></svg>
+          <div class="force-empty" data-force="empty"><strong>等待真实力控数据</strong><span>接入后显示目标与实测响应；无数据时不绘制模拟曲线</span></div>
+          <div class="force-hover" data-force="hover" hidden></div>
+        </div>
+        <div class="force-foot">
+          <div class="force-legend">
+            <label><input type="checkbox" data-series="requested_n" checked><i class="force-swatch force-swatch--requested"></i>请求目标</label>
+            <label><input type="checkbox" data-series="target_n" checked><i class="force-swatch force-swatch--target"></i>斜坡目标</label>
+            <label><input type="checkbox" data-series="measured_n" checked><i class="force-swatch force-swatch--measured"></i>控制器反馈</label>
+          </div>
+          <span data-force="measuredStatus">反馈力未接入</span>
+        </div>
+        <p class="force-command" data-force="command">等待语音调力指令 · 指令时刻将显示为竖线</p>
+      </section>
     </main>
   </div>
+  <script src="/force-chart.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

@@ -42,14 +42,14 @@ const state = {
 };
 const phaseCopy = {
   starting: ["正在唤醒系统", "模型与音频设备正在初始化"],
-  waiting_wake_word: ["在等你叫我", "说“小西小西”开始对话"],
-  waiting_speech: ["我在听", "请说出你的问题或指令"],
+  waiting_wake_word: ["在等你叫我", "说“小西小西”，再说“重一点”或“轻一点”"],
+  waiting_speech: ["我在听", "请说力度，例如“力度调到十牛顿”"],
   followup_listening: ["继续说吧", "当前会话无需再次说唤醒词"],
   recording: ["正在聆听", "保持自然语速，说完后稍等片刻"],
   asr: ["正在识别", "小西正在把声音转换成文字"],
-  processing: ["正在理解", "正在查询知识并规划回复"],
+  processing: ["正在处理力度", "正在解析目标力并等待控制端确认"],
   speaking: ["小西正在回答", "你可以在播报结束后继续说话"],
-  stopped: ["等待启动", "启动后，说“小西小西”开始对话"]
+  stopped: ["等待启动", "启动后，说“小西小西”，再说“重一点”或“轻一点”"]
 };
 
 function timeLabel(timestamp) {
@@ -59,13 +59,17 @@ function timeLabel(timestamp) {
 
 function setRuntime(status, error = "") {
   if (!["offline", "starting", "running", "stopping", "error"].includes(status)) status = "error";
+  const previous = state.runtime;
   state.runtime = status;
   const labels = { offline: "后端离线", starting: "正在启动", running: "运行中", stopping: "正在停止", error: "运行异常" };
   ui.runtimePill.className = `runtime-pill is-${status}`;
   ui.runtimePill.querySelector("span").textContent = labels[status] || status;
   const busy = status === "starting" || status === "stopping";
   ui.startBtn.disabled = busy || status === "running";
-  ui.stopBtn.disabled = busy || status === "offline" || status === "error";
+  ui.stopBtn.disabled = status === "stopping" || status === "offline" || status === "error";
+  if (status === "running" && previous !== "running" && (!ui.controlMessage.textContent || ui.controlMessage.textContent.includes("启动"))) {
+    ui.controlMessage.textContent = "语音已就绪，请说完整力度指令，例如把按摩力度调到十牛顿。";
+  }
   if (error) ui.controlMessage.textContent = error;
   if (state.speakerData) renderSpeaker(state.speakerData);
 }
@@ -380,7 +384,7 @@ function renderStatus(data) {
   setRuntime(data.runtime || "offline", data.error || "");
   setPhase(data.phase || "stopped");
   renderTeaching(data.teaching);
-  const labels = { wake: "唤醒模型", asr: "语音识别", vad: "语音检测", tts: "语音合成", speaker: "声纹模型", dify: "Dify 服务" };
+  const labels = { wake: "唤醒模型", asr: "语音识别", vad: "语音检测", tts: "语音合成", speaker: "声纹模型" };
   ui.resourceList.replaceChildren(...Object.entries(labels).map(([key, label]) => {
     const ok = Boolean(data.resources?.[key]);
     const row = document.createElement("div"); row.className = "resource";
@@ -396,9 +400,9 @@ function renderStatus(data) {
     row.append(name, result); return row;
   };
   ui.safetyCard.replaceChildren(
-    safetyRow("机械臂执行", safety.robot_command_enabled ? "已开启" : "安全关闭", safety.robot_command_enabled ? "warn" : "safe"),
-    safetyRow("按摩控制", safety.massage_enabled ? "已开启" : "安全关闭", safety.massage_enabled ? "warn" : "safe"),
-    safetyRow("按摩 Dry-run", safety.massage_dry_run ? "模拟" : "实机模式")
+    safetyRow("语音模式", "仅调节力度", "safe"),
+    safetyRow("按摩程序", "手动独立启动"),
+    safetyRow("目标力范围", "2～70 N")
   );
   ui.audioDevice.textContent = data.resources?.audio_device || "default";
   renderSpeaker(data.speaker || {});
@@ -427,7 +431,9 @@ function updateConversation(event) {
   if (event.type === "conversation.user") {
     state.turns.add(turn);
     const node = messageNode(`user-${turn}`, "user", event.timestamp);
-    node.querySelector(".message__body").textContent = payload.text || "未识别到有效语音";
+    node.querySelector(".message__body").textContent = payload.raw_text && payload.raw_text !== payload.text
+      ? `原始识别：${payload.raw_text}\n处理后：${payload.text}`
+      : payload.text || "未识别到有效语音";
   } else if (event.type === "conversation.assistant.delta") {
     const node = messageNode(`assistant-${turn}`, "assistant", event.timestamp);
     node.classList.add("is-streaming");
@@ -441,7 +447,13 @@ function updateConversation(event) {
     const action = payload.action || "action";
     const node = messageNode(`action-${turn}-${event.sequence}`, "action", event.timestamp);
     const details = Object.entries(payload).filter(([key]) => !["reply"].includes(key)).map(([key, value]) => `${key}: ${typeof value === "object" ? JSON.stringify(value) : value}`).join(" · ");
-    node.querySelector(".message__body").textContent = `动作结果 · ${action}${details ? `\n${details}` : ""}`;
+    const forceResult = ["force_rejected", "force_accepted", "force_status"].includes(action);
+    const forceLabel = action === "force_status" ? "力度查询已确认"
+      : action === "force_accepted" ? "控制端已确认目标力请求"
+      : payload.parsed ? "已理解力度指令，控制端未确认" : "未理解为力度指令";
+    node.querySelector(".message__body").textContent = forceResult
+      ? `${forceLabel}${payload.input_text ? `\n识别文字：${payload.input_text}` : ""}\n${payload.reply || ""}`
+      : `动作结果 · ${action}${details ? `\n${details}` : ""}`;
   }
   ui.turnCount.textContent = `${state.turns.size} 轮`;
   ui.conversation.scrollTop = ui.conversation.scrollHeight;
@@ -454,7 +466,7 @@ function addLog(event) {
   const timing = event.type === "voice.timing"
     ? `耗时 · ${event.payload?.stage || "stage"} · ${JSON.stringify(event.payload || {})}`
     : event.type === "voice.speaker"
-      ? `声纹 · ${event.payload?.accepted ? "匹配" : "未匹配"} · ${event.payload?.display_name || "无"} · score=${event.payload?.score}${event.payload?.threshold != null ? ` / thr=${event.payload.threshold}` : ""}${event.payload?.audio_ms != null ? ` · audio=${event.payload.audio_ms}ms` : ""}${event.payload?.score_mode ? ` · ${event.payload.score_mode}` : ""}${event.payload?.reason === "session_trusted" ? " · trusted" : ""} · ${event.payload?.duration_ms}ms`
+      ? `声纹 · ${event.payload?.accepted ? "匹配" : "未匹配"} · ${event.payload?.display_name || "无"} · score=${event.payload?.score}${event.payload?.threshold != null ? ` / thr=${event.payload.threshold}` : ""}${event.payload?.audio_ms != null ? ` · audio=${event.payload.audio_ms}ms` : ""}${event.payload?.score_mode ? ` · ${event.payload.score_mode}` : ""}${event.payload?.reason ? ` · reason=${event.payload.reason}` : ""} · ${event.payload?.duration_ms}ms`
     : "";
   line.append(document.createTextNode(event.payload?.message || timing || JSON.stringify(event.payload || {})));
   ui.logs.appendChild(line);
@@ -473,10 +485,19 @@ function handleEvent(event) {
   if (event.type === "dashboard.snapshot") {
     resetConversation(); ui.logs.replaceChildren();
     renderStatus(event.payload.status);
+    window.ForceChart?.snapshot(event.payload.force);
     (event.payload.conversation || []).forEach(updateConversation);
     (event.payload.logs || []).forEach(addLog);
+  } else if (event.type.startsWith("force.")) {
+    window.ForceChart?.event(event.type, event.payload);
   } else if (event.type === "runtime.status") {
     setRuntime(event.payload.status, event.payload.error);
+    if (["offline", "error"].includes(event.payload.status)) {
+      setPhase("stopped");
+      document.documentElement.className = "audio-level-0";
+    } else if (event.payload.status === "starting") {
+      setPhase("starting");
+    }
     if ((event.payload?.status || "") !== "running") {
       renderTeaching({
         active: false,
@@ -493,6 +514,19 @@ function handleEvent(event) {
   } else if (event.type.startsWith("conversation.") || event.type === "action.result") {
     if (event.type === "conversation.cleared") resetConversation(); else updateConversation(event);
   } else if (event.type === "runtime.log" || event.type === "runtime.error" || event.type === "voice.timing" || event.type === "voice.speaker") {
+    addLog(event);
+    if (event.type === "voice.speaker" && event.payload?.mode === "enforce" && !event.payload?.accepted) {
+      const reason = event.payload?.reason || "";
+      ui.controlMessage.textContent = reason.includes("too_short")
+        ? "这次语音太短，未通过声纹校验。请说完整句，例如把按摩力度调到十牛顿。"
+        : reason === "speech_level_too_low"
+          ? "这次声音太轻，未通过声纹校验，请靠近麦克风再说。"
+          : "这次声纹未通过，未提交调力请求。请靠近麦克风重试，或在左侧声纹页复测、重新登记。";
+    } else if (event.type === "runtime.error") {
+      ui.controlMessage.textContent = event.payload?.message || "语音处理失败，请查看日志。";
+    }
+  } else if (event.type === "voice.notice") {
+    ui.controlMessage.textContent = event.payload?.message || "";
     addLog(event);
   } else if (event.type === "audio.level") {
     const bucket = Math.max(0, Math.min(6, Math.round(Number(event.payload.rms || 0) * 90)));
@@ -556,6 +590,7 @@ function connectSocket() {
   state.socket = socket;
   socket.onmessage = (message) => { try { handleEvent(JSON.parse(message.data)); } catch (error) { console.error(error); } };
   socket.onclose = (event) => {
+    window.ForceChart?.disconnected();
     if (state.socket !== socket) return;
     state.socket = null;
     if (event.code === 1008 || event.code === 1003) return showLogin("实时连接会话已失效，请重新登录");
@@ -825,7 +860,7 @@ ui.loginForm.addEventListener("submit", async (event) => {
 
 ui.startBtn.addEventListener("click", async () => {
   ui.controlMessage.textContent = "正在启动语音模块…";
-  try { const data = await api("/api/runtime/start", { method: "POST" }); ui.controlMessage.textContent = data.message; }
+  try { const data = await api("/api/runtime/start", { method: "POST" }); if (state.runtime !== "running") ui.controlMessage.textContent = data.message; }
   catch (error) { ui.controlMessage.textContent = error.message; }
 });
 ui.stopBtn.addEventListener("click", async () => {

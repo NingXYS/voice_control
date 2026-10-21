@@ -23,6 +23,7 @@ import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
 import tempfile
 import threading
@@ -31,7 +32,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 from voice_runtime_config import PIPER_MODEL_DIR
-from voice_subprocess import sanitized_subprocess_env
+from voice_subprocess import parent_bound_command, sanitized_subprocess_env
 
 _MODEL_DIR = PIPER_MODEL_DIR
 _TARGET_SR = 44100  # legacy default when forcing host-friendly rate
@@ -41,6 +42,9 @@ _lock = threading.Lock()  # 合成/缓存互斥（播放必须在锁外，否则
 _init_lock = threading.Lock()  # 冷启动互斥：后台预加载与首次 speak 并发安全
 # speak 优先：precache 在句间让出，避免唤醒「我在」被 50+ 句预合成堵死
 _speak_priority = threading.Event()
+# Dashboard/Ctrl+C stop must abort the current aplay instead of finishing TTS.
+_stop_requested = threading.Event()
+_current_aplay_pid = 0
 # phrase -> (pcm_float32_bytes_as_numpy_list_or_array, sample_rate)
 _phrase_cache: OrderedDict[str, tuple] = OrderedDict()
 _CACHE_MAX = max(1, int(os.environ.get("TTS_PHRASE_CACHE_SIZE", "128")))
@@ -745,6 +749,43 @@ def _resample(samples, src_rate: int, dst_rate: int):
     ).astype("float32")
 
 
+def request_playback_stop() -> None:
+    """Abort current and future aplay from a signal handler or UI stop."""
+    _stop_requested.set()
+    pid = int(_current_aplay_pid)
+    if pid > 0:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+
+def clear_playback_stop() -> None:
+    _stop_requested.clear()
+
+
+def playback_stop_requested() -> bool:
+    return _stop_requested.is_set()
+
+
+def _register_aplay(proc: subprocess.Popen) -> None:
+    global _current_aplay_pid
+    try:
+        _current_aplay_pid = int(proc.pid or 0)
+    except (TypeError, ValueError):
+        _current_aplay_pid = 0
+
+
+def _unregister_aplay(proc: subprocess.Popen | None) -> None:
+    global _current_aplay_pid
+    try:
+        pid = int(getattr(proc, "pid", 0) or 0)
+    except (TypeError, ValueError):
+        pid = 0
+    if pid == 0 or _current_aplay_pid == pid:
+        _current_aplay_pid = 0
+
+
 def _aplay_raw_cmd(device: str, rate: int) -> list[str]:
     return [
         "aplay",
@@ -765,31 +806,41 @@ def _aplay_raw_cmd(device: str, rate: int) -> list[str]:
 
 def _run_aplay_raw(pcm: bytes, device: str, rate: int) -> tuple[int, str]:
     # 按 PCM 时长设超时，防止 aplay 卡死导致整个语音主循环无法 ^C
+    if playback_stop_requested():
+        return 130, "stopped"
     n_frames = max(1, len(pcm) // 2)  # S16 mono
     timeout_sec = max(5.0, n_frames / float(max(1, rate)) + 3.0)
     try:
-        completed = subprocess.run(
-            _aplay_raw_cmd(device, rate),
-            input=pcm,
+        proc = subprocess.Popen(
+            parent_bound_command(_aplay_raw_cmd(device, rate)),
+            stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
-            check=False,
-            timeout=timeout_sec,
             env=sanitized_subprocess_env(),
         )
     except FileNotFoundError:
         return 127, "aplay not found"
-    except subprocess.TimeoutExpired:
-        return 124, f"aplay timed out after {timeout_sec:.1f}s"
-    err = (completed.stderr or b"").decode("utf-8", errors="replace").strip()
-    return int(completed.returncode), err
+    _register_aplay(proc)
+    try:
+        try:
+            _stdout, stderr = proc.communicate(input=pcm, timeout=timeout_sec)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            return 124, f"aplay timed out after {timeout_sec:.1f}s"
+        if playback_stop_requested():
+            return 130, "stopped"
+        err = (stderr or b"").decode("utf-8", errors="replace").strip()
+        return int(proc.returncode if proc.returncode is not None else 0), err
+    finally:
+        _unregister_aplay(proc)
 
 
 def _open_aplay_stream(device: str, rate: int):
     """Start aplay reading PCM from stdin for streaming playback."""
     try:
         return subprocess.Popen(
-            _aplay_raw_cmd(device, rate),
+            parent_bound_command(_aplay_raw_cmd(device, rate)),
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
@@ -839,9 +890,17 @@ def _play_streamed_generate(text: str, sid: int, speed: float):
     write_failed = False
 
     if proc is not None and proc.stdin is not None:
+        _register_aplay(proc)
 
         def _callback(samples, progress, _proc=proc):
             nonlocal first_audio_at, write_failed
+            if playback_stop_requested():
+                write_failed = True
+                try:
+                    _proc.kill()
+                except OSError:
+                    pass
+                return 0
             if write_failed or _proc.stdin is None:
                 return 0
             try:
@@ -865,6 +924,7 @@ def _play_streamed_generate(text: str, sid: int, speed: float):
                 proc.wait(timeout=2)
             except Exception:
                 pass
+            _unregister_aplay(proc)
             return None
         except Exception as exc:
             try:
@@ -876,6 +936,7 @@ def _play_streamed_generate(text: str, sid: int, speed: float):
                 proc.wait(timeout=2)
             except Exception:
                 pass
+            _unregister_aplay(proc)
             print(f"⚠️ TTS stream generate failed: {exc}", flush=True)
             return False, None, sample_rate, None
 
@@ -889,12 +950,16 @@ def _play_streamed_generate(text: str, sid: int, speed: float):
             proc.kill()
             proc.wait(timeout=2)
             code = -1
+        finally:
+            _unregister_aplay(proc)
 
         raw_samples = None if audio is None else getattr(audio, "samples", None)
         if raw_samples is None or len(raw_samples) == 0:
             return False, None, sample_rate, first_audio_at
         samples = np.asarray(raw_samples, dtype="float32")
         rate = int(audio.sample_rate) if getattr(audio, "sample_rate", 0) else sample_rate
+        if playback_stop_requested():
+            return False, samples, rate, first_audio_at
         if code == 0 and not write_failed:
             if device_used != primary:
                 print(
@@ -986,28 +1051,37 @@ def _play_pcm(samples, sample_rate: int) -> bool:
 def _play_via_temp_wav(samples, sample_rate: int, device: str | None = None) -> bool:
     import soundfile as sf
 
+    if playback_stop_requested():
+        return False
     playback_device = device or _playback_device()
     wav_path = None
+    proc = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
             wav_path = handle.name
         sf.write(wav_path, samples, int(sample_rate))
         n = max(1, int(getattr(samples, "shape", [len(samples)])[0]))
         timeout_sec = max(5.0, n / float(max(1, int(sample_rate))) + 3.0)
-        completed = subprocess.run(
-            ["aplay", "-q", "-D", playback_device, wav_path],
+        proc = subprocess.Popen(
+            parent_bound_command(["aplay", "-q", "-D", playback_device, wav_path]),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
-            check=False,
-            timeout=timeout_sec,
             env=sanitized_subprocess_env(),
         )
-        return completed.returncode == 0
-    except subprocess.TimeoutExpired:
-        return False
+        _register_aplay(proc)
+        try:
+            proc.communicate(timeout=timeout_sec)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            return False
+        if playback_stop_requested():
+            return False
+        return proc.returncode == 0
     except Exception:
         return False
     finally:
+        _unregister_aplay(proc)
         if wav_path:
             try:
                 os.unlink(wav_path)
@@ -1037,6 +1111,13 @@ _TTS_PHRASE_REPLACEMENTS: tuple[tuple[str, str], ...] = (
     ("缩至", "缩短到"),
     # 多音字（词表曾把公差标成 chai1；条/插为稳妥逼读）
     ("调整", "条整"),
+    # 词典单字「调」是 diao4；力度调节使用 tiao2，只改变合成输入。
+    ("调到", "条到"),
+    ("调节", "条节"),
+    ("调大", "条大"),
+    ("调小", "条小"),
+    ("调高", "条高"),
+    ("调低", "条低"),
     ("公差", "公插"),
     # 连字符整段（日志: Ignore OOV '-'）
     ("感知-决策-执行", "感知决策执行"),
@@ -1076,7 +1157,7 @@ def normalize_tts_text(text: str) -> str:
     - 力矩 → 力、矩（保留原字，顿号拆拍，不用转矩）
     - 位姿 → 卫、姿（「卫」仅第四声 wei4；「为」仍是多音易读错）
     - 缩至 → 缩短到（连读更清晰）
-    - 调整 → 条整；公差 → 公插
+    - 调整 → 条整；调到/调节/调大/调小/调高/调低中的调使用条(tiao2)；公差 → 公插
     - 去掉连字符/括号等 OOV 标点
     """
     if not isinstance(text, str) or not text:
@@ -1122,6 +1203,8 @@ def tts_speak(text):
     English acronyms / polyphones are spoken correctly.
     """
     if not isinstance(text, str) or not text.strip():
+        return False
+    if playback_stop_requested():
         return False
 
     key = text.strip()

@@ -137,13 +137,13 @@ class DashboardStateTests(unittest.IsolatedAsyncioTestCase):
     async def test_fake_runtime_start_event_and_stop(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            scripts = root / "scripts"
+            scripts = root / "VoiceUi"
             scripts.mkdir()
             event = {
                 "type": "voice.phase", "sequence": 1, "timestamp": "now",
                 "turn_id": None, "payload": {"phase": "waiting_wake_word"},
             }
-            (scripts / "run_voice_wake.sh").write_text(
+            (scripts / "run_force_voice.sh").write_text(
                 "#!/usr/bin/env bash\n"
                 f"echo '{EVENT_PREFIX}{json.dumps(event)}'\n"
                 "sleep 30\n",
@@ -157,6 +157,44 @@ class DashboardStateTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(state.phase, "waiting_wake_word")
             await state.stop_runtime()
             self.assertEqual(state.runtime_status, "offline")
+
+    async def test_stop_kills_orphaned_voice_child(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            scripts = root / "VoiceUi"
+            scripts.mkdir()
+            child_pid_file = root / "child.pid"
+            child_script = root / "orphan_child.py"
+            child_script.write_text(
+                "import os, signal, time, pathlib\n"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                f"pathlib.Path({str(child_pid_file)!r}).write_text(str(os.getpid()))\n"
+                "time.sleep(60)\n",
+                encoding="utf-8",
+            )
+            event = {
+                "type": "voice.phase", "sequence": 1, "timestamp": "now",
+                "turn_id": None, "payload": {"phase": "waiting_wake_word"},
+            }
+            (scripts / "run_force_voice.sh").write_text(
+                "#!/usr/bin/env bash\n"
+                f"echo '{EVENT_PREFIX}{json.dumps(event)}'\n"
+                f"{sys.executable} {child_script} &\n"
+                "wait\n",
+                encoding="utf-8",
+            )
+            state = DashboardState(repo_root=root)
+            ok, _ = await state.start_runtime()
+            self.assertTrue(ok)
+            deadline = time.time() + 5
+            while time.time() < deadline and not child_pid_file.exists():
+                await asyncio.sleep(0.05)
+            self.assertTrue(child_pid_file.exists(), "child process did not start")
+            child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+            await state.stop_runtime()
+            self.assertEqual(state.runtime_status, "offline")
+            with self.assertRaises(OSError):
+                os.kill(child_pid, 0)
 
 
 @unittest.skipIf(SessionStore is None, "aiohttp is not installed in the current test interpreter")

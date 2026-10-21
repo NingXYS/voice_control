@@ -62,9 +62,27 @@ class PipelineStreamTests(unittest.TestCase):
 
     def test_speak_text_splits_sentences(self):
         spoken = []
+        from voice_tts import clear_playback_stop
+        clear_playback_stop()
         with mock.patch.dict(os.environ, {"VOICE_SENTENCE_TTS": "1"}):
             _speak_text(spoken.append, "第一句。第二句。")
         self.assertEqual(spoken, ["第一句。", "第二句。"])
+
+    def test_speak_text_stops_remaining_sentences(self):
+        spoken = []
+        from voice_tts import clear_playback_stop, request_playback_stop
+        clear_playback_stop()
+
+        def speak(part):
+            spoken.append(part)
+            request_playback_stop()
+
+        try:
+            with mock.patch.dict(os.environ, {"VOICE_SENTENCE_TTS": "1"}):
+                _speak_text(speak, "第一句。第二句。第三句。")
+            self.assertEqual(spoken, ["第一句。"])
+        finally:
+            clear_playback_stop()
 
     def test_stream_dialogue_sentence_tts(self):
         spoken = []

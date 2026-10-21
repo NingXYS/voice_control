@@ -1,0 +1,7 @@
+force_bridge.env
+.backups/
+.build/
+__pycache__/
+*.pyc
+.deploy_*/
+*.log

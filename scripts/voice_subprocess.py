@@ -5,6 +5,8 @@ import json
 import os
 import re
 import shlex
+import sys
+from pathlib import Path
 from typing import Mapping, Sequence
 
 
@@ -78,3 +80,16 @@ def parse_command_json(value: str, *, legacy: str = "", default: Sequence[str]) 
 
 def shell_join(command: Sequence[str]) -> str:
     return " ".join(shlex.quote(str(item)) for item in command)
+
+
+def parent_bound_command(command: Sequence[str], *, enabled: bool | None = None) -> list[str]:
+    """Linux 子进程绑定当前父进程；其他平台及未启用的旧入口保持原命令。"""
+    if enabled is None:
+        enabled = os.environ.get("VOICE_PROCESS_GUARD") == "1"
+    argv = [str(part) for part in command]
+    if not enabled or sys.platform != "linux":
+        return argv
+    guard = Path(__file__).resolve().parent.parent / "VoiceUi" / "process_guard.py"
+    if not guard.is_file():
+        raise RuntimeError(f"进程退出保护文件缺失：{guard}")
+    return [sys.executable, str(guard), str(os.getpid()), *argv]

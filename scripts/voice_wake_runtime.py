@@ -195,12 +195,14 @@ class WakeWordRuntime:
         speaker_verify_mode: str = "off",
         speaker_session_trust: str = "off",
         speaker_session_relax: float = 0.05,
+        result_events_in_callback: bool = False,
     ):
         self.audio = audio
         self.wake_detector = wake_detector
         self.vad = vad
         self.asr_callback = asr_callback
         self.process_callback = process_callback
+        self.result_events_in_callback = bool(result_events_in_callback)
         self.prompt_callback = prompt_callback
         self.start_timeout = float(start_timeout)
         self.max_duration = float(max_duration)
@@ -264,6 +266,14 @@ class WakeWordRuntime:
 
     def request_stop(self):
         self._stop = True
+        # Cooperative SIGTERM only sets this flag. Also abort aplay so the
+        # current sentence does not keep talking until the UI SIGKILLs us.
+        try:
+            from voice_tts import request_playback_stop
+
+            request_playback_stop()
+        except Exception:
+            pass
 
     def _discard_stale_audio(self) -> int:
         discard = getattr(self.audio, "discard_buffered", None)
@@ -281,6 +291,8 @@ class WakeWordRuntime:
             reset_wake()
 
     def _reply_speaker(self, text):
+        if self._stop:
+            return False
         previous = self.state
         self._set_state(VoiceState.SPEAKING)
         try:
@@ -295,6 +307,17 @@ class WakeWordRuntime:
                 self.clock() + self.post_tts_guard,
             )
             self._set_state(previous)
+
+    def _notify(self, message: str, reason: str, *, speak=False, turn_id=None) -> None:
+        self.events.emit("voice.notice", {"message": message, "reason": reason}, turn_id=turn_id)
+        print(f"语音提示: {reason}: {message}", flush=True)
+        if speak and not self._stop:
+            self.events.emit("conversation.assistant.done", {"text": message, "commands": []},
+                             turn_id=turn_id or new_turn_id())
+            try:
+                self._reply_speaker(message)
+            except Exception as exc:
+                self.events.emit("runtime.error", {"message": f"语音提示播报失败: {exc}"})
 
     def _accept_wake_audio(self, chunk) -> bool:
         """Feed KWS; support bool legacy detectors and WakeCandidate two-stage."""
@@ -478,6 +501,8 @@ class WakeWordRuntime:
                     break
 
         if self._stop or not collected:
+            if not self._stop:
+                self._notify("等待说话超时，未收到有效语音，请重新唤醒后说完整力度指令。", "speech_start_timeout")
             return None
         result = np.concatenate(collected).astype(np.float32, copy=False)
         ended_at = self.clock()
@@ -490,8 +515,13 @@ class WakeWordRuntime:
             "speech_ms": round(speech_ms),
             "audio_ms": round(result.size / self.sample_rate * 1000.0),
             "end_reason": end_reason,
+            "rms": round(float(np.sqrt(np.mean(result * result))), 6),
+            "peak": round(float(np.max(np.abs(result))), 6),
+            "clipped_percent": round(float(np.mean(np.abs(result) >= 0.999)) * 100, 3),
         }
         self.events.emit("voice.timing", metrics)
+        if metrics["clipped_percent"] >= 0.5:
+            self._notify("麦克风输入存在削波，请降低麦克风硬件增益后重试。", "capture_clipped")
         print(
             f"⏱️ 收音耗时: wait_ms={metrics['wait_ms']} "
             f"speech_ms={metrics['speech_ms']} audio_ms={metrics['audio_ms']} "
@@ -524,6 +554,7 @@ class WakeWordRuntime:
                 f"(audio={audio.size / self.sample_rate:.2f}s)",
                 flush=True,
             )
+            raw_text = text
             if text:
                 repaired = repair_asr_text(text)
                 if repaired and repaired != text.strip() and _log_transcripts_enabled():
@@ -543,10 +574,13 @@ class WakeWordRuntime:
 
             self.events.emit(
                 "conversation.user",
-                {"text": text or "", "recognized": bool(text)},
+                {"text": text or "", "raw_text": raw_text, "recognized": bool(text)},
                 turn_id=turn_id,
             )
             self._set_state(VoiceState.PROCESSING)
+            if self._stop:
+                print("🛑 已停止，跳过本轮对话与播报", flush=True)
+                return text
 
             if text and is_session_end_phrase(text, self.end_phrases):
                 print("🔇 收到结束语，结束连续会话", flush=True)
@@ -579,7 +613,8 @@ class WakeWordRuntime:
                 process_started = time.perf_counter()
                 result = self.process_callback(text, self._reply_speaker)
                 process_ms = (time.perf_counter() - process_started) * 1000.0
-                emit_result_events(result, turn_id=turn_id)
+                if not self.result_events_in_callback:
+                    emit_result_events(result, turn_id=turn_id)
                 self.events.emit(
                     "voice.timing",
                     {"stage": "dialogue_and_tts", "duration_ms": round(process_ms)},
@@ -591,7 +626,7 @@ class WakeWordRuntime:
                     flush=True,
                 )
             else:
-                emit_result_events(None, turn_id=turn_id)
+                self._notify("刚才没有听清，请再说一次力度指令。", "asr_empty", speak=True, turn_id=turn_id)
                 print("🤖 处理输出: <未处理>", flush=True)
         except Exception as exc:
             self.events.emit(
@@ -599,7 +634,8 @@ class WakeWordRuntime:
                 {"message": f"Voice turn failed: {exc}"},
                 turn_id=turn_id,
             )
-            print(f"⚠️ Voice turn failed: {exc}")
+            print(f"⚠️ Voice turn failed: {exc}", flush=True)
+            self._notify("本轮语音处理失败，请查看日志后再试。", "turn_failed", speak=True, turn_id=turn_id)
         finally:
             reset_current_turn(turn_token)
         return text
@@ -739,9 +775,28 @@ class WakeWordRuntime:
         accepted = bool(payload["accepted"])
         if accepted and self.speaker_session_trust != "off":
             self._speaker_trusted = True
+        if not accepted:
+            reason = str(payload.get("reason", "speaker_mismatch"))
+            if "too_short" in reason:
+                minimum = getattr(self.speaker_verifier, "min_speech_ms", 1000) / 1000
+                message = f"这次语音太短，声纹校验至少需要{minimum:g}秒。请说完整句，例如把按摩力度调到十牛顿。"
+            elif reason == "speech_level_too_low":
+                message = "这次声音太轻，未通过声纹校验，请靠近麦克风再说。"
+            elif reason in {"verifier_error", "invalid_audio"}:
+                message = "这次声纹校验失败，请查看日志后再试。"
+            else:
+                message = "这次声纹未通过，未提交调力请求。请靠近麦克风重试，或在声纹页复测、重新登记。"
+            # 拒绝仍然拒绝，只补上反馈，不降低阈值或跳过声纹校验。
+            self._notify(message, reason, speak=True)
         return accepted
 
     def run(self):
+        try:
+            from voice_tts import clear_playback_stop
+
+            clear_playback_stop()
+        except Exception:
+            pass
         self.audio.open()
         try:
             while not self._stop:
