@@ -1,102 +1,221 @@
-# Voice Control
+# Voice Control — Multi-Scenario Robot Voice Interaction
 
-面向 ROS 2 / MoveIt 机器人的语音交互与动作控制项目。
+> **ROS 2 / MoveIt 2 · Offline KWS / VAD / ASR · Dify / LLM · Local TTS · Speaker Verification · Robot Command Validation**
 
-当前默认分支为 **`agent/online-voice-dify`**。该分支提供一条完整的语音链路：
+一个面向真实机械臂场景的语音交互与控制工程。仓库采用 **branch-oriented** 方式管理：不同分支对应不同机械臂、部署平台或演示场景；公共能力围绕“唤醒 → 识别 → 意图路由 → 安全校验 → 语音反馈 → 机器人执行”逐步演进。
 
-```text
-麦克风采集
-  → 音频格式适配 / 前端处理
-  → 离线唤醒词检测（KWS）
-  → VAD 语音分段
-  → ASR 语音识别
-  → 本地知识与动作意图解析 / Dify 在线工作流
-  → TTS 语音合成
-  → ROS 2 机器人动作发布与执行反馈
+这个仓库不是单一 Demo，而是一组已经用于 **机械臂控制、装配演示、展览连续对话、单臂按摩、声纹验证和力值交互** 的工程实现。
+
+---
+
+## Why this project
+
+机器人语音控制真正困难的部分不只是“ASR + LLM”，还包括：
+
+- 嘈杂现场下稳定唤醒，减少误唤醒和 TTS 自激活；
+- 不同麦克风采样率、声道和 Linux 音频设备适配；
+- 本地知识、固定动作与在线大模型之间的低延迟路由；
+- 大模型输出到机械臂动作之间的 **fail-closed Schema 校验**；
+- 动作执行确认、持续对话、重复唤醒和播放后的音频缓冲治理；
+- 实机功能默认关闭，支持 dry-run、权限开关和外部控制器安全边界；
+- 针对按摩等人与机器人接触场景增加身份验证、力度交互和 UI 可视化。
+
+---
+
+## Repository map
+
+> 当前 GitHub 默认分支 `agent/online-voice-dify` 是通用语音架构基线。较新的产品/场景能力主要位于下面两个场景分支。
+
+| Branch | 场景 / 机械臂 | 主要能力 | 推荐阅读 |
+|---|---|---|---|
+| **[`agent/voice-online-import`](https://github.com/NingXYS/voice_control/tree/agent/voice-online-import)** | **单臂按摩 / x86_64 交付环境** | 按摩点位示教、五级力度、Web UI、声纹验证、力值实时反馈与语音调节、部署验收 | ⭐ 产品化程度最高的按摩场景 |
+| **[`huayan-robot-arm`](https://github.com/NingXYS/voice_control/tree/huayan-robot-arm)** | **华沿机械臂 / 装配 / 展览演示** | 装配语音控制、连续对话、重复唤醒、双阶段唤醒验证、流式 TTS、展会抗噪调优 | ⭐ 机械臂 + 展览交互场景 |
+| **`agent/online-voice-dify`** | 通用 ROS 2 语音基线 | 离线 KWS、VAD、Paraformer ASR、本地知识、Dify、Kokoro/Piper TTS、ROS 动作发布 | 公共架构与模块边界 |
+| `agent/kokoro-female-tts` | TTS 专项 | Kokoro 多语言女声音色、离线 TTS backend | TTS 演进历史 |
+| `agent/offline-wake-word` | 离线唤醒专项 | KWS / VAD / ASR / 音频会话稳定化 | 唤醒链路演进历史 |
+| `feature/action-execution-ack` | 动作反馈专项 | 动作执行前确认语与回归测试 | 已吸收到后续分支 |
+| `feature/mic-capture-adaptation*` | 音频硬件实验 | USB 麦克风采集格式和 ALSA 适配实验 | 历史实验分支 |
+| `main` | 初始 ROS 2 / MoveIt 基线 | C++ robot controller + 基础语音控制 | 最小历史基线 |
+
+---
+
+## System architecture
+
+```mermaid
+flowchart LR
+    U[User] --> MIC[Microphone]
+    MIC --> AF[Audio Capture / Format Adapter]
+    AF --> KWS[Offline KWS]
+    KWS --> VAD[VAD / Command Segmentation]
+    VAD --> ASR[Local ASR]
+    ASR --> ROUTE[Text Routing]
+
+    ROUTE --> LOCAL[Local Knowledge / Local Actions]
+    ROUTE --> CLOUD[Dify / Online LLM]
+
+    LOCAL --> VALID[Fail-Closed Command Validation]
+    CLOUD --> VALID
+
+    VALID --> TTS[Local TTS / Streaming TTS]
+    VALID -->|optional| ROS[ROS 2 robot_command]
+    ROS --> CTRL[External Robot Controller]
+    CTRL --> ARM[Robot Arm]
+
+    TTS --> SPK[Speaker]
+    SPK --> U
 ```
 
-项目中的不同分支承担不同模块、实验或部署形态。开始开发前，请先阅读下方的[分支职责](#分支职责)。
+公共语音状态机包含待唤醒、等待说话、录音、处理、播报和停止状态；华沿场景进一步增加连续会话的 `FOLLOWUP_LISTENING`。提示音和 TTS 播放后会清理麦克风残留 PCM、执行 guard，并重置 KWS/VAD，降低机器人“听见自己”造成的误触发。
 
-## 主要能力
+---
 
-- ROS 2 Humble + `ament_cmake` 工程。
-- 基于 MoveIt 的机器人控制基础链路。
-- 离线唤醒词、VAD、ASR 和音频会话管理。
-- 本地机器人知识库与本地动作指令解析。
-- Dify Workflow 在线问答与意图路由。
-- Kokoro / Piper 等 TTS 模型适配。
-- USB 麦克风采集格式转换、设备探测与录音 smoke test。
-- 动作执行前快速确认与执行结果反馈。
-- KWS 数据集评测、参数扫描和回归测试。
-- 在线运行环境与机器人控制环境可分离构建。
+## Featured scenario 1 — Massage robot
 
-## 分支职责
+分支：`agent/voice-online-import`
 
-| 分支 | 负责模块 / 内容 | 建议用途 |
-|---|---|---|
-| `main` | 最初的 ROS 2 + MoveIt 基线；包含 C++ `robot_controller` 和基础语音入口 | 查看最小机器人控制基线，不建议用于完整语音系统部署 |
-| `agent/offline-wake-word` | 离线唤醒词、VAD、ASR、音频会话和唤醒启动稳定性 | 研究或调试纯离线唤醒链路 |
-| `agent/kokoro-female-tts` | Kokoro 多语言 TTS、女性音色、语音前后端解耦和双运行时测试 | 调试 TTS 音色、合成性能和离线语音体验 |
-| `agent/online-voice-dify` | **当前默认集成分支**；整合离线唤醒、ASR、本地知识、Dify、TTS、动作执行、麦克风适配和测试 | 日常开发、联调和部署的首选分支 |
-| `agent/voice-online-import` | 面向 Ubuntu 22.04 x86_64 的迁移包；包含在线服务、Web 仪表盘、部署验收、按摩/装配扩展和完整模型说明 | 目标机迁移、交付包制作和 Web UI 部署 |
-| `feature/action-execution-ack` | 动作执行确认语、动作结果反馈和相应回归测试 | 查看动作确认能力的独立开发历史；默认分支已包含对应能力 |
-| `feature/mic-capture-adaptation` | 麦克风硬件采集格式适配的早期实验 | 仅用于追溯早期音频适配方案 |
-| `feature/mic-capture-adaptation-safe` | 对音频会话进行更小范围、更保守的麦克风适配实验 | 仅用于追溯安全改造思路 |
-| `huayan-robot-arm` | 华沿机械臂、装配动作、动作控制接口、迁移验收及更完整的机器人场景集成 | 机械臂专项联调；启用实机前必须补齐安全护栏 |
+该分支已经从最初的在线语音迁移包发展成单臂按摩交互系统。
 
-> `feature/mic-capture-adaptation*` 等实验分支已经落后于默认分支，且与默认分支存在分叉。新功能应优先基于 `agent/online-voice-dify` 开发，旧分支主要用于追溯设计过程。
+### Massage workflow
 
-## 仓库结构
+- 支持左肩、右肩、背部、左腰、右腰等示教点位；
+- 支持“很轻 / 轻一点 / 适中 / 重一点 / 很重”等五级力度；
+- 开始按摩前复述并锁定位置和力度参数；
+- 支持状态查询、开始确认、停止与背景音乐；
+- 真机执行与语音系统解耦，动作权限默认关闭。
+
+### Speaker verification
+
+声纹链路支持 `off / shadow / enforce` 三种模式：
+
+- `shadow`：记录识别结果但不阻断动作，用于现场数据评估；
+- `enforce`：在 ASR / 动作执行前拦截未通过身份验证的用户；
+- 支持多用户登记、历史数据归档、候选模型评估与回滚；
+- 模型评估包含 FAR、FRR 和 P95 延迟门槛，避免“只看单次相似度”。
+
+声纹属于操作权限辅助层，不代替实体急停，也不防御授权用户录音回放。
+
+### Force-control UI
+
+`VoiceUi/` 将语音交互接入现有 Linux 力控程序：
+
+- 支持“力度调到 10 牛顿”“重一点”“减 3 牛顿”“查询力度”等受限口语；
+- 目标力范围按控制程序约束为 **2–70 N**，越界拒绝而不是静默裁剪；
+- 保留原控制器 **3 N/s** 斜坡逻辑；
+- UI 可同时显示请求目标、斜坡目标、控制反馈和误差曲线；
+- 语音桥只允许 status / force / adjust，不开放上电、启动和复位；
+- 网络、鉴权、反馈过期、故障和进程生命周期均有独立回归测试。
+
+这部分体现了项目从“语音命令”向“**语音 + 实时控制反馈 + 安全边界**”的扩展。
+
+---
+
+## Featured scenario 2 — Huayan robot arm / exhibition
+
+分支：`huayan-robot-arm`
+
+该分支针对华沿机械臂、装配和展览现场做了专项适配：
+
+- 机械臂产品知识与本地意图扩展；
+- 装配语音控制与 dry-run 测试；
+- 多轮持续会话：一次唤醒后可继续说话，无需每轮重复唤醒；
+- 支持“退出 / 再见”等显式结束会话；
+- 对重复唤醒词和 ASR 同音误识别做归一化；
+- 低阈值 KWS 候选可进入二级唤醒验证，高置信候选直接通过；
+- 针对展览环境优化首字吞音、重复唤醒、环境人声与 TTS 回灌问题；
+- 增加流式文本分段和 TTS 路径，降低长回复的体感延迟。
+
+---
+
+## Core modules
 
 ```text
 voice_control/
-├── CMakeLists.txt                 # ROS 2 构建与安装规则
-├── package.xml                    # ROS 2 包元数据与依赖
 ├── scripts/
-│   ├── run_voice_wake.sh          # 运行前检查与主启动脚本
-│   ├── setup_voice_wake.sh        # Python venv + colcon 独立构建
-│   ├── voice_wake_entry.py        # ROS 2 语音入口
-│   ├── voice_wake_runtime.py      # 语音运行时编排
-│   ├── voice_audio_frontend.py    # 音频前端处理
-│   ├── voice_capture_adapter.py   # 硬件采集格式适配
-│   ├── voice_command_vad.py       # 命令段 VAD
-│   ├── voice_asr_backend.py       # ASR 后端抽象
-│   ├── voice_llm_client.py        # 在线 LLM / Dify 客户端
-│   ├── voice_local_knowledge.py   # 本地知识与本地动作解析
-│   ├── voice_tts.py               # TTS 实现
-│   ├── voice_robot_executor.py    # 机器人动作发布
-│   ├── voice_ros2_dify_v06.yml    # Dify Workflow DSL
-│   ├── voice_capture_smoke.py     # 麦克风采集诊断
-│   ├── eval_kws.py                # KWS 离线评测
-│   └── env.ugreen.example         # UGREEN 麦克风示例配置
-├── knowledge_base/                # 机器人本地知识库
-├── models/                        # KWS / VAD / ASR / TTS 模型资源
-├── requirements/                  # Python 依赖
-├── tests/                         # 单元测试与回归测试
-├── docs/                          # 运行与测试文档
-└── move_section.md/               # 迁移和唤醒链路设计资料
+│   ├── voice_wake_entry.py        # runtime entry
+│   ├── voice_wake_runtime.py      # wake / VAD / turn state machine
+│   ├── voice_audio_session.py     # persistent microphone session
+│   ├── voice_capture_adapter.py   # sample-rate / channel conversion
+│   ├── voice_audio_frontend.py    # passthrough / basic / NS frontend
+│   ├── voice_asr_backend.py       # local ASR backend
+│   ├── voice_text_pipeline.py     # local-first routing
+│   ├── voice_dialogue_backend.py  # Dify workflow backend
+│   ├── voice_command_validation.py# strict command schema
+│   ├── voice_robot_executor.py    # ROS 2 command publisher
+│   ├── voice_tts.py               # local TTS
+│   └── ...
+├── knowledge_base/                # robot-specific local knowledge
+├── models/                        # KWS / VAD / ASR / TTS assets
+├── tests/                         # unit & regression tests
+└── docs/                          # architecture and engineering notes
 ```
 
-不同分支的目录会有所变化。例如 `agent/voice-online-import` 还包含 `voice_ui/`、`deploy/`、`migration_acceptance/`、`datasets/` 等交付与部署目录。
+更多架构细节见 [docs/architecture.md](docs/architecture.md)。
 
-## 环境要求
+---
 
-默认分支的启动脚本按以下环境设计：
+## Safety by design
 
-- Ubuntu 22.04。
-- ROS 2 Humble。
-- 系统 Python 3.10，路径为 `/usr/bin/python3`。
-- `python3.10-venv`。
-- `colcon` 与 ROS 2 构建工具。
-- ALSA 工具，例如 `arecord`、`aplay`。
-- 可访问的 Dify Workflow API。
-- 完整的 KWS、VAD、ASR 和 TTS 模型文件。
+LLM 或 Dify 的输出不会直接驱动机械臂。
 
-机器人控制部分还依赖 MoveIt、TF2、`nlohmann_json` 以及仓库所使用的机器人消息/控制包。
+允许的动作必须先经过严格 Schema 校验。例如通用基线只接受：
 
-## 快速开始
+```text
+home
+get_status
+move_joint
+move_cartesian
+```
 
-### 1. 获取默认分支
+校验原则：
+
+- action 白名单；
+- arm 白名单；
+- 字段集合必须完全匹配；
+- 数值必须有限；
+- 不自动补字段、不猜默认值、不修复危险参数；
+- 命令批次中任意一项非法，整批拒绝；
+- 发布前再次校验；
+- 真机执行开关默认关闭。
+
+语音层不替代机器人控制器的关节限位、速度限制、工作空间、碰撞检测、急停和功能安全。
+
+---
+
+## Audio & wake engineering
+
+项目对现场语音问题做了较多工程化处理：
+
+- USB 麦克风 48 kHz / stereo → 16 kHz / mono 格式适配；
+- ALSA / PulseAudio / PipeWire 设备诊断；
+- KWS 参数扫描与离线评测；
+- VAD pre-roll，减少首字被截断；
+- TTS 后清空采集缓存；
+- post-TTS guard；
+- 重置唤醒器，降低扬声器回声误唤醒；
+- 展览场景连续会话与二级唤醒验证；
+- 按摩力度短句使用独立的短时 VAD 参数。
+
+默认唤醒词为“小西小西 / 小溪小溪”系列配置，具体以对应分支环境变量和模型关键词文件为准。
+
+---
+
+## Tech stack
+
+| Area | Technologies |
+|---|---|
+| Robotics | ROS 2 Humble, MoveIt 2, TF2, `rclpy` / `rclcpp`, JSON command bridge |
+| Voice AI | sherpa-onnx KWS, Silero VAD, Paraformer ASR, Kokoro / Matcha / Piper TTS |
+| LLM / Agent | Dify Workflow, local intent routing, robot knowledge base |
+| Audio | ALSA, PulseAudio / PipeWire, PCM processing, resampling, noise-suppression frontend |
+| Security / Safety | fail-closed schema validation, dry-run defaults, speaker verification, permission gates |
+| UI / Integration | Python Web UI, WebSocket events, Linux C++ force-control bridge |
+| Engineering | Python, C++, CMake, colcon, unittest / pytest-style regression tests |
+
+---
+
+## Quick start — baseline branch
+
+> 场景分支有自己的部署文件。下面仅用于 `agent/online-voice-dify` 通用基线。
 
 ```bash
 git clone https://github.com/NingXYS/voice_control.git
@@ -104,303 +223,83 @@ cd voice_control
 git checkout agent/online-voice-dify
 ```
 
-### 2. 安装基础系统依赖
+环境建议：
 
-确保已经安装 ROS 2 Humble，并至少准备：
+- Ubuntu 22.04
+- ROS 2 Humble
+- Python 3.10
+- `python3.10-venv`
+- `colcon`
+- ALSA tools
 
-```bash
-sudo apt update
-sudo apt install -y python3.10-venv alsa-utils
-```
-
-根据机器人工作空间实际情况安装 MoveIt、TF2、`colcon` 和其他 ROS 2 依赖。
-
-### 3. 配置 Dify
-
-在 Dify 中导入并发布：
-
-```text
-scripts/voice_ros2_dify_v06.yml
-```
-
-设置运行环境变量：
-
-```bash
-export DIFY_BASE_URL="http://localhost:80"
-export DIFY_API_KEY="你的 Workflow API Key"
-export DIFY_INPUT_KEY="text"
-export DIFY_OUTPUT_KEY="result"
-```
-
-不要把真实 API Key 写入仓库或提交到 Git。
-
-### 4. 准备模型
-
-默认路径如下：
-
-```text
-models/
-├── sherpa-onnx-paraformer-zh-2023-09-14/
-├── sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20/
-├── vad/silero_vad.onnx
-└── tts/kokoro-multi-lang-v1_0/
-```
-
-也可以通过环境变量覆盖：
-
-```bash
-export PARAFORMER_MODEL_DIR=/path/to/asr-model
-export WAKE_MODEL_DIR=/path/to/kws-model
-export VAD_MODEL_PATH=/path/to/silero_vad.onnx
-export TTS_MODEL_DIR=/path/to/tts-model
-```
-
-### 5. 创建隔离环境并构建
+构建独立在线 overlay：
 
 ```bash
 bash scripts/setup_voice_wake.sh
 ```
 
-脚本会：
-
-1. 使用 `/usr/bin/python3` 创建 `.venv_online`。
-2. 安装 `requirements/voice-wake.txt` 中的依赖。
-3. 使用独立的 `build_online/`、`install_online/` 和 `log_online/` 目录构建。
-4. 默认关闭 C++ `robot_controller` 的在线 overlay 构建，避免与机器人主工作空间耦合。
-
-### 6. 启动前检查
+启动前检查：
 
 ```bash
+export DIFY_API_KEY="..."
 bash scripts/run_voice_wake.sh --check
 ```
 
-检查内容包括：
-
-- Python 版本和依赖加载路径。
-- ROS 2 overlay 是否存在且是否过期。
-- 本地知识库是否已安装。
-- KWS、VAD、ASR、TTS 模型文件是否完整。
-- `DIFY_API_KEY` 是否设置。
-- 麦克风采集参数是否合法。
-- `arecord` 是否可用。
-
-### 7. 启动语音系统
+启动：
 
 ```bash
 bash scripts/run_voice_wake.sh
 ```
 
-底层入口等价于：
+---
+
+## Testing & diagnostics
+
+常用诊断入口：
 
 ```bash
-ros2 run voice_control voice_wake_entry.py
-```
-
-## 麦克风与音频适配
-
-默认采集格式为 16 kHz、单声道：
-
-```bash
-export AUDIO_DEVICE=default
-export AUDIO_CAPTURE_SAMPLE_RATE=16000
-export AUDIO_CAPTURE_CHANNELS=1
-export APLAY_DEVICE=default
-```
-
-对于 UGREEN USB MIC-CM581 等原生输出 48 kHz 双声道的设备，可以加载示例：
-
-```bash
-source scripts/env.ugreen.example
-python3 scripts/voice_capture_smoke.py --probe-only
-python3 scripts/voice_capture_smoke.py --free-device --seconds 5
 bash scripts/run_voice_wake.sh --check
-```
-
-典型配置：
-
-```bash
-export AUDIO_DEVICE=hw:3,0
-export AUDIO_CAPTURE_SAMPLE_RATE=48000
-export AUDIO_CAPTURE_CHANNELS=2
-```
-
-采集数据会由 `voice_capture_adapter.py` 转换为语音链路使用的 16 kHz 单声道格式。
-
-音频前端可通过以下变量切换：
-
-```bash
-export VOICE_AUDIO_FRONTEND=passthrough  # 原始链路
-export VOICE_AUDIO_FRONTEND=basic        # 基础处理
-export VOICE_AUDIO_FRONTEND=ns           # 降噪处理
-```
-
-设备编号可能在重新插拔后变化，应使用 `arecord -l` 或 `voice_capture_smoke.py --probe-only` 重新确认。
-
-## 唤醒词与 KWS 评测
-
-默认使用 KWS 模式：
-
-```bash
-export WAKE_DETECTOR_MODE=kws
-```
-
-常用工具：
-
-```bash
-# 构建或更新关键词配置
-python3 scripts/build_wake_keyword.py
-
-# 初始化评测数据集目录
-python3 scripts/eval_kws.py --init-dataset datasets/wake
-
-# 对比不同音频前端
-python3 scripts/eval_kws.py \
-  --dataset-root datasets/wake \
-  --frontends passthrough,ns
-
-# 参数扫描
+python3 scripts/voice_capture_smoke.py --probe-only
+python3 scripts/voice_capture_smoke.py --seconds 5
 python3 scripts/kws_sweep.py --help
 ```
 
-## 本地知识、在线问答与动作执行
+测试覆盖重点包括：
 
-语音文本会按运行时配置进入以下链路：
+- 音频采集与格式适配；
+- KWS / VAD / 首字保留；
+- 唤醒状态机与重复唤醒；
+- Dify 路由和本地知识优先；
+- 动作 Schema 与批次拒绝；
+- 动作执行确认；
+- 持续会话；
+- 装配控制；
+- 声纹验证；
+- 按摩和力度 UI / bridge；
+- 进程退出与资源清理。
 
-1. 本地机器人知识查询。
-2. 本地动作意图与参数解析。
-3. Dify Workflow 在线问答或复杂意图路由。
-4. TTS 播报回复。
-5. 经过校验的机器人动作通过 ROS 2 接口发布。
+---
 
-核心文件：
+## Engineering notes
 
-- `scripts/voice_local_knowledge.py`
-- `knowledge_base/robot_knowledge.csv`
-- `scripts/voice_llm_client.py`
-- `scripts/voice_text_pipeline.py`
-- `scripts/voice_command_validation.py`
-- `scripts/voice_robot_executor.py`
-- `scripts/voice_ros2_dify_v06.yml`
+- [Architecture](docs/architecture.md)
+- [Branch evolution](docs/branch-history.md)
+- 各场景分支还包含部署计划、演示话术、迁移验收和专项测试文档。
 
-动作执行确认文本可通过环境变量缩短，以降低体感延迟：
+---
 
-```bash
-export VOICE_ACTION_ACK_TEXT="好的，正在执行"
-```
+## Resume-oriented highlights
 
-## TTS 配置
+如果你是从简历进入这个仓库，建议重点查看：
 
-默认分支优先使用 Kokoro 多语言模型，并保留 Piper 兼容路径：
+1. **`agent/voice-online-import`**：单臂按摩、声纹权限、力值语音调节和实时 UI；
+2. **`huayan-robot-arm`**：机械臂装配、展览连续对话、双阶段唤醒；
+3. **`agent/online-voice-dify`**：公共语音架构、严格命令校验和 ROS 2 接口。
 
-```bash
-export TTS_MODEL_DIR=/path/to/tts-model
-export TTS_MODEL_FILE=model.onnx
-export TTS_SPEAKER_ID=47
-export TTS_SPEED=1.0
-export TTS_NUM_THREADS=4
-```
+这三个方向分别体现了 **Human-Robot Interaction、Voice/LLM Engineering、Robot Safety Integration** 三类能力。
 
-调试性能时可以开启时间统计：
-
-```bash
-export VOICE_TTS_TIMING=1
-```
-
-若日志显示已经生成和播放，但听不到声音，请检查：
-
-```bash
-aplay -l
-export APLAY_DEVICE=default
-```
-
-桌面系统使用 PulseAudio / PipeWire 时，也可尝试：
-
-```bash
-export AUDIO_DEVICE=pulse
-export APLAY_DEVICE=pulse
-```
-
-## 在线与机器人运行时分离
-
-默认分支支持使用独立目录构建在线语音部分：
-
-```text
-.venv_online/
-build_online/
-install_online/
-log_online/
-```
-
-这样可以减少 Conda、用户级 Python 包、机器人主工作空间和在线语音依赖之间的污染。
-
-`setup_voice_wake.sh` 会主动清理 `PYTHONPATH`、`PYTHONHOME`、Conda 和用户 site-packages 影响；`run_voice_wake.sh --check` 会验证安装产物与源码是否一致。
-
-## 测试与诊断
-
-仓库的 `tests/` 包含以下类型的测试：
-
-- 音频前端与采集适配。
-- KWS 工具和唤醒启动回归。
-- Dify 意图路由和动作可见性。
-- 本地动作解析。
-- 动作执行确认。
-- 运行时配置。
-- 在线语音阶段测试。
-
-部署前至少执行：
-
-```bash
-bash scripts/run_voice_wake.sh --check
-python3 scripts/voice_capture_smoke.py --seconds 5
-```
-
-然后根据当前分支安装的测试框架执行 `tests/` 中的回归测试。
-
-## 安全边界
-
-本项目可以生成并发布机器人动作指令，但语音系统本身不能替代机器人控制器的安全系统。
-
-启用实机动作前，外部控制器必须负责：
-
-- 关节限位与速度限制。
-- 工作空间限制。
-- 碰撞检测。
-- 动作超时与执行反馈。
-- 急停和断电保护。
-- 操作员在场确认。
-
-建议默认关闭所有实机动作开关，仅在仿真或 dry-run 中验证语义链路。涉及按摩、装配、双臂协作或人员接触的功能时，必须使用实体急停，并由现场人员全程监护。
-
-## 分支开发约定
-
-推荐流程：
-
-```bash
-git checkout agent/online-voice-dify
-git pull
-git checkout -b feature/<module-name>
-```
-
-每个新模块应同时补充：
-
-- 对应的运行时配置。
-- 最小 smoke test 或回归测试。
-- 必要的环境变量说明。
-- 对模型、音频设备或 ROS 2 依赖的说明。
-- README 中的分支职责或模块文档。
-
-完成后通过 Pull Request 合并回 `agent/online-voice-dify`，避免继续在已经分叉且落后的实验分支上叠加功能。
-
-## 迁移与交付
-
-需要制作 Ubuntu 22.04 x86_64 迁移包、Web 语音仪表盘或按摩/装配演示环境时，请查看：
-
-```bash
-git checkout agent/voice-online-import
-```
-
-该分支包含更完整的部署计划、环境模板、验收记录和 Web UI。它是交付形态，不应直接替代默认分支的日常模块开发流程。
+---
 
 ## License
 
-`package.xml` 声明本项目采用 BSD License。正式发布前建议在仓库根目录补充完整的 `LICENSE` 文件，并确认第三方模型与依赖各自的许可证要求。
+`package.xml` 当前声明 BSD。若作为公开作品集长期维护，建议在根目录补充完整 `LICENSE`，并分别核对第三方模型、SDK 和数据集许可证。
