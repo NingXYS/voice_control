@@ -68,3 +68,15 @@ voice_online/
 models/
 
 datasets/
+# Local machine / assistant state
+.claude/settings.local.json
+.codegraph
+log/
+debug_audio_capture_smoke/
+
+# Secrets
+.env
+.env.*
+*.key
+*.pem
+secrets/
