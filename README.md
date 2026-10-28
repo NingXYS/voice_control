@@ -1,3 +1,66 @@
+# VoiceOnline — Massage Robot Voice Interaction
+
+> **ROS 2 / Voice AI · Single-Arm Massage · Speaker Verification · Force-Control UI · Dify / Local Models**
+
+这是 `voice_control` 仓库中面向 **单臂按摩机器人与人机交互展示** 的产品化分支。
+
+它从通用语音控制链路扩展出完整的按摩场景能力：点位示教、五级力度、开始确认、声纹权限、Web UI、实时力值反馈与语音调节，并保留 dry-run、安全开关和外部控制器边界。
+
+## Portfolio highlights
+
+- **按摩任务编排**：支持左肩、右肩、背部、左腰、右腰点位示教与组合执行；
+- **力度控制**：五级口语力度映射，并扩展到 2–70 N 的实时目标力语音调节；
+- **实时反馈 UI**：展示请求目标、斜坡目标、实际控制反馈及误差曲线；
+- **声纹验证**：支持多用户登记、shadow/enforce 模式、FAR/FRR/P95 评估与回滚；
+- **安全执行**：机器人、装配、按摩功能默认关闭，动作通过 Schema 校验后才进入执行层；
+- **音频工程**：KWS、VAD、ASR、TTS、首字保留、TTS 回灌隔离、设备适配；
+- **部署工程**：Ubuntu 22.04 x86_64、ROS 2 Humble、隔离 venv/overlay、依赖锁定、迁移验收；
+- **Web 交互**：语音状态、识别文本、动作结果、声纹管理、按摩力值和实时曲线可视化。
+
+### Massage interaction
+
+```mermaid
+flowchart LR
+    U[User] --> KWS[Wake Word]
+    KWS --> ASR[ASR]
+    ASR --> INTENT[Massage / Knowledge / Dify]
+    INTENT --> AUTH[Speaker Gate]
+    AUTH --> PLAN[Massage Plan + Force]
+    PLAN --> CONFIRM[Confirmation]
+    CONFIRM --> CTRL[Massage Controller]
+    CTRL --> FORCE[Force Bridge / Feedback]
+    FORCE --> UI[Web UI]
+    CTRL --> TTS[Voice Feedback]
+```
+
+### Force-control engineering
+
+语音力值接口采用受限模板解析，不做模糊猜测：
+
+```text
+力度调到十牛顿
+重一点
+力度减三牛顿
+查询力度
+```
+
+控制端范围为 **2–70 N**，相对调节越界时拒绝，不静默裁剪；原控制器的 **3 N/s** 斜坡逻辑保持不变。UI 只读显示实时控制反馈，语音桥不开放上电、启动和复位。
+
+### Speaker-verification engineering
+
+声纹验证不只做“相似度大于阈值”：
+
+- 登记数据按多组现场条件采集；
+- 支持候选模型公平比较；
+- 使用 FAR / FRR / P95 做上线门槛；
+- shadow 模式先观测，enforce 模式再阻断；
+- 激活模型支持原子切换和回滚；
+- 明确说明无法防御授权用户录音回放。
+
+> 下面保留原部署与验收说明，便于复现和现场交接。
+
+---
+
 # VoiceOnline 迁移包
 
 面向 **Ubuntu 22.04 x86_64** 的语音在线控制系统迁移包。  
