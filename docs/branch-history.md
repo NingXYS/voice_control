@@ -1,301 +1,368 @@
-# Branch History
+# Branch History & Scenario Map
 
-本文记录 `voice_control` 各分支的演进关系和设计目的。
+本文记录 `voice_control` 各分支的演进关系。由于项目采用“一个仓库、多机械臂 / 多场景分支”的方式维护，阅读时应优先理解**当前场景职责**，而不是把所有分支看成线性版本号。
 
-## 总体演进路线
+## Current scenario map
 
 ```mermaid
 flowchart TD
-    Main[main\nROS2 + MoveIt 基线]
-    Offline[agent/offline-wake-word\n离线唤醒/ASR/VAD]
+    Main[main\nROS 2 / MoveIt baseline]
+    Offline[agent/offline-wake-word\nOffline wake pipeline]
     TTS[agent/kokoro-female-tts\nKokoro TTS]
-    Online[agent/online-voice-dify\n完整语音运行时]
-    Import[agent/voice-online-import\n迁移交付包]
-    Action[feature/action-execution-ack\n动作确认]
-    Mic[feature/mic-capture-adaptation\n麦克风适配实验]
-    MicSafe[feature/mic-capture-adaptation-safe\n安全化音频实验]
-    Arm[huayan-robot-arm\n机械臂场景集成]
+    Ack[feature/action-execution-ack\nAction acknowledgement]
+    Mic[feature/mic-capture-adaptation*\nAudio experiments]
+    Core[agent/online-voice-dify\nCommon voice architecture]
+
+    Massage[agent/voice-online-import\nMassage robot product branch]
+    Huayan[huayan-robot-arm\nHuayan / Assembly / Exhibition]
 
     Main --> Offline
-    Offline --> Online
-    TTS --> Online
-    Action --> Online
-    Mic --> Online
-    MicSafe --> Online
-    Online --> Import
-    Online --> Arm
+    Offline --> Core
+    TTS --> Core
+    Ack --> Core
+    Mic --> Core
+
+    Core --> Massage
+    Core --> Huayan
 ```
 
-## 1. `main`
+> 这张图表达的是“能力来源 / 场景分化”，不是严格的 Git merge DAG。当前两个主要场景分支都已继续独立演进，并与默认分支存在提交分叉。
 
-定位：项目最初机器人控制基线。
+---
 
-主要内容：
+## 1. `main` — ROS 2 / MoveIt baseline
 
-- ROS 2 `ament_cmake` 工程。
-- MoveIt 机器人控制入口。
-- C++ `robot_controller`。
+项目最初的机器人控制基线：
+
+- ROS 2 `ament_cmake`;
+- MoveIt 机器人控制；
+- C++ `robot_controller`;
 - 基础语音控制实验。
 
-适合：
+用途：查看最小机器人控制架构和早期设计，不建议直接作为当前语音产品部署版本。
 
-- 理解机器人控制底层。
-- 查看最小 ROS 2 包结构。
+---
 
-不适合作为当前语音产品部署分支。
+## 2. `agent/offline-wake-word` — Offline wake pipeline
 
-原因：
-
-- 缺少完整 KWS/VAD/ASR/TTS 在线运行时。
-- 缺少 Dify Workflow 集成。
-- 缺少独立在线构建流程。
-
-## 2. `agent/offline-wake-word`
-
-定位：离线语音链路探索阶段。
-
-核心目标：
+离线语音链路专项：
 
 ```text
-麦克风
- → 唤醒词
- → VAD
- → ASR
- → 本地处理
- → TTS
+Microphone
+  → KWS
+  → VAD
+  → ASR
+  → local processing
+  → TTS
 ```
 
 主要贡献：
 
-- 离线唤醒词检测。
-- 语音活动检测。
-- 本地 ASR 接入。
-- 语音会话循环。
-- 启动稳定性修复。
+- 离线 KWS；
+- VAD；
+- 本地 ASR；
+- 共享 audio / text pipeline；
+- wake runtime 稳定化；
+- 回归测试。
 
-该阶段解决的问题：
+该分支奠定后续公共语音架构。
 
-- 不依赖云服务完成基础交互。
-- 验证机器人端实时语音可行性。
-- 建立后续在线语音架构基础。
+---
 
-## 3. `agent/kokoro-female-tts`
+## 3. `agent/kokoro-female-tts` — Offline TTS
 
-定位：语音输出质量专项。
+TTS 专项分支，主要完成：
 
-主要内容：
+- Kokoro 多语言离线 TTS；
+- 女性音色；
+- TTS backend 抽象；
+- 可配置模型；
+- 音频前端 / TTS 联调。
 
-- Kokoro 多语言 TTS。
-- 女性音色实验。
-- TTS backend 抽象。
-- 双运行时测试。
+其主要能力已被后续集成分支采用。
 
-解决的问题：
+---
 
-- 统一不同 TTS 模型调用方式。
-- 降低机器人语音播报延迟。
-- 支持更自然的人机交互。
+## 4. `feature/action-execution-ack` — Action acknowledgement
 
-最终能力被合并到当前运行时容器设计。
-
-## 4. `feature/action-execution-ack`
-
-定位：动作执行交互体验增强。
-
-主要内容：
-
-- 动作确认语。
-- 执行动作后的反馈流程。
-- 相关测试。
+解决机器人接到控制意图后用户缺少即时反馈的问题。
 
 典型交互：
 
 ```text
-用户:
-移动右臂 10 厘米
-
-系统:
-好的，正在执行
-
-ROS:
-robot_command
+User: 右臂向上移动 10 厘米
+System: 好的，正在执行
+Robot: validated action path
 ```
 
-该分支解决：
+主要能力：
 
-- 用户不知道机器人是否接受指令。
-- TTS 延迟和动作反馈体验问题。
+- 动作确认语；
+- 动作解析与播报时序；
+- 回归测试。
 
-能力已进入默认集成分支。
+该能力已进入后续场景分支。
 
-## 5. `feature/mic-capture-adaptation`
+---
 
-定位：硬件麦克风适配实验。
+## 5. `feature/mic-capture-adaptation*` — Audio hardware experiments
 
-主要关注：
+这两条分支用于探索 USB 麦克风和 Linux 音频设备适配：
 
-- USB 麦克风采样率差异。
-- ALSA 设备变化。
-- 声道转换。
-- 音频采集稳定性。
+- 采样率 / 声道转换；
+- ALSA plug 适配；
+- persistent capture；
+- audio frontend；
+- debug recording；
+- 小范围安全改造和回滚。
 
-后续演化为：
+后续公共架构形成：
 
 ```text
 PersistentAudioSession
-        ↓
+    ↓
 CaptureFormatAdapter
-        ↓
+    ↓
 AudioFrontend
+    ↓
+KWS / VAD / ASR
 ```
 
-## 6. `feature/mic-capture-adaptation-safe`
+这些分支现在主要用于追溯设计过程。
 
-定位：更保守的麦克风适配路线。
+---
 
-与上一分支区别：
+## 6. `agent/online-voice-dify` — Common voice architecture
 
-- 修改范围更小。
-- 降低破坏已有语音链路风险。
-- 优先保证回归稳定。
+GitHub 当前默认分支，也是公共架构基线。
 
-最终相关设计被吸收到：
+核心能力：
 
-- `voice_capture_adapter.py`
-- `voice_audio_session.py`
-- `voice_capture_smoke.py`
+- offline KWS;
+- VAD;
+- local ASR;
+- local knowledge / deterministic action parsing;
+- Dify Workflow;
+- local TTS;
+- strict command validation;
+- optional ROS 2 command publishing;
+- audio hardware adaptation;
+- isolated Python / colcon online runtime;
+- regression tests.
 
-## 7. `agent/online-voice-dify`
-
-定位：当前主开发分支。
-
-这是目前推荐使用的分支。
-
-集成内容：
-
-```text
-离线 KWS
- + VAD
- + ASR
- + 本地知识
- + Dify Workflow
- + TTS
- + 动作解析
- + ROS2 发布
- + 麦克风适配
- + 测试体系
-```
-
-关键设计：
-
-### 运行时容器
+核心模块边界：
 
 ```text
 VoiceRuntimeContainer
-    ├── ASR Backend
-    ├── TTS Backend
-    ├── Dialogue Backend
-    └── Robot Executor
+├── ASR Backend
+├── TTS Backend
+├── Dialogue Backend
+└── Robot Executor
 ```
 
-### 文本处理链
+动作链：
 
 ```text
-ASR
- ↓
-文本修复
- ↓
-本地知识优先
- ↓
-Dify 兜底
- ↓
-Schema 校验
- ↓
-执行/播报
-```
-
-### 安全执行链
-
-```text
-Dify JSON
- ↓
+local / Dify output
+      ↓
 validate_command_batch
- ↓
-robot_command
- ↓
-机器人控制器
+      ↓
+optional robot_command
+      ↓
+external robot controller
 ```
 
-## 8. `agent/voice-online-import`
+该分支适合阅读公共设计，但**不是所有最新场景功能的合集**。按摩和华沿分支已经在其上继续独立发展。
 
-定位：迁移和交付版本。
+---
 
-主要内容：
+## 7. `agent/voice-online-import` — Massage robot product branch
 
-- Ubuntu 22.04 x86_64 部署。
-- 环境模板。
-- Dify 部署。
-- Web 语音仪表盘。
-- migration acceptance 验收记录。
-- 模型清单。
+### Current positioning
 
-适合：
+这条分支已经不再只是“迁移包”，目前是 **单臂按摩机器人 + 声纹权限 + 力值交互 + Web UI** 的主要产品场景分支。
 
-- 新机器部署。
-- 展示环境复制。
-- 交付客户或现场工程师。
+### Evolution
 
-不建议：
+早期：
 
-- 作为日常 feature 开发分支。
+- Ubuntu 22.04 x86_64 迁移；
+- Dify workflow；
+- Web voice dashboard；
+- 模型与依赖锁定；
+- migration acceptance。
 
-## 9. `huayan-robot-arm`
+随后增加：
 
-定位：机械臂专项集成。
+- 单臂按摩点位示教；
+- 左肩 / 右肩 / 背部 / 左腰 / 右腰；
+- 五级口语力度；
+- 开始前参数复述与确认；
+- 按摩音乐；
+- 按摩停止 / 进程清理修复。
 
-主要增加：
+### Speaker verification
 
-- 华沿机器人相关动作。
-- 装配场景。
-- 更完整的机器人工作流。
-- 迁移验证资料。
+2026-08 后继续增加：
 
-适合：
+- 声纹登记与验证；
+- 多用户 profile；
+- shadow / enforce 模式；
+- CAM++ / ERes2Net 系列候选模型比较；
+- FAR / FRR / P95 评估；
+- 阈值手动调整；
+- 失败后持续唤醒行为；
+- active model 原子切换与回滚。
 
-- 机械臂现场调试。
-- 展会/演示场景。
+### Force-control UI
 
-注意：
+2026-10 继续发展：
 
-该分支增加了更多真实机器人能力，因此必须保持安全边界：
+- Linux 力控桥；
+- 语音调节目标力；
+- 2–70 N 范围校验；
+- 保留 3 N/s 原控制斜坡；
+- 请求目标 / 斜坡目标 / 控制反馈实时曲线；
+- status / force / adjust 受限接口；
+- WebSocket telemetry；
+- 网络 / 鉴权 / feedback stale / process cleanup 回归测试；
+- 背部穴位展示 UI。
 
-- 默认关闭真实动作。
-- 控制器负责限位。
-- 现场必须保留急停。
+### Recommended use
 
-## 当前推荐关系
+- 按摩机器人 HRI；
+- 人机接触场景；
+- 声纹权限研究；
+- 力控语音交互；
+- 产品化 UI 和部署验收。
 
-| 目的 | 分支 |
+---
+
+## 8. `huayan-robot-arm` — Huayan / Assembly / Exhibition
+
+### Current positioning
+
+华沿机械臂、装配和展览交互专项。
+
+### Robot integration
+
+- 华沿机械臂动作适配；
+- 本地机器人知识；
+- 装配任务控制；
+- `voice_assembly_controller.py`;
+- assembly dry-run；
+- 动作验证测试。
+
+### Exhibition HRI
+
+后续重点转向真实展览环境：
+
+- 连续会话；
+- 一次唤醒后 follow-up listening；
+- 显式结束会话；
+- 重复唤醒处理；
+- “小西 / 小溪 / 小喜 / 小希”等同音归一化；
+- 展会人声干扰治理；
+- 首字保留；
+- TTS 回灌缓冲清理。
+
+### Two-stage wake
+
+分支中进一步引入：
+
+```text
+KWS candidate
+├── high confidence → direct accept
+└── low confidence  → wake verifier
+                       ├── accepted
+                       └── rejected / reset
+```
+
+目标是在远场召回率与误唤醒率之间取得更合理的工程折中。
+
+### Streaming response
+
+- 文本分段；
+- 流式 / 分句 TTS；
+- 长回复首声延迟优化。
+
+### Recommended use
+
+- 华沿机械臂；
+- 装配演示；
+- 展览 / 军事展示连续对话；
+- 现场 HRI 调优。
+
+---
+
+## Current branch selection
+
+| Goal | Recommended branch |
 |---|---|
-| 日常开发 | `agent/online-voice-dify` |
-| 语音算法研究 | `agent/offline-wake-word` |
-| TTS 调优 | `agent/kokoro-female-tts` |
-| 部署交付 | `agent/voice-online-import` |
-| 机械臂专项 | `huayan-robot-arm` |
-| 查看历史设计 | 其他 feature 分支 |
+| 阅读公共语音架构 | `agent/online-voice-dify` |
+| 按摩机器人 / 声纹 / 力控 UI | **`agent/voice-online-import`** |
+| 华沿机械臂 / 装配 / 展览连续对话 | **`huayan-robot-arm`** |
+| 离线唤醒算法历史 | `agent/offline-wake-word` |
+| Kokoro TTS 历史 | `agent/kokoro-female-tts` |
+| 音频 / 动作确认实验历史 | `feature/*` |
+| 初始 ROS 2 控制基线 | `main` |
 
-## AI 阅读建议
+---
 
-如果 AI Agent 接管本项目，推荐顺序：
+## Resume view
 
-1. `README.md`
+如果从作品集 / 简历角度阅读，建议把仓库理解为三层能力：
+
+### 1. Common voice robotics platform
+
+`agent/online-voice-dify`
+
+体现：
+
+- Voice AI pipeline；
+- ROS 2 integration；
+- local / cloud routing；
+- fail-closed action schema；
+- audio engineering。
+
+### 2. Physical HRI product scenario
+
+`agent/voice-online-import`
+
+体现：
+
+- massage orchestration；
+- speaker authorization；
+- force-control interaction；
+- Web UI；
+- real-time feedback；
+- process / deployment engineering。
+
+### 3. Exhibition & assembly interaction
+
+`huayan-robot-arm`
+
+体现：
+
+- robot-specific integration；
+- assembly control；
+- continuous dialogue；
+- two-stage wake verification；
+- noisy-environment HRI。
+
+---
+
+## Recommended reading order
+
+1. root `README.md`
 2. `docs/architecture.md`
-3. `scripts/voice_wake_entry.py`
-4. `scripts/voice_runtime_container.py`
-5. `scripts/voice_wake_runtime.py`
-6. `scripts/voice_text_pipeline.py`
-7. `scripts/voice_command_validation.py`
-8. 当前分支 commit history
-9. feature branch history
+3. this document
+4. target scenario branch README
+5. `voice_wake_entry.py`
+6. `voice_wake_runtime.py`
+7. `voice_runtime_container.py`
+8. `voice_text_pipeline.py`
+9. `voice_command_validation.py`
+10. scenario-specific controller / UI
 
-不要直接从旧 feature 分支推断当前架构。
+Do not infer current product capability from an old feature branch alone.
