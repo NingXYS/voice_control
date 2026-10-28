@@ -42,3 +42,7 @@ voice_control_online.env
 # Migration acceptance runtime outputs
 migration_acceptance/**/*.log
 migration_acceptance/**/*.wav
+
+# Local assistant / runtime state
+.codegraph
+VoiceUi/.runtime/
