@@ -36,3 +36,10 @@ massage_data/*.candidate.h
 .idea/
 .vscode/
 .DS_Store
+
+# UI runtime state
+VoiceUi/.runtime/
+
+# Migration acceptance generated artifacts
+migration_acceptance/**/*.log
+migration_acceptance/**/*.wav
